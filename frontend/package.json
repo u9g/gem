@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@bufbuild/protobuf": "^2.16.0",
     "expo": "~58.0.17",
     "expo-status-bar": "~58.0.4",
     "react": "19.3.0",
@@ -11,11 +12,15 @@
     "react-native-web": "^0.21.4"
   },
   "devDependencies": {
+    "@bufbuild/protoc-gen-es": "^2.16.0",
     "@types/react": "~19.3.0",
     "typescript": "~6.0.3"
   },
   "scripts": {
+    "generate": "mkdir -p gen && protoc -I ../protocol --plugin=protoc-gen-es=node_modules/.bin/protoc-gen-es --es_out=gen --es_opt=target=ts ../protocol/gem.proto",
+    "prestart": "npm run generate",
     "start": "expo start --web",
+    "prebuild": "npm run generate",
     "build": "expo export --platform web"
   },
   "private": true

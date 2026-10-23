@@ -1,21 +1,25 @@
+import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-type PullRequest = {
-  number: number;
-  title: string;
-  url: string;
-  repository: { nameWithOwner: string };
-};
+import {
+  ListOpenPullRequestsRequestSchema,
+  ListOpenPullRequestsResponseSchema,
+  type PullRequest,
+} from './gen/gem_pb';
 
 export default function App() {
   const [prs, setPrs] = useState<PullRequest[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:8080/prs')
+    fetch('http://localhost:8080/prs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))),
+    })
       .then((res) => res.json())
-      .then(setPrs);
+      .then((json) => setPrs(fromJson(ListOpenPullRequestsResponseSchema, json).pullRequests));
   }, []);
 
   return (
@@ -33,7 +37,7 @@ export default function App() {
         <View key={pr.url} style={styles.cell}>
           <Pressable style={styles.card} onPress={() => Linking.openURL(pr.url)}>
             <Text style={styles.repo}>
-              {pr.repository.nameWithOwner}#{pr.number}
+              {pr.repository}#{pr.number}
             </Text>
             <Text style={styles.text}>{pr.title}</Text>
           </Pressable>
