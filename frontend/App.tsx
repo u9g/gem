@@ -8,6 +8,7 @@ import {
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
   type PullRequestCluster,
+  type Repository,
 } from './gen/gem_pb';
 
 const units: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -28,9 +29,15 @@ function timeAgo(date: Date): string {
   return relativeTime.format(Math.trunc(seconds / size), unit);
 }
 
+function sameRepository(a: Repository | undefined, b: Repository | undefined): boolean {
+  return a?.owner === b?.owner && a?.name === b?.name;
+}
+
 export default function App() {
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
   const [selectedUrl, setSelectedUrl] = useState<string>();
+  const [repoFilter, setRepoFilter] = useState<Repository>();
+  const [repoMenuOpen, setRepoMenuOpen] = useState(false);
 
   useEffect(() => {
     fetch('http://localhost:8080/prs', {
@@ -45,6 +52,14 @@ export default function App() {
   // A cluster is identified by its oldest PR, which stays put as the cluster grows.
   const selected = clusters.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
 
+  const repositories = clusters
+    .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => (pr.repository ? [pr.repository] : [])))
+    .filter((repository, i, all) => all.findIndex((other) => sameRepository(other, repository)) === i)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const visible = repoFilter
+    ? clusters.filter((cluster) => cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
+    : clusters;
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.grid}>
@@ -55,9 +70,32 @@ export default function App() {
                 {filter}
               </Text>
             ))}
+            <View>
+              <Pressable onPress={() => setRepoMenuOpen(!repoMenuOpen)}>
+                <Text style={[styles.filter, repoMenuOpen && styles.openFilter]}>
+                  repos: {repoFilter?.name ?? '*'}
+                </Text>
+              </Pressable>
+              {repoMenuOpen && (
+                <ScrollView style={styles.menu}>
+                  {[undefined, ...repositories].map((repository) => (
+                    <Pressable
+                      key={repository ? `${repository.owner} ${repository.name}` : '*'}
+                      style={[styles.menuItem, sameRepository(repository, repoFilter) && styles.menuItemSelected]}
+                      onPress={() => {
+                        setRepoFilter(repository);
+                        setRepoMenuOpen(false);
+                      }}
+                    >
+                      <Text style={styles.menuText}>{repository?.name ?? '*'}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              )}
+            </View>
           </View>
         </View>
-        {clusters.map((cluster) => {
+        {visible.map((cluster) => {
           const url = cluster.pullRequests[0].url;
           return (
             <View key={url} style={styles.cell}>
@@ -126,6 +164,7 @@ const styles = StyleSheet.create({
   header: {
     width: '100%',
     padding: 8,
+    zIndex: 1,
   },
   filters: {
     flexDirection: 'row',
@@ -139,6 +178,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 999,
+    backgroundColor: '#2E3946',
+  },
+  openFilter: {
+    backgroundColor: '#3A4757',
+  },
+  menu: {
+    position: 'absolute',
+    top: '100%',
+    left: 0,
+    marginTop: 4,
+    minWidth: 200,
+    maxHeight: 320,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2E3946',
+    backgroundColor: '#19212A',
+  },
+  menuItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  menuText: {
+    color: '#D0CFD4',
+  },
+  menuItemSelected: {
     backgroundColor: '#2E3946',
   },
   cell: {
