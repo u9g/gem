@@ -22,6 +22,7 @@ use proto::{
 };
 
 mod names;
+mod t3;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));

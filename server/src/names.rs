@@ -1,17 +1,14 @@
 use std::{
     collections::{HashMap, HashSet},
-    env,
-    path::PathBuf,
     sync::Arc,
 };
 
-use serde::Deserialize;
-use tokio::{
-    process::Command,
-    sync::{Mutex, RwLock, Semaphore},
-};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 
-use crate::proto::{PullRequest, PullRequestCluster};
+use crate::{
+    proto::{PullRequest, PullRequestCluster},
+    t3,
+};
 
 // Relative to the server's working directory, which must be inside the `gem` T3 Code project:
 // naming threads are started in the project containing ".".
@@ -91,61 +88,20 @@ fn key(prs: &[PullRequest]) -> String {
     lines.join("\n")
 }
 
-#[derive(Deserialize)]
-struct Run {
-    #[serde(rename = "threadId")]
-    thread_id: String,
-    status: String,
-    reply: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct Shown {
-    thread: ShownThread,
-}
-
-#[derive(Deserialize)]
-struct ShownThread {
-    settled: bool,
-}
-
 async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
     let list: Vec<String> = prs
         .iter()
         .map(|pr| format!("- {}#{}: {}", full_name(pr), pr.number, pr.title))
         .collect();
     let first = &prs[0];
-    let output = t3(&[
-        "thread",
-        "start",
-        ".",
-        "--title",
+    t3::ask(
         &format!("Name PR cluster {}#{}", full_name(first), first.number),
-        "--wait",
-        "--json",
         &format!("{PROMPT}\n\n{}", list.join("\n")),
-    ])
-    .await?;
-    let run: Run = serde_json::from_slice(&output).ok()?;
-
-    let shown: Option<Shown> = t3(&["thread", "show", "--json", &run.thread_id])
-        .await
-        .and_then(|output| serde_json::from_slice(&output).ok());
-    if !shown.is_some_and(|shown| shown.thread.settled) {
-        eprintln!("naming thread {} did not settle", run.thread_id);
-    }
-
-    let name = run.reply?.trim().to_string();
-    (run.status == "completed" && !name.is_empty()).then_some(name)
+    )
+    .await
 }
 
 fn full_name(pr: &PullRequest) -> String {
     let repository = pr.repository.clone().unwrap_or_default();
     format!("{}/{}", repository.owner, repository.name)
-}
-
-// T3 Code installs its CLI here and keeps it pointing at the running app.
-async fn t3(args: &[&str]) -> Option<Vec<u8>> {
-    let cli = PathBuf::from(env::var("HOME").ok()?).join(".t3/bin/t3");
-    Some(Command::new(cli).args(args).output().await.ok()?.stdout)
 }
