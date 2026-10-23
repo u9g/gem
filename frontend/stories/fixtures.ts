@@ -41,6 +41,12 @@ const reviewQuestion = comment(
   'discussion_r1',
 );
 
+// Earlier comments in that review thread, so the whole thread can be shown.
+const earlierInThread = [
+  comment('theo', 'Is the single retry here on purpose?', 'discussion_r1a'),
+  comment('u9g', 'Mostly: a second TTS retry replays audio the user may have already heard.', 'discussion_r1b'),
+];
+
 export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'patch-reply-resolve',
@@ -61,6 +67,7 @@ export const proposals: Proposal[] = [
     summary: 'Honor max_retry like the STT path, and say so',
     pullRequestUrl: pr.url,
     comment: reviewQuestion,
+    earlierComments: earlierInThread,
     threadId: 'thread-1',
     patch: { diff, commitMessage: 'fix(voice): honor max_retry when retrying TTS' },
     reply: "Yes, it should. It now retries up to `conn_options.max_retry` times, the same as STT.\n",
@@ -70,6 +77,7 @@ export const proposals: Proposal[] = [
     summary: 'Explain why TTS retries once, and keep it',
     pullRequestUrl: pr.url,
     comment: reviewQuestion,
+    earlierComments: earlierInThread,
     threadId: 'thread-1',
     reply:
       "On purpose: a TTS retry replays audio the user may have already heard part of, so more than one retry sounds broken. STT retries are silent. I'll add a comment saying so.\n",
