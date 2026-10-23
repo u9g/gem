@@ -190,19 +190,16 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         clusters[c].push(pr);
     }
 
-    clusters.sort_by_cached_key(|members| {
-        Reverse(
-            members
-                .iter()
-                .map(|pr| (pr.updated_at.seconds, pr.updated_at.nanos))
-                .max(),
-        )
-    });
-    clusters
+    let mut clusters: Vec<PullRequestCluster> = clusters
         .into_iter()
         .map(|mut members| {
             members.sort_by_key(|pr| (pr.created_at.seconds, pr.created_at.nanos));
             PullRequestCluster {
+                updated_at: members
+                    .iter()
+                    .map(|pr| &pr.updated_at)
+                    .max_by_key(|t| (t.seconds, t.nanos))
+                    .cloned(),
                 pull_requests: members
                     .into_iter()
                     .map(|pr| PullRequest {
@@ -214,7 +211,9 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                     .collect(),
             }
         })
-        .collect()
+        .collect();
+    clusters.sort_by_key(|c| Reverse(c.updated_at.as_ref().map(|t| (t.seconds, t.nanos))));
+    clusters
 }
 
 fn root(parent: &mut [usize], mut i: usize) -> usize {

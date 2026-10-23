@@ -1,4 +1,5 @@
 import { create, fromJson, toJson } from '@bufbuild/protobuf';
+import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -8,6 +9,24 @@ import {
   ListOpenPullRequestsResponseSchema,
   type PullRequestCluster,
 } from './gen/gem_pb';
+
+const units: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 24 * 60 * 60],
+  ['month', 30 * 24 * 60 * 60],
+  ['week', 7 * 24 * 60 * 60],
+  ['day', 24 * 60 * 60],
+  ['hour', 60 * 60],
+  ['minute', 60],
+  ['second', 1],
+];
+const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
+
+// Largest unit that fits, truncated: 59 minutes stays "59 minutes ago", not "1 hour ago".
+function timeAgo(date: Date): string {
+  const seconds = (date.getTime() - Date.now()) / 1000;
+  const [unit, size] = units.find(([, size]) => Math.abs(seconds) >= size) ?? units[units.length - 1];
+  return relativeTime.format(Math.trunc(seconds / size), unit);
+}
 
 export default function App() {
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
@@ -36,6 +55,9 @@ export default function App() {
       {clusters.map((cluster) => (
         <View key={cluster.pullRequests[0].url} style={styles.cell}>
           <View style={styles.card}>
+            {cluster.updatedAt && (
+              <Text style={styles.updated}>{timeAgo(timestampDate(cluster.updatedAt))}</Text>
+            )}
             {cluster.pullRequests.map((pr, i) => (
               <Pressable
                 key={pr.url}
@@ -94,6 +116,13 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#2E3946',
+  },
+  updated: {
+    color: '#D0CFD4',
+    opacity: 0.6,
+    fontSize: 12,
+    paddingHorizontal: 12,
+    paddingTop: 12,
   },
   pr: {
     padding: 12,

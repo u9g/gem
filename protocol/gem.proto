@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package gem.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // Sent by the frontend to ask the server for all open pull requests.
 message ListOpenPullRequestsRequest {}
 
@@ -16,6 +18,8 @@ message ListOpenPullRequestsResponse {
 // Oldest PR first.
 message PullRequestCluster {
   repeated PullRequest pull_requests = 1;
+  // Latest update to any PR in the cluster.
+  google.protobuf.Timestamp updated_at = 2;
 }
 
 message PullRequest {
