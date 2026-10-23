@@ -4,6 +4,8 @@
   "main": "index.ts",
   "dependencies": {
     "@bufbuild/protobuf": "^2.16.0",
+    "@rn-primitives/portal": "^1.5.3",
+    "@rn-primitives/select": "^1.5.2",
     "expo": "~58.0.17",
     "expo-status-bar": "~58.0.4",
     "react": "19.3.0",

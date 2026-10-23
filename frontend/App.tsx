@@ -1,5 +1,6 @@
 import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import { timestampDate } from '@bufbuild/protobuf/wkt';
+import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -33,11 +34,17 @@ function sameRepository(a: Repository | undefined, b: Repository | undefined): b
   return a?.owner === b?.owner && a?.name === b?.name;
 }
 
+// Select options carry string values; this encodes a repository so it can be looked up again by
+// comparing values, never parsed.
+function repositoryValue(repository: Repository): string {
+  return JSON.stringify([repository.owner, repository.name]);
+}
+
 export default function App() {
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const [repoFilter, setRepoFilter] = useState<Repository>();
-  const [repoMenuOpen, setRepoMenuOpen] = useState(false);
+  const [highlightedRepo, setHighlightedRepo] = useState<string>();
 
   useEffect(() => {
     fetch('http://localhost:8080/prs', {
@@ -70,29 +77,45 @@ export default function App() {
                 {filter}
               </Text>
             ))}
-            <View>
-              <Pressable onPress={() => setRepoMenuOpen(!repoMenuOpen)}>
-                <Text style={[styles.filter, repoMenuOpen && styles.openFilter]}>
-                  repos: {repoFilter?.name ?? '*'}
-                </Text>
-              </Pressable>
-              {repoMenuOpen && (
-                <ScrollView style={styles.menu}>
-                  {[undefined, ...repositories].map((repository) => (
-                    <Pressable
-                      key={repository ? `${repository.owner} ${repository.name}` : '*'}
-                      style={[styles.menuItem, sameRepository(repository, repoFilter) && styles.menuItemSelected]}
-                      onPress={() => {
-                        setRepoFilter(repository);
-                        setRepoMenuOpen(false);
-                      }}
-                    >
-                      <Text style={styles.menuText}>{repository?.name ?? '*'}</Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              )}
-            </View>
+            <Select.Root
+              value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
+              onValueChange={(option) =>
+                setRepoFilter(repositories.find((repository) => repositoryValue(repository) === option?.value))
+              }
+            >
+              <Select.Trigger>
+                <Text style={styles.filter}>repos: {repoFilter?.name ?? '*'}</Text>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Content position="popper" sideOffset={4} style={styles.menu}>
+                  <Select.Viewport>
+                    {[undefined, ...repositories].map((repository) => {
+                      const value = repository ? repositoryValue(repository) : '*';
+                      const label = repository?.name ?? '*';
+                      return (
+                        <Select.Item
+                          key={value}
+                          value={value}
+                          label={label}
+                          // On web the Item is Radix's DOM element, so its style must be one plain
+                          // object of CSS properties. Radix focuses whichever item the pointer or
+                          // keyboard highlights.
+                          onFocus={() => setHighlightedRepo(value)}
+                          onBlur={() => setHighlightedRepo(undefined)}
+                          style={StyleSheet.flatten([
+                            styles.menuItem,
+                            sameRepository(repository, repoFilter) && styles.menuItemSelected,
+                            highlightedRepo === value && styles.menuItemActive,
+                          ])}
+                        >
+                          <Select.ItemText style={styles.menuText} />
+                        </Select.Item>
+                      );
+                    })}
+                  </Select.Viewport>
+                </Select.Content>
+              </Select.Portal>
+            </Select.Root>
           </View>
         </View>
         {visible.map((cluster) => {
@@ -164,7 +187,6 @@ const styles = StyleSheet.create({
   header: {
     width: '100%',
     padding: 8,
-    zIndex: 1,
   },
   filters: {
     flexDirection: 'row',
@@ -180,14 +202,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: '#2E3946',
   },
-  openFilter: {
-    backgroundColor: '#3A4757',
-  },
   menu: {
-    position: 'absolute',
-    top: '100%',
-    left: 0,
-    marginTop: 4,
     minWidth: 200,
     maxHeight: 320,
     borderRadius: 8,
@@ -195,12 +210,21 @@ const styles = StyleSheet.create({
     borderColor: '#2E3946',
     backgroundColor: '#19212A',
   },
+  // Reaches the DOM unconverted (see the Select.Item), so only properties CSS also has.
   menuItem: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingLeft: 12,
+    paddingRight: 12,
+    paddingTop: 6,
+    paddingBottom: 6,
+    // Chrome's focus ring (outline-style: auto) ignores outline-width; a solid 0px one draws nothing.
+    outlineStyle: 'solid',
+    outlineWidth: 0,
   },
   menuText: {
     color: '#D0CFD4',
+  },
+  menuItemActive: {
+    backgroundColor: '#3A4757',
   },
   menuItemSelected: {
     backgroundColor: '#2E3946',
