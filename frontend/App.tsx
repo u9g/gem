@@ -2,7 +2,7 @@ import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ProposalView } from './ProposalView';
@@ -34,6 +34,16 @@ function timeAgo(date: Date): string {
 }
 
 const server = 'http://localhost:8080';
+
+const SIDEBAR_WIDTH_KEY = 'gem.sidebarWidth';
+const SIDEBAR_DEFAULT_WIDTH = 512;
+const SIDEBAR_MIN_WIDTH = 208;
+// The main column keeps at least this much of the window.
+const MAIN_MIN_WIDTH = 640;
+
+function clampSidebarWidth(width: number): number {
+  return Math.round(Math.max(SIDEBAR_MIN_WIDTH, Math.min(width, window.innerWidth - MAIN_MIN_WIDTH)));
+}
 
 function post(path: string, body: JsonValue): Promise<JsonValue> {
   return fetch(`${server}${path}`, {
@@ -75,6 +85,9 @@ export default function App() {
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Proposal being approved or dismissed.
   const [busy, setBusy] = useState<string>();
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || SIDEBAR_DEFAULT_WIDTH),
+  );
 
   const load = useCallback(
     () =>
@@ -119,7 +132,12 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.sidebar}>
+      <View style={[styles.sidebar, { width: sidebarWidth }]}>
+        <ResizeHandle
+          width={sidebarWidth}
+          onResize={(width) => setSidebarWidth(clampSidebarWidth(width))}
+          onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
+        />
         <View style={styles.filters}>
           {['org: livekit, livekit-examples', 'author: u9g'].map((filter) => (
             <Text key={filter} style={styles.filter}>
@@ -229,6 +247,45 @@ export default function App() {
   );
 }
 
+// T3 Code's panel resize handle: an 8px strip over the sidebar's right edge whose 1px line shows
+// on hover and turns blue while dragging. The width is saved when the drag ends, not on every move.
+function ResizeHandle({
+  width,
+  onResize,
+  onEnd,
+}: {
+  width: number;
+  onResize: (width: number) => void;
+  onEnd: () => void;
+}) {
+  const start = useRef<{ x: number; width: number }>(undefined);
+  const [hovered, setHovered] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  return (
+    <View
+      style={styles.handle}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        (e.currentTarget as unknown as Element).setPointerCapture(e.nativeEvent.pointerId);
+        start.current = { x: e.nativeEvent.clientX, width };
+        setDragging(true);
+      }}
+      onPointerMove={(e) => {
+        if (start.current) onResize(start.current.width + e.nativeEvent.clientX - start.current.x);
+      }}
+      onPointerUp={() => {
+        start.current = undefined;
+        setDragging(false);
+        onEnd();
+      }}
+    >
+      <View style={[styles.handleLine, hovered && styles.handleLineHover, dragging && styles.handleLineDrag]} />
+    </View>
+  );
+}
+
 // One line per cluster, like a thread in T3 Code's sidebar: a red dot when a PR's checks fail, the
 // name (green when every PR is approved and passing), how many proposals wait, and how long ago.
 function ClusterRow({
@@ -266,10 +323,30 @@ const styles = StyleSheet.create({
     backgroundColor: '#19212A',
   },
   sidebar: {
-    width: 256,
     backgroundColor: '#1D2630',
     borderRightWidth: 1,
     borderRightColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  handle: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: -4,
+    width: 8,
+    zIndex: 1,
+    alignItems: 'center',
+    cursor: 'col-resize',
+    userSelect: 'none',
+  } as object,
+  handleLine: {
+    width: 1,
+    height: '100%',
+  },
+  handleLineHover: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  handleLineDrag: {
+    backgroundColor: 'rgba(55, 103, 232, 0.6)',
   },
   filters: {
     flexDirection: 'row',
