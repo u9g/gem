@@ -36,7 +36,7 @@ function timeAgo(date: Date): string {
 const server = 'http://localhost:8080';
 
 const SIDEBAR_WIDTH_KEY = 'gem.sidebarWidth';
-const SIDEBAR_DEFAULT_WIDTH = 512;
+const SIDEBAR_DEFAULT_WIDTH = 375;
 const SIDEBAR_MIN_WIDTH = 208;
 // The main column keeps at least this much of the window.
 const MAIN_MIN_WIDTH = 640;
