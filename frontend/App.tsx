@@ -6,11 +6,11 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-na
 import {
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
-  type PullRequest,
+  type PullRequestCluster,
 } from './gen/gem_pb';
 
 export default function App() {
-  const [prs, setPrs] = useState<PullRequest[]>([]);
+  const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
 
   useEffect(() => {
     fetch('http://localhost:8080/prs', {
@@ -19,7 +19,7 @@ export default function App() {
       body: JSON.stringify(toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))),
     })
       .then((res) => res.json())
-      .then((json) => setPrs(fromJson(ListOpenPullRequestsResponseSchema, json).pullRequests));
+      .then((json) => setClusters(fromJson(ListOpenPullRequestsResponseSchema, json).clusters));
   }, []);
 
   return (
@@ -33,14 +33,22 @@ export default function App() {
           ))}
         </View>
       </View>
-      {prs.map((pr) => (
-        <View key={pr.url} style={styles.cell}>
-          <Pressable style={styles.card} onPress={() => Linking.openURL(pr.url)}>
-            <Text style={styles.repo}>
-              {pr.repository}#{pr.number}
-            </Text>
-            <Text style={styles.text}>{pr.title}</Text>
-          </Pressable>
+      {clusters.map((cluster) => (
+        <View key={cluster.pullRequests[0].url} style={styles.cell}>
+          <View style={styles.card}>
+            {cluster.pullRequests.map((pr, i) => (
+              <Pressable
+                key={pr.url}
+                style={[styles.pr, i > 0 && styles.stacked]}
+                onPress={() => Linking.openURL(pr.url)}
+              >
+                <Text style={styles.repo}>
+                  {pr.repository}#{pr.number}
+                </Text>
+                <Text style={styles.text}>{pr.title}</Text>
+              </Pressable>
+            ))}
+          </View>
         </View>
       ))}
       <StatusBar style="auto" />
@@ -83,10 +91,16 @@ const styles = StyleSheet.create({
   },
   card: {
     flex: 1,
-    padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#2E3946',
+  },
+  pr: {
+    padding: 12,
+  },
+  stacked: {
+    borderTopWidth: 1,
+    borderTopColor: '#2E3946',
   },
   repo: {
     color: '#D0CFD4',

@@ -6,6 +6,13 @@ package gem.v1;
 message ListOpenPullRequestsRequest {}
 
 message ListOpenPullRequestsResponse {
+  repeated PullRequestCluster clusters = 1;
+}
+
+// Pull requests stacked on one another: a PR depends on another when its base
+// branch is the other's head branch in the same repository. Each PR comes after
+// the PR it depends on.
+message PullRequestCluster {
   repeated PullRequest pull_requests = 1;
 }
 
