@@ -36,6 +36,8 @@ message PullRequest {
   bool checks_passing = 6;
   // A check on the head commit failed or errored. False while checks are only pending.
   bool checks_failing = 7;
+  // Proposed answers to conversations on this PR that still wait on u9g.
+  repeated Proposal proposals = 8;
 }
 
 message Repository {
@@ -44,3 +46,62 @@ message Repository {
   // e.g. agents.
   string name = 2;
 }
+
+// An answer an agent proposes to a conversation on a pull request, run as u9g
+// once approved. Approving runs the steps that are set in field order: patch,
+// reply, resolve_thread. A step that succeeded is cleared, so approving again
+// after a failure resumes at the step that failed.
+message Proposal {
+  string id = 1;
+  // One line saying what approving does.
+  string summary = 2;
+  string pull_request_url = 3;
+  // Latest comment in the conversation when the agent started. The proposal is
+  // shown only while this is still the latest comment waiting on u9g.
+  Comment comment = 4;
+  // Review thread holding the comment. Empty when the comment is a top-level
+  // comment.
+  string thread_id = 5;
+  Patch patch = 6;
+  // Markdown posted as u9g: a reply in the review thread, or a top-level
+  // comment that quotes `comment`.
+  string reply = 7;
+  bool resolve_thread = 8;
+  // Why the last approval failed.
+  string error = 9;
+  // A tool the agent needed to answer and lacks, in markdown: what it would do
+  // and why this conversation needs it. Set only on proposals with no steps,
+  // which approving does not run.
+  string requested_tool = 10;
+}
+
+message Comment {
+  // GraphQL node ID.
+  string id = 1;
+  // Login of the author.
+  string author = 2;
+  // Markdown.
+  string body = 3;
+  string url = 4;
+}
+
+// Committed and pushed to the pull request's head branch.
+message Patch {
+  // Unified diff against the head of the branch.
+  string diff = 1;
+  string commit_message = 2;
+}
+
+// Runs the proposal. Its outcome shows in the proposal: it disappears, along
+// with the other proposals for the same comment, or its error is set.
+message ApproveProposalRequest {
+  string id = 1;
+}
+
+message ApproveProposalResponse {}
+
+message DismissProposalRequest {
+  string id = 1;
+}
+
+message DismissProposalResponse {}

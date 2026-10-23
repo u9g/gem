@@ -15,13 +15,18 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 
+use conversations::Conversations;
 use names::Names;
 use proto::{
-    ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, PullRequest, PullRequestCluster,
-    Repository,
+    ApproveProposalRequest, ApproveProposalResponse, DismissProposalRequest,
+    DismissProposalResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse,
+    PullRequest, PullRequestCluster, Repository,
 };
 
+mod conversations;
 mod names;
+mod proposals;
+mod t3;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));
@@ -41,7 +46,7 @@ query($endCursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title url headRefName baseRefName createdAt updatedAt reviewDecision
+        id number title url headRefName baseRefName createdAt updatedAt reviewDecision
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         repository { nameWithOwner name owner { login } }
         headRepository { nameWithOwner }
@@ -57,7 +62,7 @@ query($endCursor: String) {
 // A fork's head branch can share a name with a base-repo branch (e.g. `main`), so only
 // same-repository heads can have dependents.
 const PRS_JQ: &str = r#".data.search.nodes[] | {
-  repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
+  id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   base: .baseRefName,
   created_at: .createdAt,
@@ -70,6 +75,8 @@ const PRS_JQ: &str = r#".data.search.nodes[] | {
 
 #[derive(Deserialize)]
 struct SearchedPullRequest {
+    // GraphQL node ID.
+    id: String,
     repository: Repository,
     number: u32,
     title: String,
@@ -90,11 +97,25 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|command| command == "propose") {
+        match proposals::propose(&args[1..]).await {
+            Ok(id) => println!("{id}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let repos: Cache<Value> = cached(|| gh_json(REPOS));
     let names = Names::load().await;
+    let conversations = Conversations::load().await;
     let prs: Cache<ListOpenPullRequestsResponse> = {
         let names = names.clone();
-        cached(move || open_pull_requests(names.clone()))
+        let conversations = conversations.clone();
+        cached(move || open_pull_requests(names.clone(), conversations.clone()))
     };
 
     let app = Router::new()
@@ -102,7 +123,23 @@ async fn main() {
         .route("/repos", get(move || serve(repos)))
         .route(
             "/prs",
-            post(move |Json(_): Json<ListOpenPullRequestsRequest>| serve_prs(prs, names)),
+            post(move |Json(_): Json<ListOpenPullRequestsRequest>| {
+                serve_prs(prs, names, conversations)
+            }),
+        )
+        .route(
+            "/proposals/approve",
+            post(|Json(request): Json<ApproveProposalRequest>| async move {
+                proposals::approve(&request.id).await;
+                Json(ApproveProposalResponse {})
+            }),
+        )
+        .route(
+            "/proposals/dismiss",
+            post(|Json(request): Json<DismissProposalRequest>| async move {
+                proposals::dismiss(&request.id).await;
+                Json(DismissProposalResponse {})
+            }),
         )
         .layer(CorsLayer::permissive());
 
@@ -146,17 +183,23 @@ async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusC
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
-// Names arrive after the refresh that asked for them, so they are filled in per request.
+// Names and proposals arrive after the refresh that asked for them, so they are filled in per
+// request.
 async fn serve_prs(
     cache: Cache<ListOpenPullRequestsResponse>,
     names: Names,
+    conversations: Conversations,
 ) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
     let Json(mut response) = serve(cache).await?;
     names.fill(&mut response.clusters).await;
+    proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     Ok(Json(response))
 }
 
-async fn open_pull_requests(names: Names) -> Option<ListOpenPullRequestsResponse> {
+async fn open_pull_requests(
+    names: Names,
+    conversations: Conversations,
+) -> Option<ListOpenPullRequestsResponse> {
     let stdout = gh(&[
         "api",
         "graphql",
@@ -173,6 +216,7 @@ async fn open_pull_requests(names: Names) -> Option<ListOpenPullRequestsResponse
         .ok()?;
     let clusters = cluster(&prs);
     names.request_missing(&clusters).await;
+    conversations.refresh(&prs).await;
     Some(ListOpenPullRequestsResponse { clusters })
 }
 
@@ -235,6 +279,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         approved: pr.approved,
                         checks_passing: pr.checks_passing,
                         checks_failing: pr.checks_failing,
+                        proposals: Vec::new(),
                     })
                     .collect(),
                 name: String::new(),
