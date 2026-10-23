@@ -96,7 +96,7 @@ export default function App() {
 
   // A cluster is identified by its oldest PR, which stays put as the cluster grows.
   const selected = clusters.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
-  const proposals = (selected?.pullRequests ?? []).flatMap((pr) => pr.proposals.map((proposal) => ({ pr, proposal })));
+  const proposals = (selected?.pullRequests ?? []).flatMap((pr) => pr.proposals);
 
   const repositories = clusters
     .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => (pr.repository ? [pr.repository] : [])))
@@ -211,10 +211,9 @@ export default function App() {
           <ScrollView>
             {proposals.length > 0 && (
               <View style={styles.proposals}>
-                  {proposals.map(({ pr, proposal }) => (
+                  {proposals.map((proposal) => (
                   <ProposalView
                     key={proposal.id}
-                    pr={pr}
                     proposal={proposal}
                     busy={busy === proposal.id}
                     disabled={busy !== undefined}

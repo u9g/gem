@@ -109,7 +109,7 @@ export function Theirs({ author, body, trailing }: { author: string; body: strin
         {trailing}
       </View>
       <Text numberOfLines={3} style={styles.theirs}>
-        {visibleMarkdown(body).replace(/[*#]/g, '')}
+        {visibleMarkdown(body).replace(/[*#]/g, '').replace(/\n\s*\n/g, '\n')}
       </Text>
     </View>
   );

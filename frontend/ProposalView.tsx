@@ -1,32 +1,20 @@
-import { ChevronRight, ExternalLink } from 'lucide-react';
+import { ChevronRight, CircleAlert, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Proposal, PullRequest } from './gen/gem_pb';
-import {
-  Button,
-  CommentRow,
-  DiffStat,
-  diffFiles,
-  ErrorLine,
-  Icon,
-  proposalIcon,
-  Steps,
-  stepSentence,
-  t3,
-} from './t3';
+import type { Proposal } from './gen/gem_pb';
+import { Bubble, DiffSurface, Quote, ResolvesTag, Theirs, ToolRequestBanner } from './surfaces';
+import { Button, DiffStat, diffFiles, Icon, Markdown, proposalIcon, stepSentence, t3, visibleMarkdown } from './t3';
 
 // An approval banner in T3 Code's style: what approving does and the proposal's one-line summary,
 // with every step behind Details.
 export function ProposalView({
-  pr,
   proposal,
   busy,
   disabled,
   onApprove,
   onDismiss,
 }: {
-  pr: PullRequest;
   proposal: Proposal;
   // This proposal is being approved or dismissed.
   busy: boolean;
@@ -71,24 +59,77 @@ export function ProposalView({
         </Pressable>
         <Button label="Dismiss" disabled={disabled} onPress={onDismiss} />
         {!proposal.requestedTool && (
-          <Button label={busy ? 'Working…' : 'Approve'} variant="default" disabled={disabled} onPress={onApprove} />
+          <Button
+            label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
+            variant="default"
+            disabled={disabled}
+            onPress={onApprove}
+          />
         )}
       </View>
-      {open && (
-        <View>
-          <CommentRow
-            item={{ pr, proposal }}
-            trailing={
-              <Pressable
-                accessibilityLabel="Open on GitHub"
-                onPress={() => proposal.comment && Linking.openURL(proposal.comment.url)}
-              >
-                <Icon icon={ExternalLink} size={12} />
-              </Pressable>
-            }
+      {open && <Details proposal={proposal} />}
+    </View>
+  );
+}
+
+// The step approving runs first is the one that failed: steps that succeed are cleared.
+function failedStep(proposal: Proposal): 'patch' | 'reply' | 'resolve' | undefined {
+  if (!proposal.error) return undefined;
+  if (proposal.patch) return 'patch';
+  if (proposal.reply) return 'reply';
+  if (proposal.resolveThread) return 'resolve';
+}
+
+// The conversation in order: their comment, the change, then u9g's reply as it will be posted.
+function Details({ proposal }: { proposal: Proposal }) {
+  const comment = proposal.comment!;
+  const failed = failedStep(proposal);
+  const quoting = proposal.reply !== '' && !proposal.threadId;
+  const error = <Text style={styles.error}>{proposal.error}</Text>;
+  return (
+    <View style={styles.detailsBody}>
+      {!quoting && (
+        <Theirs
+          author={comment.author}
+          body={comment.body}
+          trailing={
+            <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
+              <Icon icon={ExternalLink} size={12} />
+            </Pressable>
+          }
+        />
+      )}
+      {proposal.requestedTool !== '' && <ToolRequestBanner proposal={proposal} />}
+      {proposal.patch && (
+        <View style={styles.step}>
+          <Text style={styles.meta}>{proposal.patch.commitMessage}</Text>
+          <DiffSurface
+            diff={proposal.patch.diff}
+            header={failed === 'patch' ? <Icon icon={CircleAlert} size={12} color={t3.deletion} /> : undefined}
           />
-          <Steps proposal={proposal} />
-          <ErrorLine proposal={proposal} />
+          {failed === 'patch' && error}
+        </View>
+      )}
+      {proposal.reply !== '' && (
+        <View style={styles.step}>
+          <Bubble>
+            {quoting && (
+              <Quote lines={3}>{visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim()}</Quote>
+            )}
+            <Markdown>{proposal.reply}</Markdown>
+          </Bubble>
+          {proposal.resolveThread && (
+            <View style={styles.tagRow}>
+              <ResolvesTag />
+            </View>
+          )}
+          {(failed === 'reply' || failed === 'resolve') && error}
+        </View>
+      )}
+      {proposal.reply === '' && proposal.resolveThread && (
+        <View style={styles.step}>
+          <ResolvesTag />
+          {failed === 'resolve' && error}
         </View>
       )}
     </View>
@@ -141,5 +182,26 @@ const styles = StyleSheet.create({
   toggleText: {
     color: t3.muted,
     fontSize: 12,
+  },
+  detailsBody: {
+    gap: 10,
+    paddingTop: 6,
+  },
+  step: {
+    gap: 6,
+  },
+  tagRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  meta: {
+    color: t3.muted,
+    fontSize: 11,
+  },
+  error: {
+    color: t3.deletion,
+    fontFamily: t3.mono,
+    fontSize: 11,
+    lineHeight: 16,
   },
 });

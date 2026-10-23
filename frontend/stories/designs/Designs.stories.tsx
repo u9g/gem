@@ -150,10 +150,9 @@ function Banners() {
   return (
     <Sidebar title="TTS retry fixes">
       <View style={[styles.list, { gap: 8 }]}>
-        {items.map(({ pr, proposal }) => (
+        {items.map(({ proposal }) => (
           <ProposalView
             key={proposal.id}
-            pr={pr}
             proposal={proposal}
             busy={false}
             disabled={false}
