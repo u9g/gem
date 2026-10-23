@@ -1,14 +1,14 @@
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
-import { Check, GitPullRequest, Hammer, X } from 'lucide-react';
+import { Check, GitPullRequest, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { ProposalView } from '../../ProposalView';
 import { type Item, items, pr } from '../fixtures';
 import {
   Button,
   Code,
   CommentRow,
-  DiffStat,
   diffFiles,
   ErrorLine,
   firstLine,
@@ -145,52 +145,22 @@ function Question({ group }: { group: Item[] }) {
 }
 
 // 3. Banners: one approval banner per proposal, like T3 Code's command-approval banner above the
-// composer. The step is the eyebrow, the summary is the body; details expand on demand.
+// composer. The app's sidebar uses this design.
 function Banners() {
   return (
     <Sidebar title="TTS retry fixes">
       <View style={[styles.list, { gap: 8 }]}>
-        {items.map(({ proposal }) => {
-          const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
-          return (
-            <View key={proposal.id} style={[styles.banner, proposal.error !== '' && styles.bannerError]}>
-              <View style={styles.bannerTop}>
-                <Icon icon={proposal.requestedTool ? Hammer : GitPullRequest} />
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text style={styles.eyebrow}>
-                    <Text style={{ color: proposal.error ? t3.deletion : t3.foreground, fontWeight: '500' }}>
-                      {proposal.error ? 'Approval failed' : stepSentence(proposal)}
-                    </Text>
-                    {'  '}
-                    {proposal.comment?.author}
-                    {files.length > 0 && (
-                      <>
-                        {'  '}
-                        <DiffStat
-                          added={files.reduce((n, f) => n + f.added, 0)}
-                          removed={files.reduce((n, f) => n + f.removed, 0)}
-                        />
-                      </>
-                    )}
-                  </Text>
-                  <Text numberOfLines={2} style={styles.bannerBody}>
-                    {proposal.summary}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.bannerBottom}>
-                <View style={{ flex: 1 }}>
-                  <Row label="Details">
-                    <Steps proposal={proposal} />
-                    <ErrorLine proposal={proposal} />
-                  </Row>
-                </View>
-                <Button label="Dismiss" />
-                {!proposal.requestedTool && <Button label="Approve" variant="default" />}
-              </View>
-            </View>
-          );
-        })}
+        {items.map(({ pr, proposal }) => (
+          <ProposalView
+            key={proposal.id}
+            pr={pr}
+            proposal={proposal}
+            busy={false}
+            disabled={false}
+            onApprove={() => {}}
+            onDismiss={() => {}}
+          />
+        ))}
       </View>
     </Sidebar>
   );
@@ -379,32 +349,6 @@ const styles = StyleSheet.create({
   buttons: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    gap: 6,
-  },
-  banner: {
-    gap: 4,
-    padding: 10,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: t3.border,
-    backgroundColor: 'rgba(255, 255, 255, 0.025)',
-  },
-  bannerError: {
-    borderColor: 'rgba(242, 109, 109, 0.28)',
-    backgroundColor: 'rgba(242, 109, 109, 0.06)',
-  },
-  bannerTop: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  bannerBody: {
-    color: t3.foreground,
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  bannerBottom: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
     gap: 6,
   },
   count: {

@@ -1,12 +1,23 @@
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ChevronRight, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Proposal, PullRequest } from './gen/gem_pb';
+import {
+  Button,
+  CommentRow,
+  DiffStat,
+  diffFiles,
+  ErrorLine,
+  Icon,
+  proposalIcon,
+  Steps,
+  stepSentence,
+  t3,
+} from './t3';
 
-// GitHub hides HTML comments, which bots use to tag their own comments.
-function visibleMarkdown(markdown: string): string {
-  return markdown.replace(/<!--[\s\S]*?-->/g, '').trim();
-}
-
+// An approval banner in T3 Code's style: what approving does and the proposal's one-line summary,
+// with every step behind Details.
 export function ProposalView({
   pr,
   proposal,
@@ -23,123 +34,112 @@ export function ProposalView({
   onApprove: () => void;
   onDismiss: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
   return (
-    <View style={styles.proposal}>
-      <Pressable onPress={() => proposal.comment && Linking.openURL(proposal.comment.url)}>
-        <Text style={styles.repo}>
-          {pr.repository?.name}#{pr.number} · {proposal.comment?.author}
-        </Text>
-        <Text style={styles.quote} numberOfLines={4}>
-          {visibleMarkdown(proposal.comment?.body ?? '')}
-        </Text>
-      </Pressable>
-      <Text style={styles.summary}>{proposal.summary}</Text>
-      {proposal.patch && (
-        <>
-          <Text style={styles.step}>Commit: {proposal.patch.commitMessage}</Text>
-          <ScrollView style={styles.diff}>
-            <ScrollView horizontal>
-              <Text style={styles.code}>{proposal.patch.diff}</Text>
-            </ScrollView>
-          </ScrollView>
-        </>
-      )}
-      {proposal.reply !== '' && (
-        <>
-          <Text style={styles.step}>{proposal.threadId ? 'Reply in thread' : 'Quote reply'}</Text>
-          <Text style={styles.text}>{proposal.reply}</Text>
-        </>
-      )}
-      {proposal.resolveThread && <Text style={styles.step}>Resolve thread</Text>}
-      {proposal.requestedTool !== '' && (
-        <>
-          <Text style={styles.step}>Requested tool</Text>
-          <Text style={styles.text}>{proposal.requestedTool}</Text>
-        </>
-      )}
-      {proposal.error !== '' && <Text style={styles.error}>{proposal.error}</Text>}
-      <View style={styles.buttons}>
-        {proposal.requestedTool === '' && (
-          <Pressable
-            style={[styles.button, styles.approve]}
-            disabled={disabled}
-            onPress={onApprove}
-          >
-            <Text style={styles.buttonText}>{busy ? 'Working…' : 'Approve'}</Text>
-          </Pressable>
-        )}
-        <Pressable style={styles.button} disabled={disabled} onPress={onDismiss}>
-          <Text style={styles.buttonText}>Dismiss</Text>
-        </Pressable>
+    <View style={[styles.banner, proposal.error !== '' && styles.bannerError]}>
+      <View style={styles.top}>
+        <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
+        <View style={styles.text}>
+          <Text style={styles.eyebrow}>
+            <Text style={{ color: proposal.error ? t3.deletion : t3.foreground, fontWeight: '500' }}>
+              {proposal.error ? 'Approval failed' : stepSentence(proposal)}
+            </Text>
+            {'  '}
+            {proposal.comment?.author}
+            {files.length > 0 && (
+              <>
+                {'  '}
+                <DiffStat
+                  added={files.reduce((n, f) => n + f.added, 0)}
+                  removed={files.reduce((n, f) => n + f.removed, 0)}
+                />
+              </>
+            )}
+          </Text>
+          <Text numberOfLines={2} style={styles.summary}>
+            {proposal.summary}
+          </Text>
+        </View>
       </View>
+      <View style={styles.bottom}>
+        <Pressable style={styles.toggle} onPress={() => setOpen(!open)}>
+          <Text style={styles.toggleText}>Details</Text>
+          <View style={{ transform: [{ rotate: open ? '90deg' : '0deg' }] }}>
+            <ChevronRight size={12} color={t3.muted} />
+          </View>
+        </Pressable>
+        <Button label="Dismiss" disabled={disabled} onPress={onDismiss} />
+        {!proposal.requestedTool && (
+          <Button label={busy ? 'Working…' : 'Approve'} variant="default" disabled={disabled} onPress={onApprove} />
+        )}
+      </View>
+      {open && (
+        <View>
+          <CommentRow
+            item={{ pr, proposal }}
+            trailing={
+              <Pressable
+                accessibilityLabel="Open on GitHub"
+                onPress={() => proposal.comment && Linking.openURL(proposal.comment.url)}
+              >
+                <Icon icon={ExternalLink} size={12} />
+              </Pressable>
+            }
+          />
+          <Steps proposal={proposal} />
+          <ErrorLine proposal={proposal} />
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  proposal: {
-    gap: 6,
-    padding: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#2E3946',
+  banner: {
+    gap: 4,
+    padding: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: t3.border,
+    backgroundColor: 'rgba(255, 255, 255, 0.025)',
   },
-  quote: {
-    color: '#D0CFD4',
-    opacity: 0.6,
-    paddingLeft: 8,
-    borderLeftWidth: 2,
-    borderLeftColor: '#2E3946',
+  bannerError: {
+    borderColor: 'rgba(242, 109, 109, 0.28)',
+    backgroundColor: 'rgba(242, 109, 109, 0.06)',
   },
-  summary: {
-    color: '#D0CFD4',
-    fontWeight: '600',
-  },
-  step: {
-    color: '#D0CFD4',
-    opacity: 0.6,
-    fontSize: 12,
-    marginTop: 4,
-  },
-  diff: {
-    maxHeight: 240,
-    padding: 8,
-    borderRadius: 4,
-    backgroundColor: '#11171E',
-  },
-  code: {
-    color: '#D0CFD4',
-    fontFamily: 'monospace',
-    fontSize: 12,
-  },
-  error: {
-    color: '#F87171',
-    fontSize: 12,
-  },
-  buttons: {
+  top: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 4,
-  },
-  button: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#2E3946',
-  },
-  approve: {
-    backgroundColor: '#2F6B45',
-  },
-  buttonText: {
-    color: '#D0CFD4',
-    fontWeight: '600',
-  },
-  repo: {
-    color: '#D0CFD4',
-    opacity: 0.6,
-    fontSize: 12,
+    gap: 6,
   },
   text: {
-    color: '#D0CFD4',
-    marginTop: 4,
+    flex: 1,
+    gap: 2,
+  },
+  eyebrow: {
+    color: t3.muted,
+    fontSize: 11,
+  },
+  summary: {
+    color: t3.foreground,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  bottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingLeft: 30,
+  },
+  toggle: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    height: 24,
+  },
+  toggleText: {
+    color: t3.muted,
+    fontSize: 12,
   },
 });

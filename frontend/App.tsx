@@ -209,17 +209,21 @@ export default function App() {
             </Pressable>
           </View>
           <ScrollView>
-            {proposals.map(({ pr, proposal }) => (
-              <ProposalView
-                key={proposal.id}
-                pr={pr}
-                proposal={proposal}
-                busy={busy === proposal.id}
-                disabled={busy !== undefined}
-                onApprove={() => approve(proposal.id)}
-                onDismiss={() => dismiss(proposal.id)}
-              />
-            ))}
+            {proposals.length > 0 && (
+              <View style={styles.proposals}>
+                  {proposals.map(({ pr, proposal }) => (
+                  <ProposalView
+                    key={proposal.id}
+                    pr={pr}
+                    proposal={proposal}
+                    busy={busy === proposal.id}
+                    disabled={busy !== undefined}
+                    onApprove={() => approve(proposal.id)}
+                    onDismiss={() => dismiss(proposal.id)}
+                  />
+                ))}
+              </View>
+            )}
             {selected.pullRequests.map((pr, i) => (
               <Pressable
                 key={pr.url}
@@ -359,6 +363,10 @@ const styles = StyleSheet.create({
     color: '#D0CFD4',
     opacity: 0.6,
     fontSize: 12,
+  },
+  proposals: {
+    gap: 8,
+    padding: 8,
   },
   pending: {
     color: '#D0CFD4',

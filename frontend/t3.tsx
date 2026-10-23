@@ -127,17 +127,21 @@ export function Row({
 export function Button({
   label,
   variant = 'outline',
+  disabled = false,
   onPress,
 }: {
   label: string;
   variant?: 'default' | 'outline' | 'ghost';
+  disabled?: boolean;
   onPress?: () => void;
 }) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       style={[
         styles.button,
+        disabled && { opacity: 0.5 },
         variant === 'default' && { backgroundColor: t3.primary, borderColor: t3.primary },
         variant === 'outline' && { backgroundColor: t3.input, borderColor: t3.input },
         variant === 'ghost' && { borderColor: 'transparent' },
@@ -229,10 +233,17 @@ export function ErrorLine({ proposal }: { proposal: Proposal }) {
   );
 }
 
-export function CommentRow({ item }: { item: { pr: PullRequest; proposal: Proposal } }) {
+export function CommentRow({
+  item,
+  trailing,
+}: {
+  item: { pr: PullRequest; proposal: Proposal };
+  trailing?: ReactNode;
+}) {
   const comment = item.proposal.comment!;
   return (
     <Row
+      trailing={trailing}
       label={
         <>
           <Text style={{ color: t3.foreground }}>{comment.author}</Text> {firstLine(comment.body)}
