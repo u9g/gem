@@ -127,14 +127,30 @@ export default function App() {
                 onPress={() => setSelectedUrl(cluster === selected ? undefined : url)}
               >
                 <View style={styles.cardHeader}>
-                  {cluster.name !== '' && <Text style={styles.name}>{cluster.name}</Text>}
+                  {cluster.name !== '' && (
+                    <Text
+                      style={[
+                        styles.name,
+                        cluster.pullRequests.every((pr) => pr.approved && pr.checksPassing) && styles.ready,
+                      ]}
+                    >
+                      {cluster.name}
+                    </Text>
+                  )}
                   {cluster.updatedAt && (
                     <Text style={styles.updated}>{timeAgo(timestampDate(cluster.updatedAt))}</Text>
                   )}
                 </View>
                 <View style={styles.refs}>
                   {[...new Set(cluster.pullRequests.map((pr) => pr.repository?.name))].map((repository) => (
-                    <Text key={repository} style={styles.repo}>
+                    <Text
+                      key={repository}
+                      style={[
+                        styles.repo,
+                        cluster.pullRequests.some((pr) => pr.repository?.name === repository && pr.checksFailing) &&
+                          styles.failing,
+                      ]}
+                    >
                       {repository}
                     </Text>
                   ))}
@@ -281,6 +297,12 @@ const styles = StyleSheet.create({
     color: '#D0CFD4',
     fontSize: 16,
     fontWeight: '600',
+  },
+  ready: {
+    color: '#4ADE80',
+  },
+  failing: {
+    color: '#F87171',
   },
   updated: {
     color: '#D0CFD4',

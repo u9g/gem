@@ -30,6 +30,12 @@ message PullRequest {
   uint32 number = 2;
   string title = 3;
   string url = 4;
+  // GitHub's review decision is APPROVED: enough approvals, no outstanding change requests.
+  bool approved = 5;
+  // Every check on the head commit passed. True when the head commit has no checks.
+  bool checks_passing = 6;
+  // A check on the head commit failed or errored. False while checks are only pending.
+  bool checks_failing = 7;
 }
 
 message Repository {
