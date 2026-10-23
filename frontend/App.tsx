@@ -80,9 +80,9 @@ export default function App() {
     return () => clearInterval(timer);
   }, [load]);
 
-  function approve(id: string) {
+  function approve(id: string, reply: string) {
     setBusy(id);
-    post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id })))
+    post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply })))
       .then(load)
       .finally(() => setBusy(undefined));
   }
@@ -217,7 +217,7 @@ export default function App() {
                     proposal={proposal}
                     busy={busy === proposal.id}
                     disabled={busy !== undefined}
-                    onApprove={() => approve(proposal.id)}
+                    onApprove={(reply) => approve(proposal.id, reply)}
                     onDismiss={() => dismiss(proposal.id)}
                   />
                 ))}

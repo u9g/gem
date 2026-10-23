@@ -3,8 +3,8 @@ import { useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Proposal } from './gen/gem_pb';
-import { Bubble, DiffSurface, Quote, ResolvesTag, Theirs, ToolRequestBanner } from './surfaces';
-import { Button, DiffStat, diffFiles, Icon, Markdown, proposalIcon, stepSentence, t3, visibleMarkdown } from './t3';
+import { DiffSurface, EditableReply, type ReplyDraft, ResolvesTag, Theirs, ToolRequestBanner } from './surfaces';
+import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, visibleMarkdown } from './t3';
 
 // An approval banner in T3 Code's style: what approving does and the proposal's one-line summary,
 // with every step behind Details.
@@ -19,10 +19,12 @@ export function ProposalView({
   // This proposal is being approved or dismissed.
   busy: boolean;
   disabled: boolean;
-  onApprove: () => void;
+  // Called with u9g's rewrite of the reply when that version is showing, and '' otherwise.
+  onApprove: (reply: string) => void;
   onDismiss: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
   return (
     <View style={[styles.banner, proposal.error !== '' && styles.bannerError]}>
@@ -63,11 +65,11 @@ export function ProposalView({
             label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
             variant="default"
             disabled={disabled}
-            onPress={onApprove}
+            onPress={() => onApprove(draft.showing === 'yours' ? draft.yours : '')}
           />
         )}
       </View>
-      {open && <Details proposal={proposal} />}
+      {open && <Details proposal={proposal} draft={draft} onDraftChange={setDraft} />}
     </View>
   );
 }
@@ -81,7 +83,15 @@ function failedStep(proposal: Proposal): 'patch' | 'reply' | 'resolve' | undefin
 }
 
 // The conversation in order: their comment, the change, then u9g's reply as it will be posted.
-function Details({ proposal }: { proposal: Proposal }) {
+function Details({
+  proposal,
+  draft,
+  onDraftChange,
+}: {
+  proposal: Proposal;
+  draft: ReplyDraft;
+  onDraftChange: (draft: ReplyDraft) => void;
+}) {
   const comment = proposal.comment!;
   const failed = failedStep(proposal);
   const quoting = proposal.reply !== '' && !proposal.threadId;
@@ -112,12 +122,12 @@ function Details({ proposal }: { proposal: Proposal }) {
       )}
       {proposal.reply !== '' && (
         <View style={styles.step}>
-          <Bubble>
-            {quoting && (
-              <Quote lines={3}>{visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim()}</Quote>
-            )}
-            <Markdown>{proposal.reply}</Markdown>
-          </Bubble>
+          <EditableReply
+            suggested={proposal.reply}
+            draft={draft}
+            onChange={onDraftChange}
+            quote={quoting ? visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim() : undefined}
+          />
           {proposal.resolveThread && (
             <View style={styles.tagRow}>
               <ResolvesTag />
