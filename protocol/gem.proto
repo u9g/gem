@@ -4,3 +4,15 @@ package gem.v1;
 
 // Sent by the frontend to ask the server for all open pull requests.
 message ListOpenPullRequestsRequest {}
+
+message ListOpenPullRequestsResponse {
+  repeated PullRequest pull_requests = 1;
+}
+
+message PullRequest {
+  // owner/name, e.g. livekit/agents.
+  string repository = 1;
+  uint32 number = 2;
+  string title = 3;
+  string url = 4;
+}
