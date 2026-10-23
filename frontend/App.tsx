@@ -72,7 +72,7 @@ export default function App() {
                   )}
                 </View>
                 <View style={styles.refs}>
-                  {[...new Set(cluster.pullRequests.map((pr) => pr.repository))].map((repository) => (
+                  {[...new Set(cluster.pullRequests.map((pr) => pr.repository.split('/')[1]))].map((repository) => (
                     <Text key={repository} style={styles.repo}>
                       {repository}
                     </Text>
