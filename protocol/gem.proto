@@ -20,12 +20,27 @@ message PullRequestCluster {
   repeated PullRequest pull_requests = 1;
   // Latest update to any PR in the cluster.
   google.protobuf.Timestamp updated_at = 2;
+  // Short name for the cluster's shared work, chosen by a T3 Code thread. Empty
+  // until that thread replies.
+  string name = 3;
 }
 
 message PullRequest {
-  // owner/name, e.g. livekit/agents.
-  string repository = 1;
+  Repository repository = 1;
   uint32 number = 2;
   string title = 3;
   string url = 4;
+  // GitHub's review decision is APPROVED: enough approvals, no outstanding change requests.
+  bool approved = 5;
+  // Every check on the head commit passed. True when the head commit has no checks.
+  bool checks_passing = 6;
+  // A check on the head commit failed or errored. False while checks are only pending.
+  bool checks_failing = 7;
+}
+
+message Repository {
+  // Organization or user login, e.g. livekit.
+  string owner = 1;
+  // e.g. agents.
+  string name = 2;
 }

@@ -15,9 +15,13 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 
+use names::Names;
 use proto::{
     ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, PullRequest, PullRequestCluster,
+    Repository,
 };
+
+mod names;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));
@@ -37,8 +41,9 @@ query($endCursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title url headRefName baseRefName createdAt updatedAt
-        repository { nameWithOwner }
+        number title url headRefName baseRefName createdAt updatedAt reviewDecision
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        repository { nameWithOwner name owner { login } }
         headRepository { nameWithOwner }
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
           nodes { ... on CrossReferencedEvent { source { ... on PullRequest { url } } } }
@@ -52,17 +57,20 @@ query($endCursor: String) {
 // A fork's head branch can share a name with a base-repo branch (e.g. `main`), so only
 // same-repository heads can have dependents.
 const PRS_JQ: &str = r#".data.search.nodes[] | {
-  repository: .repository.nameWithOwner, number, title, url,
+  repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   base: .baseRefName,
   created_at: .createdAt,
   updated_at: .updatedAt,
+  approved: (.reviewDecision == "APPROVED"),
+  checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
+  checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
 #[derive(Deserialize)]
 struct SearchedPullRequest {
-    repository: String,
+    repository: Repository,
     number: u32,
     title: String,
     url: String,
@@ -70,6 +78,9 @@ struct SearchedPullRequest {
     base: String,
     created_at: Timestamp,
     updated_at: Timestamp,
+    approved: bool,
+    checks_passing: bool,
+    checks_failing: bool,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
 }
@@ -80,14 +91,18 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[tokio::main]
 async fn main() {
     let repos: Cache<Value> = cached(|| gh_json(REPOS));
-    let prs: Cache<ListOpenPullRequestsResponse> = cached(open_pull_requests);
+    let names = Names::load().await;
+    let prs: Cache<ListOpenPullRequestsResponse> = {
+        let names = names.clone();
+        cached(move || open_pull_requests(names.clone()))
+    };
 
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/repos", get(move || serve(repos)))
         .route(
             "/prs",
-            post(move |Json(_): Json<ListOpenPullRequestsRequest>| serve(prs)),
+            post(move |Json(_): Json<ListOpenPullRequestsRequest>| serve_prs(prs, names)),
         )
         .layer(CorsLayer::permissive());
 
@@ -131,7 +146,17 @@ async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusC
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
-async fn open_pull_requests() -> Option<ListOpenPullRequestsResponse> {
+// Names arrive after the refresh that asked for them, so they are filled in per request.
+async fn serve_prs(
+    cache: Cache<ListOpenPullRequestsResponse>,
+    names: Names,
+) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
+    let Json(mut response) = serve(cache).await?;
+    names.fill(&mut response.clusters).await;
+    Ok(Json(response))
+}
+
+async fn open_pull_requests(names: Names) -> Option<ListOpenPullRequestsResponse> {
     let stdout = gh(&[
         "api",
         "graphql",
@@ -146,9 +171,9 @@ async fn open_pull_requests() -> Option<ListOpenPullRequestsResponse> {
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
-    Some(ListOpenPullRequestsResponse {
-        clusters: cluster(&prs),
-    })
+    let clusters = cluster(&prs);
+    names.request_missing(&clusters).await;
+    Some(ListOpenPullRequestsResponse { clusters })
 }
 
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
@@ -160,15 +185,15 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         .enumerate()
         .map(|(i, pr)| (pr.url.as_str(), i))
         .collect();
-    let by_head: HashMap<(&str, &str), usize> = prs
+    let by_head: HashMap<(&Repository, &str), usize> = prs
         .iter()
         .enumerate()
-        .filter_map(|(i, pr)| Some(((pr.repository.as_str(), pr.head.as_deref()?), i)))
+        .filter_map(|(i, pr)| Some(((&pr.repository, pr.head.as_deref()?), i)))
         .collect();
 
     let mut parent: Vec<usize> = (0..prs.len()).collect();
     for (i, pr) in prs.iter().enumerate() {
-        let stacked_on = by_head.get(&(pr.repository.as_str(), pr.base.as_str()));
+        let stacked_on = by_head.get(&(&pr.repository, pr.base.as_str()));
         let mentioned_by = pr
             .mentioned_by
             .iter()
@@ -203,12 +228,16 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                 pull_requests: members
                     .into_iter()
                     .map(|pr| PullRequest {
-                        repository: pr.repository.clone(),
+                        repository: Some(pr.repository.clone()),
                         number: pr.number,
                         title: pr.title.clone(),
                         url: pr.url.clone(),
+                        approved: pr.approved,
+                        checks_passing: pr.checks_passing,
+                        checks_failing: pr.checks_failing,
                     })
                     .collect(),
+                name: String::new(),
             }
         })
         .collect();
