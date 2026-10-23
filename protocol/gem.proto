@@ -34,6 +34,8 @@ message PullRequest {
   bool approved = 5;
   // Every check on the head commit passed. True when the head commit has no checks.
   bool checks_passing = 6;
+  // A check on the head commit failed or errored. False while checks are only pending.
+  bool checks_failing = 7;
 }
 
 message Repository {

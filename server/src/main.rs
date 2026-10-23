@@ -64,6 +64,7 @@ const PRS_JQ: &str = r#".data.search.nodes[] | {
   updated_at: .updatedAt,
   approved: (.reviewDecision == "APPROVED"),
   checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
+  checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
@@ -79,6 +80,7 @@ struct SearchedPullRequest {
     updated_at: Timestamp,
     approved: bool,
     checks_passing: bool,
+    checks_failing: bool,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
 }
@@ -232,6 +234,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         url: pr.url.clone(),
                         approved: pr.approved,
                         checks_passing: pr.checks_passing,
+                        checks_failing: pr.checks_failing,
                     })
                     .collect(),
                 name: String::new(),

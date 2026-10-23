@@ -143,7 +143,14 @@ export default function App() {
                 </View>
                 <View style={styles.refs}>
                   {[...new Set(cluster.pullRequests.map((pr) => pr.repository?.name))].map((repository) => (
-                    <Text key={repository} style={styles.repo}>
+                    <Text
+                      key={repository}
+                      style={[
+                        styles.repo,
+                        cluster.pullRequests.some((pr) => pr.repository?.name === repository && pr.checksFailing) &&
+                          styles.failing,
+                      ]}
+                    >
                       {repository}
                     </Text>
                   ))}
@@ -293,6 +300,9 @@ const styles = StyleSheet.create({
   },
   ready: {
     color: '#4ADE80',
+  },
+  failing: {
+    color: '#F87171',
   },
   updated: {
     color: '#D0CFD4',
