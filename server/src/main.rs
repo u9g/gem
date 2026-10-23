@@ -46,7 +46,7 @@ query($endCursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        id number title url headRefName baseRefName createdAt updatedAt reviewDecision
+        id number title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         repository { nameWithOwner name owner { login } }
         headRepository { nameWithOwner }
@@ -64,6 +64,7 @@ query($endCursor: String) {
 const PRS_JQ: &str = r#".data.search.nodes[] | {
   id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
+  head_oid: .headRefOid,
   base: .baseRefName,
   created_at: .createdAt,
   updated_at: .updatedAt,
@@ -82,6 +83,8 @@ struct SearchedPullRequest {
     title: String,
     url: String,
     head: Option<String>,
+    // Commit at the tip of the head branch.
+    head_oid: String,
     base: String,
     created_at: Timestamp,
     updated_at: Timestamp,

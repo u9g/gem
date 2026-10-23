@@ -90,6 +90,9 @@ message Patch {
   // Unified diff against the head of the branch.
   string diff = 1;
   string commit_message = 2;
+  // The branch's head commit when the diff was checked. Once the branch moves
+  // past it, the proposal is replaced by a new agent's answer.
+  string head_oid = 3;
 }
 
 // Runs the proposal. Its outcome shows in the proposal: it disappears, along
