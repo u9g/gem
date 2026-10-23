@@ -3,7 +3,7 @@ import { Copy, Pencil, Undo2 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { Bubble, Quote, Theirs } from '../../surfaces';
+import { EditableReply, Quote, type ReplyDraft, Theirs } from '../../surfaces';
 import { Button, Icon, Markdown, t3, visibleMarkdown } from '../../t3';
 import { proposals } from '../fixtures';
 
@@ -139,46 +139,17 @@ function Composer({ quote = false, edited, editing: startEditing = false }: { qu
 // click away; reverting is picking Suggested. The bubble is always editable.
 function TwoVersions({ quote = false, edited }: { quote?: boolean; edited?: string }) {
   const proposal = quote ? quoteReply : threadReply;
-  const [yours, setYours] = useState(edited ?? proposal.reply);
-  const [showing, setShowing] = useState<'suggested' | 'yours'>(edited ? 'yours' : 'suggested');
-  const [focused, setFocused] = useState(false);
-  const hasYours = yours.trim() !== proposal.reply.trim();
-  const text = showing === 'yours' ? yours : proposal.reply;
+  const [draft, setDraft] = useState<ReplyDraft>(
+    edited ? { yours: edited, showing: 'yours' } : { yours: proposal.reply, showing: 'suggested' },
+  );
   return (
     <Conversation quote={quote}>
-      <View style={styles.right}>
-        <View
-          style={[styles.bubble, focused && styles.bubbleFocused]}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-        >
-          {quote && <Quote lines={3}>{quoted()}</Quote>}
-          <GrowingInput
-            value={text}
-            onChange={(next) => {
-              setYours(next);
-              setShowing('yours');
-            }}
-          />
-        </View>
-      </View>
-      {hasYours && (
-        <View style={[styles.statusRow, { justifyContent: 'flex-end' }]}>
-          <View style={styles.segmented}>
-            {(['suggested', 'yours'] as const).map((version) => (
-              <Pressable
-                key={version}
-                onPress={() => setShowing(version)}
-                style={[styles.segment, showing === version && styles.segmentOn]}
-              >
-                <Text style={[styles.segmentText, showing === version && { color: t3.foreground }]}>
-                  {version === 'suggested' ? 'Suggested' : 'Yours'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      )}
+      <EditableReply
+        suggested={proposal.reply}
+        draft={draft}
+        onChange={setDraft}
+        quote={quote ? quoted() : undefined}
+      />
     </Conversation>
   );
 }
@@ -364,24 +335,5 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 6,
-  },
-  segmented: {
-    flexDirection: 'row',
-    padding: 2,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-  },
-  segment: {
-    paddingHorizontal: 8,
-    height: 20,
-    justifyContent: 'center',
-    borderRadius: 6,
-  },
-  segmentOn: {
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  segmentText: {
-    color: t3.muted,
-    fontSize: 11,
   },
 });
