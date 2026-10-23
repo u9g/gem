@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package gem.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Sent by the frontend to ask the server for all open pull requests.
+message ListOpenPullRequestsRequest {}
+
+message ListOpenPullRequestsResponse {
+  // Most recently updated first, by the latest update to any PR in the cluster.
+  repeated PullRequestCluster clusters = 1;
+}
+
+// Pull requests connected by links, directly or through other PRs in the
+// cluster. Two PRs are linked when one is stacked on the other (its base branch
+// is the other's head branch in the same repository) or one mentions the other.
+// Oldest PR first.
+message PullRequestCluster {
+  repeated PullRequest pull_requests = 1;
+  // Latest update to any PR in the cluster.
+  google.protobuf.Timestamp updated_at = 2;
+}
+
+message PullRequest {
+  // owner/name, e.g. livekit/agents.
+  string repository = 1;
+  uint32 number = 2;
+  string title = 3;
+  string url = 4;
+}
