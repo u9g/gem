@@ -1,9 +1,17 @@
 import type { LucideIcon } from 'lucide-react';
-import { ChevronRight } from 'lucide-react';
+import {
+  CheckCheck,
+  ChevronRight,
+  CircleAlert,
+  Hammer,
+  MessageCircle,
+  MessageSquareQuote,
+  SquarePen,
+} from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Proposal } from '../../gen/gem_pb';
+import type { Proposal, PullRequest } from './gen/gem_pb';
 
 // T3 Code's dark-theme roles, over this app's background and text colors.
 export const t3 = {
@@ -163,7 +171,84 @@ export function Sidebar({ title, children }: { title: string; children: ReactNod
   );
 }
 
+export function firstLine(markdown: string): string {
+  return visibleMarkdown(markdown)
+    .split('\n')
+    .find((line) => line.trim() !== '')!
+    .replace(/[*#`]/g, '')
+    .trim();
+}
+
+// Each step as its own expandable row, the way T3 Code lists a turn's tool calls.
+export function Steps({ proposal }: { proposal: Proposal }) {
+  return (
+    <>
+      {proposal.patch &&
+        diffFiles(proposal.patch.diff).map((file) => (
+          <Row
+            key={file.path}
+            icon={SquarePen}
+            label={basename(file.path)}
+            trailing={<DiffStat added={file.added} removed={file.removed} />}
+          >
+            <Text style={styles.meta}>{proposal.patch!.commitMessage}</Text>
+            <Code>{proposal.patch!.diff}</Code>
+          </Row>
+        ))}
+      {proposal.reply !== '' && (
+        <Row
+          icon={proposal.threadId ? MessageCircle : MessageSquareQuote}
+          label={proposal.threadId ? 'Reply in thread' : 'Quote reply'}
+        >
+          <Markdown>{proposal.reply}</Markdown>
+        </Row>
+      )}
+      {proposal.resolveThread && <Row icon={CheckCheck} label="Resolve thread" />}
+      {proposal.requestedTool !== '' && (
+        <Row icon={Hammer} label="Needs a tool">
+          <Markdown>{proposal.requestedTool}</Markdown>
+        </Row>
+      )}
+    </>
+  );
+}
+
+export function proposalIcon(proposal: Proposal) {
+  if (proposal.error) return CircleAlert;
+  if (proposal.requestedTool) return Hammer;
+  if (proposal.patch) return SquarePen;
+  return MessageCircle;
+}
+
+export function ErrorLine({ proposal }: { proposal: Proposal }) {
+  if (!proposal.error) return null;
+  return (
+    <Row icon={CircleAlert} label="Approval failed" labelColor={t3.deletion}>
+      <Code>{proposal.error}</Code>
+    </Row>
+  );
+}
+
+export function CommentRow({ item }: { item: { pr: PullRequest; proposal: Proposal } }) {
+  const comment = item.proposal.comment!;
+  return (
+    <Row
+      label={
+        <>
+          <Text style={{ color: t3.foreground }}>{comment.author}</Text> {firstLine(comment.body)}
+        </>
+      }
+    >
+      <Markdown>{visibleMarkdown(comment.body)}</Markdown>
+    </Row>
+  );
+}
+
 const styles = StyleSheet.create({
+  meta: {
+    color: t3.muted,
+    fontSize: 11,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

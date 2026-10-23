@@ -1,34 +1,25 @@
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
-import {
-  Check,
-  CheckCheck,
-  CircleAlert,
-  GitPullRequest,
-  Hammer,
-  MessageCircle,
-  MessageSquareQuote,
-  SquarePen,
-  X,
-} from 'lucide-react';
+import { Check, GitPullRequest, Hammer, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Proposal } from '../../gen/gem_pb';
 import { type Item, items, pr } from '../fixtures';
 import {
-  basename,
   Button,
   Code,
+  CommentRow,
   DiffStat,
   diffFiles,
+  ErrorLine,
+  firstLine,
   Icon,
-  Markdown,
+  proposalIcon,
   Row,
   Sidebar,
+  Steps,
   stepSentence,
   t3,
-  visibleMarkdown,
-} from './t3';
+} from '../../t3';
 
 // Proposals answering the same comment are alternatives: approving one clears the rest.
 function byComment(list: Item[]): Item[][] {
@@ -38,79 +29,6 @@ function byComment(list: Item[]): Item[][] {
     groups.set(id, [...(groups.get(id) ?? []), item]);
   }
   return [...groups.values()];
-}
-
-function firstLine(markdown: string): string {
-  return visibleMarkdown(markdown)
-    .split('\n')
-    .find((line) => line.trim() !== '')!
-    .replace(/[*#`]/g, '')
-    .trim();
-}
-
-// Each step as its own expandable row, the way T3 Code lists a turn's tool calls.
-function Steps({ proposal }: { proposal: Proposal }) {
-  return (
-    <>
-      {proposal.patch &&
-        diffFiles(proposal.patch.diff).map((file) => (
-          <Row
-            key={file.path}
-            icon={SquarePen}
-            label={basename(file.path)}
-            trailing={<DiffStat added={file.added} removed={file.removed} />}
-          >
-            <Text style={styles.meta}>{proposal.patch!.commitMessage}</Text>
-            <Code>{proposal.patch!.diff}</Code>
-          </Row>
-        ))}
-      {proposal.reply !== '' && (
-        <Row
-          icon={proposal.threadId ? MessageCircle : MessageSquareQuote}
-          label={proposal.threadId ? 'Reply in thread' : 'Quote reply'}
-        >
-          <Markdown>{proposal.reply}</Markdown>
-        </Row>
-      )}
-      {proposal.resolveThread && <Row icon={CheckCheck} label="Resolve thread" />}
-      {proposal.requestedTool !== '' && (
-        <Row icon={Hammer} label="Needs a tool">
-          <Markdown>{proposal.requestedTool}</Markdown>
-        </Row>
-      )}
-    </>
-  );
-}
-
-function proposalIcon(proposal: Proposal) {
-  if (proposal.error) return CircleAlert;
-  if (proposal.requestedTool) return Hammer;
-  if (proposal.patch) return SquarePen;
-  return MessageCircle;
-}
-
-function ErrorLine({ proposal }: { proposal: Proposal }) {
-  if (!proposal.error) return null;
-  return (
-    <Row icon={CircleAlert} label="Approval failed" labelColor={t3.deletion}>
-      <Code>{proposal.error}</Code>
-    </Row>
-  );
-}
-
-function CommentRow({ item }: { item: Item }) {
-  const comment = item.proposal.comment!;
-  return (
-    <Row
-      label={
-        <>
-          <Text style={{ color: t3.foreground }}>{comment.author}</Text> {firstLine(comment.body)}
-        </>
-      }
-    >
-      <Markdown>{visibleMarkdown(comment.body)}</Markdown>
-    </Row>
-  );
 }
 
 // Approve and Dismiss stay hidden until the row is hovered, like T3 Code's timeline actions.
