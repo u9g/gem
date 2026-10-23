@@ -34,11 +34,14 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>
     }
 }
 
-pub async fn approve(id: &str) {
+pub async fn approve(id: &str, reply: &str) {
     let proposals = load(Path::new(DIR)).await;
     let Some((path, mut proposal)) = proposals.iter().find(|(_, p)| p.id == id).cloned() else {
         return;
     };
+    if !reply.is_empty() && !proposal.reply.is_empty() {
+        proposal.reply = reply.to_string();
+    }
     match run(&path, &mut proposal).await {
         // The other proposals answered the same comment.
         Ok(()) => {

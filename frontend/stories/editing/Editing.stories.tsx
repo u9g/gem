@@ -12,13 +12,13 @@ const quoteReply = proposals[3];
 
 // A reply the agent suggested and u9g may rewrite before approving.
 function useDraft(suggested: string, edited?: string) {
-  const [text, setText] = useState(edited ?? suggested);
-  return { text, setText, edited: text.trim() !== suggested.trim(), revert: () => setText(suggested) };
+  const [text, setText] = useState((edited ?? suggested).trim());
+  return { text, setText, edited: text.trim() !== suggested.trim(), revert: () => setText(suggested.trim()) };
 }
 
 // A multiline input styled as message text; field-sizing makes it exactly as tall as its text.
 function GrowingInput({ value, onChange, autoFocus }: { value: string; onChange: (text: string) => void; autoFocus?: boolean }) {
-  return <TextInput multiline autoFocus={autoFocus} value={value.trim()} onChangeText={onChange} style={styles.input} />;
+  return <TextInput multiline autoFocus={autoFocus} value={value} onChangeText={onChange} style={styles.input} />;
 }
 
 // T3 Code's message actions: ghost icon buttons under the bubble, revealed on hover.

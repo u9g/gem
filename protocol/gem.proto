@@ -96,6 +96,9 @@ message Patch {
 // with the other proposals for the same comment, or its error is set.
 message ApproveProposalRequest {
   string id = 1;
+  // u9g's rewrite of the proposal's reply, posted in its place. Empty posts the
+  // reply as proposed.
+  string reply = 2;
 }
 
 message ApproveProposalResponse {}

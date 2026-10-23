@@ -148,7 +148,7 @@ export function EditableReply({
           {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
           <TextInput
             multiline
-            value={(draft.showing === 'yours' ? draft.yours : suggested).trim()}
+            value={draft.showing === 'yours' ? draft.yours : suggested.trim()}
             onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
             style={styles.input}
           />
