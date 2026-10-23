@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+package gem.v1;
+
+// Sent by the frontend to ask the server for all open pull requests.
+message ListOpenPullRequestsRequest {}
