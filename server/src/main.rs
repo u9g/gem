@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -51,8 +51,8 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
-    let repos: Cache<Value> = cached(REPOS);
-    let prs: Cache<ListOpenPullRequestsResponse> = cached(PRS);
+    let repos: Cache<Value> = cached(|| gh_json(REPOS));
+    let prs: Cache<ListOpenPullRequestsResponse> = cached(|| gh_json(PRS));
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -75,12 +75,17 @@ async fn healthz() -> Json<Value> {
 }
 
 // Requests never call GitHub; a failed refresh keeps serving the last good result.
-fn cached<T: DeserializeOwned + Send + Sync + 'static>(args: &'static [&'static str]) -> Cache<T> {
+fn cached<T, F, Fut>(refresh: F) -> Cache<T>
+where
+    T: Send + Sync + 'static,
+    F: Fn() -> Fut + Send + 'static,
+    Fut: Future<Output = Option<T>> + Send,
+{
     let cache = Cache::default();
     let writer = cache.clone();
     tokio::spawn(async move {
         loop {
-            if let Some(value) = gh(args).await {
+            if let Some(value) = refresh().await {
                 *writer.write().await = Some(value);
             }
             tokio::time::sleep(REFRESH_INTERVAL).await;
@@ -99,12 +104,13 @@ async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusC
 }
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
-async fn gh<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
+async fn gh(args: &[&str]) -> Option<Vec<u8>> {
     let output = Command::new("gh").args(args).output().await.ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&output.stdout).ok()
+    output.status.success().then_some(output.stdout)
+}
+
+async fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
+    serde_json::from_slice(&gh(args).await?).ok()
 }
 
 // Kubernetes sends SIGTERM before killing the pod; in-flight requests must drain.
