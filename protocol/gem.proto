@@ -6,6 +6,7 @@ package gem.v1;
 message ListOpenPullRequestsRequest {}
 
 message ListOpenPullRequestsResponse {
+  // Most recently updated first, by the latest update to any PR in the cluster.
   repeated PullRequestCluster clusters = 1;
 }
 

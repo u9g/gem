@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{cmp::Reverse, collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -36,7 +36,7 @@ query($endCursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title url headRefName baseRefName createdAt
+        number title url headRefName baseRefName createdAt updatedAt
         repository { nameWithOwner }
         headRepository { nameWithOwner }
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
@@ -55,6 +55,7 @@ const PRS_JQ: &str = r#".data.search.nodes[] | {
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   base: .baseRefName,
   created_at: .createdAt,
+  updated_at: .updatedAt,
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
@@ -66,8 +67,9 @@ struct SearchedPullRequest {
     url: String,
     head: Option<String>,
     base: String,
-    // RFC 3339 UTC, so it sorts chronologically as a string.
+    // RFC 3339 UTC, so these sort chronologically as strings.
     created_at: String,
+    updated_at: String,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
 }
@@ -188,6 +190,9 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         clusters[c].push(pr);
     }
 
+    clusters.sort_by_cached_key(|members| {
+        Reverse(members.iter().map(|pr| pr.updated_at.clone()).max())
+    });
     clusters
         .into_iter()
         .map(|mut members| {
