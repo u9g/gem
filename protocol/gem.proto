@@ -9,9 +9,10 @@ message ListOpenPullRequestsResponse {
   repeated PullRequestCluster clusters = 1;
 }
 
-// Pull requests stacked on one another: a PR depends on another when its base
-// branch is the other's head branch in the same repository. Each PR comes after
-// the PR it depends on.
+// Pull requests connected by links, directly or through other PRs in the
+// cluster. Two PRs are linked when one is stacked on the other (its base branch
+// is the other's head branch in the same repository) or one mentions the other.
+// Oldest PR first.
 message PullRequestCluster {
   repeated PullRequest pull_requests = 1;
 }

@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    future::Future,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -41,9 +36,12 @@ query($endCursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title url headRefName baseRefName
+        number title url headRefName baseRefName createdAt
         repository { nameWithOwner }
         headRepository { nameWithOwner }
+        timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
+          nodes { ... on CrossReferencedEvent { source { ... on PullRequest { url } } } }
+        }
       }
     }
   }
@@ -55,7 +53,9 @@ query($endCursor: String) {
 const PRS_JQ: &str = r#".data.search.nodes[] | {
   repository: .repository.nameWithOwner, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
-  base: .baseRefName
+  base: .baseRefName,
+  created_at: .createdAt,
+  mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
 #[derive(Deserialize)]
@@ -66,6 +66,10 @@ struct SearchedPullRequest {
     url: String,
     head: Option<String>,
     base: String,
+    // RFC 3339 UTC, so it sorts chronologically as a string.
+    created_at: String,
+    // URLs of PRs whose description or comments link to this one.
+    mentioned_by: Vec<String>,
 }
 
 // A refresh costs one GitHub API request per 100 results, far under GitHub's hourly limits.
@@ -145,42 +149,70 @@ async fn open_pull_requests() -> Option<ListOpenPullRequestsResponse> {
     })
 }
 
-// A PR has one base branch, so dependencies form a forest; each root PR starts a cluster.
+// Two PRs are linked when one is stacked on the other (its base branch is the other's head
+// branch in the same repository) or one mentions the other. A cluster is a connected component
+// of links, so PRs join through any chain of links, not only direct ones.
 fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
-    let heads: HashSet<(&str, &str)> = prs
+    let by_url: HashMap<&str, usize> = prs
         .iter()
-        .filter_map(|pr| Some((pr.repository.as_str(), pr.head.as_deref()?)))
+        .enumerate()
+        .map(|(i, pr)| (pr.url.as_str(), i))
         .collect();
-    let mut dependents: HashMap<(&str, &str), Vec<&SearchedPullRequest>> = HashMap::new();
-    for pr in prs {
-        dependents
-            .entry((pr.repository.as_str(), pr.base.as_str()))
-            .or_default()
-            .push(pr);
+    let by_head: HashMap<(&str, &str), usize> = prs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, pr)| Some(((pr.repository.as_str(), pr.head.as_deref()?), i)))
+        .collect();
+
+    let mut parent: Vec<usize> = (0..prs.len()).collect();
+    for (i, pr) in prs.iter().enumerate() {
+        let stacked_on = by_head.get(&(pr.repository.as_str(), pr.base.as_str()));
+        let mentioned_by = pr
+            .mentioned_by
+            .iter()
+            .filter_map(|url| by_url.get(url.as_str()));
+        for &j in stacked_on.into_iter().chain(mentioned_by) {
+            let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+            parent[a] = b;
+        }
     }
 
-    prs.iter()
-        .filter(|pr| !heads.contains(&(pr.repository.as_str(), pr.base.as_str())))
-        .map(|root| {
-            let mut pull_requests = Vec::new();
-            let mut stack = vec![root];
-            while let Some(pr) = stack.pop() {
-                pull_requests.push(PullRequest {
-                    repository: pr.repository.clone(),
-                    number: pr.number,
-                    title: pr.title.clone(),
-                    url: pr.url.clone(),
-                });
-                if let Some(head) = &pr.head {
-                    if let Some(children) = dependents.get(&(pr.repository.as_str(), head.as_str()))
-                    {
-                        stack.extend(children.iter().rev());
-                    }
-                }
+    let mut clusters: Vec<Vec<&SearchedPullRequest>> = Vec::new();
+    let mut cluster_of_root: HashMap<usize, usize> = HashMap::new();
+    for (i, pr) in prs.iter().enumerate() {
+        let r = root(&mut parent, i);
+        let c = *cluster_of_root.entry(r).or_insert_with(|| {
+            clusters.push(Vec::new());
+            clusters.len() - 1
+        });
+        clusters[c].push(pr);
+    }
+
+    clusters
+        .into_iter()
+        .map(|mut members| {
+            members.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            PullRequestCluster {
+                pull_requests: members
+                    .into_iter()
+                    .map(|pr| PullRequest {
+                        repository: pr.repository.clone(),
+                        number: pr.number,
+                        title: pr.title.clone(),
+                        url: pr.url.clone(),
+                    })
+                    .collect(),
             }
-            PullRequestCluster { pull_requests }
         })
         .collect()
+}
+
+fn root(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
 }
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
