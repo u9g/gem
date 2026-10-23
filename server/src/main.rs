@@ -41,7 +41,8 @@ query($endCursor: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title url headRefName baseRefName createdAt updatedAt
+        number title url headRefName baseRefName createdAt updatedAt reviewDecision
+        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
         repository { nameWithOwner name owner { login } }
         headRepository { nameWithOwner }
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
@@ -61,6 +62,8 @@ const PRS_JQ: &str = r#".data.search.nodes[] | {
   base: .baseRefName,
   created_at: .createdAt,
   updated_at: .updatedAt,
+  approved: (.reviewDecision == "APPROVED"),
+  checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
@@ -74,6 +77,8 @@ struct SearchedPullRequest {
     base: String,
     created_at: Timestamp,
     updated_at: Timestamp,
+    approved: bool,
+    checks_passing: bool,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
 }
@@ -225,6 +230,8 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         number: pr.number,
                         title: pr.title.clone(),
                         url: pr.url.clone(),
+                        approved: pr.approved,
+                        checks_passing: pr.checks_passing,
                     })
                     .collect(),
                 name: String::new(),
