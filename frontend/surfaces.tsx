@@ -32,6 +32,9 @@ export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode
     <View style={{ gap: 8 }}>
       {parseDiff(diff).map((file) => {
         const stat = diffFiles(diff).find((f) => f.path === file.path)!;
+        // Wide enough for the file's longest line number, so numbers never wrap.
+        const digits = String(Math.max(0, ...file.lines.map((line) => line.number ?? 0))).length;
+        const gutter = { width: digits * 7 + 14 };
         return (
           <View key={file.path} style={styles.diffSurface}>
             <View style={styles.diffHeader}>
@@ -41,8 +44,8 @@ export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode
               </Text>
               {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
             </View>
-            <ScrollView horizontal>
-              <View>
+            <ScrollView horizontal contentContainerStyle={styles.diffLines}>
+              <View style={styles.diffLines}>
                 {file.lines.map((line, i) =>
                   line.kind === 'hunk' ? (
                     <Text key={i} style={styles.hunk}>
@@ -58,7 +61,9 @@ export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode
                         line.kind === 'del' && { backgroundColor: 'rgba(242, 109, 109, 0.12)' },
                       ]}
                     >
-                      <Text style={styles.gutter}>{line.number ?? ''}</Text>
+                      <Text numberOfLines={1} style={[styles.gutter, gutter]}>
+                        {line.number ?? ''}
+                      </Text>
                       <Text
                         style={[
                           styles.diffText,
@@ -246,8 +251,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     minHeight: 18,
   },
+  // Tinted lines reach the right edge even when the code is narrower than the surface.
+  diffLines: {
+    flexGrow: 1,
+  },
   gutter: {
-    width: 32,
     paddingRight: 8,
     textAlign: 'right',
     color: t3.faint,
