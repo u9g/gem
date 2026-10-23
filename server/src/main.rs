@@ -15,9 +15,12 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 
+use names::Names;
 use proto::{
     ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, PullRequest, PullRequestCluster,
 };
+
+mod names;
 
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));
@@ -80,14 +83,18 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[tokio::main]
 async fn main() {
     let repos: Cache<Value> = cached(|| gh_json(REPOS));
-    let prs: Cache<ListOpenPullRequestsResponse> = cached(open_pull_requests);
+    let names = Names::load().await;
+    let prs: Cache<ListOpenPullRequestsResponse> = {
+        let names = names.clone();
+        cached(move || open_pull_requests(names.clone()))
+    };
 
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/repos", get(move || serve(repos)))
         .route(
             "/prs",
-            post(move |Json(_): Json<ListOpenPullRequestsRequest>| serve(prs)),
+            post(move |Json(_): Json<ListOpenPullRequestsRequest>| serve_prs(prs, names)),
         )
         .layer(CorsLayer::permissive());
 
@@ -131,7 +138,17 @@ async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusC
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
-async fn open_pull_requests() -> Option<ListOpenPullRequestsResponse> {
+// Names arrive after the refresh that asked for them, so they are filled in per request.
+async fn serve_prs(
+    cache: Cache<ListOpenPullRequestsResponse>,
+    names: Names,
+) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
+    let Json(mut response) = serve(cache).await?;
+    names.fill(&mut response.clusters).await;
+    Ok(Json(response))
+}
+
+async fn open_pull_requests(names: Names) -> Option<ListOpenPullRequestsResponse> {
     let stdout = gh(&[
         "api",
         "graphql",
@@ -146,9 +163,9 @@ async fn open_pull_requests() -> Option<ListOpenPullRequestsResponse> {
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
-    Some(ListOpenPullRequestsResponse {
-        clusters: cluster(&prs),
-    })
+    let clusters = cluster(&prs);
+    names.request_missing(&clusters).await;
+    Some(ListOpenPullRequestsResponse { clusters })
 }
 
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
@@ -209,6 +226,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         url: pr.url.clone(),
                     })
                     .collect(),
+                name: String::new(),
             }
         })
         .collect();

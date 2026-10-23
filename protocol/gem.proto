@@ -20,6 +20,9 @@ message PullRequestCluster {
   repeated PullRequest pull_requests = 1;
   // Latest update to any PR in the cluster.
   google.protobuf.Timestamp updated_at = 2;
+  // Short name for the cluster's shared work, chosen by a T3 Code thread. Empty
+  // until that thread replies.
+  string name = 3;
 }
 
 message PullRequest {

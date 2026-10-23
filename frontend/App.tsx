@@ -55,9 +55,12 @@ export default function App() {
       {clusters.map((cluster) => (
         <View key={cluster.pullRequests[0].url} style={styles.cell}>
           <View style={styles.card}>
-            {cluster.updatedAt && (
-              <Text style={styles.updated}>{timeAgo(timestampDate(cluster.updatedAt))}</Text>
-            )}
+            <View style={styles.cardHeader}>
+              {cluster.name !== '' && <Text style={styles.name}>{cluster.name}</Text>}
+              {cluster.updatedAt && (
+                <Text style={styles.updated}>{timeAgo(timestampDate(cluster.updatedAt))}</Text>
+              )}
+            </View>
             {cluster.pullRequests.map((pr, i) => (
               <Pressable
                 key={pr.url}
@@ -117,12 +120,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#2E3946',
   },
+  cardHeader: {
+    paddingHorizontal: 12,
+    paddingTop: 12,
+    gap: 2,
+  },
+  name: {
+    color: '#D0CFD4',
+    fontSize: 16,
+    fontWeight: '600',
+  },
   updated: {
     color: '#D0CFD4',
     opacity: 0.6,
     fontSize: 12,
-    paddingHorizontal: 12,
-    paddingTop: 12,
   },
   pr: {
     padding: 12,
