@@ -1,6 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
-use axum::{Json, Router, http::StatusCode, routing::get};
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    routing::{get, post},
+};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{
@@ -9,6 +13,13 @@ use tokio::{
     sync::RwLock,
 };
 use tower_http::cors::CorsLayer;
+
+use proto::{ListOpenPullRequestsRequest, ListOpenPullRequestsResponse};
+
+mod proto {
+    include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/gem.v1.serde.rs"));
+}
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
@@ -31,6 +42,8 @@ const PRS: &[&str] = &[
     "1000",
     "--json",
     "number,title,url,repository",
+    "--jq",
+    "{pullRequests: map({repository: .repository.nameWithOwner, number, title, url})}",
 ];
 
 // GitHub search allows 30 requests/min; each refresh costs one request per 100 results.
@@ -39,12 +52,15 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[tokio::main]
 async fn main() {
     let repos: Cache<Value> = cached(REPOS);
-    let prs: Cache<Value> = cached(PRS);
+    let prs: Cache<ListOpenPullRequestsResponse> = cached(PRS);
 
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/repos", get(move || serve(repos)))
-        .route("/prs", get(move || serve(prs)))
+        .route(
+            "/prs",
+            post(move |Json(_): Json<ListOpenPullRequestsRequest>| serve(prs)),
+        )
         .layer(CorsLayer::permissive());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
