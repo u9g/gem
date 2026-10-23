@@ -106,16 +106,18 @@ export function Quote({ children, lines }: { children: string; lines?: number })
   );
 }
 
-// The comment being answered: the other side of the conversation, as a message from its author.
+// A comment in the conversation, as a message from its author: u9g's on the right like the reply,
+// everyone else's on the left.
 export function Theirs({ author, body, trailing }: { author: string; body: string; trailing?: ReactNode }) {
+  const side = author === 'u9g' ? 'right' : 'left';
   return (
     <View style={{ gap: 4 }}>
-      <View style={styles.theirsHeader}>
+      <View style={[styles.theirsHeader, side === 'right' && styles.theirsHeaderRight]}>
         <Text style={styles.meta}>{author}</Text>
         {trailing}
       </View>
-      <Bubble side="left">
-        <Text numberOfLines={6} style={styles.theirs}>
+      <Bubble side={side}>
+        <Text style={styles.theirs}>
           {visibleMarkdown(body).replace(/[*#]/g, '').replace(/\n\s*\n/g, '\n')}
         </Text>
       </Bubble>
@@ -326,6 +328,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 2,
     paddingLeft: 14,
+  },
+  theirsHeaderRight: {
+    justifyContent: 'flex-end',
+    paddingLeft: 0,
+    paddingRight: 14,
   },
   theirs: {
     color: t3.foreground,

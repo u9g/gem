@@ -73,6 +73,9 @@ message Proposal {
   // and why this conversation needs it. Set only on proposals with no steps,
   // which approving does not run.
   string requested_tool = 10;
+  // The comments before `comment` in its review thread, oldest first, so the
+  // whole thread can be read. Empty for a top-level comment.
+  repeated Comment earlier_comments = 11;
 }
 
 message Comment {

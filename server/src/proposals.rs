@@ -175,20 +175,33 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     if comment.pull_request != pr {
         return Err(format!("comment is on {}, not {pr}", comment.pull_request));
     }
+    let mut earlier_comments = Vec::new();
     if !thread_id.is_empty() {
         let value: serde_json::Value = serde_json::from_slice(
             &graphql(
-                "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } } } }",
+                "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } comments(first: 100) { nodes { id body url author { login } } } } } }",
                 &[("id", thread_id)],
             )
             .await?,
         )
         .map_err(|e| e.to_string())?;
-        let on = value["data"]["node"]["pullRequest"]["url"]
+        let node = &value["data"]["node"];
+        let on = node["pullRequest"]["url"]
             .as_str()
             .ok_or(format!("{thread_id} is not a review thread"))?;
         if on != pr {
             return Err(format!("thread is on {on}, not {pr}"));
+        }
+        for c in node["comments"]["nodes"].as_array().into_iter().flatten() {
+            if c["id"] == comment.comment.id.as_str() {
+                break;
+            }
+            earlier_comments.push(Comment {
+                id: c["id"].as_str().unwrap_or_default().to_string(),
+                author: c["author"]["login"].as_str().unwrap_or("ghost").to_string(),
+                body: c["body"].as_str().unwrap_or_default().to_string(),
+                url: c["url"].as_str().unwrap_or_default().to_string(),
+            });
         }
     }
     if resolve_thread && thread_id.is_empty() {
@@ -238,6 +251,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         resolve_thread,
         error: String::new(),
         requested_tool,
+        earlier_comments,
     };
     tokio::fs::create_dir_all(&dir)
         .await
