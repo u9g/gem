@@ -69,6 +69,10 @@ message Proposal {
   bool resolve_thread = 8;
   // Why the last approval failed.
   string error = 9;
+  // A tool the agent needed to answer and lacks, in markdown: what it would do
+  // and why this conversation needs it. Set only on proposals with no steps,
+  // which approving does not run.
+  string requested_tool = 10;
 }
 
 message Comment {

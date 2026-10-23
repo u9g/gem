@@ -241,15 +241,23 @@ export default function App() {
                   </>
                 )}
                 {proposal.resolveThread && <Text style={styles.step}>Resolve thread</Text>}
+                {proposal.requestedTool !== '' && (
+                  <>
+                    <Text style={styles.step}>Requested tool</Text>
+                    <Text style={styles.text}>{proposal.requestedTool}</Text>
+                  </>
+                )}
                 {proposal.error !== '' && <Text style={styles.error}>{proposal.error}</Text>}
                 <View style={styles.buttons}>
-                  <Pressable
-                    style={[styles.button, styles.approve]}
-                    disabled={busy !== undefined}
-                    onPress={() => approve(proposal.id)}
-                  >
-                    <Text style={styles.buttonText}>{busy === proposal.id ? 'Working…' : 'Approve'}</Text>
-                  </Pressable>
+                  {proposal.requestedTool === '' && (
+                    <Pressable
+                      style={[styles.button, styles.approve]}
+                      disabled={busy !== undefined}
+                      onPress={() => approve(proposal.id)}
+                    >
+                      <Text style={styles.buttonText}>{busy === proposal.id ? 'Working…' : 'Approve'}</Text>
+                    </Pressable>
+                  )}
                   <Pressable style={styles.button} disabled={busy !== undefined} onPress={() => dismiss(proposal.id)}>
                     <Text style={styles.buttonText}>Dismiss</Text>
                   </Pressable>

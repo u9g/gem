@@ -232,6 +232,11 @@ than one answer is reasonable. It checks the proposal and exits non-zero with th
 something is wrong: fix it and run it again. If the comment needs nothing from u9g, propose \
 nothing.
 
+If answering well needs something these steps cannot do, describe the missing tool in a markdown \
+file (what it would do and why this conversation needs it) and record it with:
+
+{propose} --summary \"<tool name: one line>\" --request-tool <markdown file>
+
 Never push, comment, review or resolve anything on GitHub yourself: u9g approves proposals later.
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \

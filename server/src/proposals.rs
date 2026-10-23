@@ -111,7 +111,8 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
 }
 
 // `server propose --dir <dir> --pr <url> --comment <id> [--thread <id>] --summary <text>
-// [--patch <diff file> --message <text>] [--reply <markdown file>] [--resolve-thread]`
+// [--patch <diff file> --message <text>] [--reply <markdown file>] [--resolve-thread]
+// [--request-tool <markdown file>]`
 pub async fn propose(args: &[String]) -> Result<String, String> {
     let mut flags: HashMap<&str, &str> = HashMap::new();
     let mut resolve_thread = false;
@@ -178,8 +179,15 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         Some(file) => read(file).await?,
         None => String::new(),
     };
-    if patch.is_none() && reply.trim().is_empty() && !resolve_thread {
-        return Err("propose at least one of --patch, --reply or --resolve-thread".into());
+    let requested_tool = match flags.get("request-tool") {
+        Some(file) => read(file).await?,
+        None => String::new(),
+    };
+    let steps = patch.is_some() || !reply.trim().is_empty() || resolve_thread;
+    if steps == !requested_tool.trim().is_empty() {
+        return Err(
+            "propose either steps (--patch, --reply, --resolve-thread) or --request-tool".into(),
+        );
     }
 
     let nanos = SystemTime::now()
@@ -196,6 +204,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         reply,
         resolve_thread,
         error: String::new(),
+        requested_tool,
     };
     tokio::fs::create_dir_all(&dir)
         .await
