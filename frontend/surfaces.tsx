@@ -80,10 +80,11 @@ export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode
   );
 }
 
-// T3 Code's message bubble: rounded-2xl on the message surface, at most 80% wide, right-aligned.
-export function Bubble({ children }: { children: ReactNode }) {
+// T3 Code's message bubble: rounded-2xl on the message surface, at most 80% wide. u9g's messages
+// sit on the right and everyone else's on the left, as in a chat.
+export function Bubble({ children, side = 'right' }: { children: ReactNode; side?: 'left' | 'right' }) {
   return (
-    <View style={styles.bubbleRow}>
+    <View style={{ alignItems: side === 'right' ? 'flex-end' : 'flex-start' }}>
       <View style={styles.bubble}>{children}</View>
     </View>
   );
@@ -100,17 +101,19 @@ export function Quote({ children, lines }: { children: string; lines?: number })
   );
 }
 
-// The comment being answered, as the other side of the conversation.
+// The comment being answered: the other side of the conversation, as a message from its author.
 export function Theirs({ author, body, trailing }: { author: string; body: string; trailing?: ReactNode }) {
   return (
-    <View style={{ gap: 2, marginBottom: 8 }}>
+    <View style={{ gap: 4 }}>
       <View style={styles.theirsHeader}>
         <Text style={styles.meta}>{author}</Text>
         {trailing}
       </View>
-      <Text numberOfLines={3} style={styles.theirs}>
-        {visibleMarkdown(body).replace(/[*#]/g, '').replace(/\n\s*\n/g, '\n')}
-      </Text>
+      <Bubble side="left">
+        <Text numberOfLines={6} style={styles.theirs}>
+          {visibleMarkdown(body).replace(/[*#]/g, '').replace(/\n\s*\n/g, '\n')}
+        </Text>
+      </Bubble>
     </View>
   );
 }
@@ -203,9 +206,6 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     whiteSpace: 'pre',
   } as object,
-  bubbleRow: {
-    alignItems: 'flex-end',
-  },
   bubble: {
     maxWidth: '80%',
     gap: 8,
@@ -218,11 +218,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 2,
+    paddingLeft: 14,
   },
   theirs: {
-    color: t3.muted,
+    color: t3.foreground,
     fontSize: 13,
-    lineHeight: 19,
+    lineHeight: 20,
   },
   quote: {
     borderLeftWidth: 2,
