@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{Json, Router, http::StatusCode, routing::get};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{
     process::Command,
@@ -9,9 +10,11 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 
-type Cache = Arc<RwLock<Option<Value>>>;
+type Cache<T> = Arc<RwLock<Option<T>>>;
 
-const REPOS: &[&str] = &["repo", "list", "u9g", "--limit", "1000", "--json", "name,url"];
+const REPOS: &[&str] = &[
+    "repo", "list", "u9g", "--limit", "1000", "--json", "name,url",
+];
 
 const PRS: &[&str] = &[
     "search",
@@ -35,8 +38,8 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
-    let repos = cached(REPOS);
-    let prs = cached(PRS);
+    let repos: Cache<Value> = cached(REPOS);
+    let prs: Cache<Value> = cached(PRS);
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -56,7 +59,7 @@ async fn healthz() -> Json<Value> {
 }
 
 // Requests never call GitHub; a failed refresh keeps serving the last good result.
-fn cached(args: &'static [&'static str]) -> Cache {
+fn cached<T: DeserializeOwned + Send + Sync + 'static>(args: &'static [&'static str]) -> Cache<T> {
     let cache = Cache::default();
     let writer = cache.clone();
     tokio::spawn(async move {
@@ -70,7 +73,7 @@ fn cached(args: &'static [&'static str]) -> Cache {
     cache
 }
 
-async fn serve(cache: Cache) -> Result<Json<Value>, StatusCode> {
+async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusCode> {
     cache
         .read()
         .await
@@ -80,7 +83,7 @@ async fn serve(cache: Cache) -> Result<Json<Value>, StatusCode> {
 }
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
-async fn gh(args: &[&str]) -> Option<Value> {
+async fn gh<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
     let output = Command::new("gh").args(args).output().await.ok()?;
     if !output.status.success() {
         return None;
