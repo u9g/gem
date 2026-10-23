@@ -5,6 +5,8 @@ fn main() {
 
     prost_build::Config::new()
         .file_descriptor_set_path(&descriptors)
+        .compile_well_known_types()
+        .extern_path(".google.protobuf", "::pbjson_types")
         .compile_protos(&["../protocol/gem.proto"], &["../protocol"])
         .unwrap();
 

@@ -5,6 +5,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{
@@ -67,9 +68,8 @@ struct SearchedPullRequest {
     url: String,
     head: Option<String>,
     base: String,
-    // RFC 3339 UTC, so these sort chronologically as strings.
-    created_at: String,
-    updated_at: String,
+    created_at: Timestamp,
+    updated_at: Timestamp,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
 }
@@ -191,12 +191,17 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
     }
 
     clusters.sort_by_cached_key(|members| {
-        Reverse(members.iter().map(|pr| pr.updated_at.clone()).max())
+        Reverse(
+            members
+                .iter()
+                .map(|pr| (pr.updated_at.seconds, pr.updated_at.nanos))
+                .max(),
+        )
     });
     clusters
         .into_iter()
         .map(|mut members| {
-            members.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+            members.sort_by_key(|pr| (pr.created_at.seconds, pr.created_at.nanos));
             PullRequestCluster {
                 pull_requests: members
                     .into_iter()
