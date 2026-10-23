@@ -30,6 +30,7 @@ function timeAgo(date: Date): string {
 
 export default function App() {
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
+  const [selectedUrl, setSelectedUrl] = useState<string>();
 
   useEffect(() => {
     fetch('http://localhost:8080/prs', {
@@ -41,27 +42,57 @@ export default function App() {
       .then((json) => setClusters(fromJson(ListOpenPullRequestsResponseSchema, json).clusters));
   }, []);
 
+  // A cluster is identified by its oldest PR, which stays put as the cluster grows.
+  const selected = clusters.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.grid}>
-      <View style={styles.header}>
-        <View style={styles.filters}>
-          {['org: livekit, livekit-examples', 'author: u9g'].map((filter) => (
-            <Text key={filter} style={styles.filter}>
-              {filter}
-            </Text>
-          ))}
+    <View style={styles.container}>
+      <ScrollView contentContainerStyle={styles.grid}>
+        <View style={styles.header}>
+          <View style={styles.filters}>
+            {['org: livekit, livekit-examples', 'author: u9g'].map((filter) => (
+              <Text key={filter} style={styles.filter}>
+                {filter}
+              </Text>
+            ))}
+          </View>
         </View>
-      </View>
-      {clusters.map((cluster) => (
-        <View key={cluster.pullRequests[0].url} style={styles.cell}>
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              {cluster.name !== '' && <Text style={styles.name}>{cluster.name}</Text>}
-              {cluster.updatedAt && (
-                <Text style={styles.updated}>{timeAgo(timestampDate(cluster.updatedAt))}</Text>
-              )}
+        {clusters.map((cluster) => {
+          const url = cluster.pullRequests[0].url;
+          return (
+            <View key={url} style={styles.cell}>
+              <Pressable
+                style={[styles.card, cluster === selected && styles.selectedCard]}
+                onPress={() => setSelectedUrl(cluster === selected ? undefined : url)}
+              >
+                <View style={styles.cardHeader}>
+                  {cluster.name !== '' && <Text style={styles.name}>{cluster.name}</Text>}
+                  {cluster.updatedAt && (
+                    <Text style={styles.updated}>{timeAgo(timestampDate(cluster.updatedAt))}</Text>
+                  )}
+                </View>
+                <View style={styles.refs}>
+                  {cluster.pullRequests.map((pr) => (
+                    <Text key={pr.url} style={styles.repo}>
+                      {pr.repository}#{pr.number}
+                    </Text>
+                  ))}
+                </View>
+              </Pressable>
             </View>
-            {cluster.pullRequests.map((pr, i) => (
+          );
+        })}
+      </ScrollView>
+      {selected && (
+        <View style={styles.sidebar}>
+          <View style={styles.sidebarHeader}>
+            <Text style={[styles.name, styles.sidebarTitle]}>{selected.name}</Text>
+            <Pressable onPress={() => setSelectedUrl(undefined)}>
+              <Text style={styles.close}>×</Text>
+            </Pressable>
+          </View>
+          <ScrollView>
+            {selected.pullRequests.map((pr, i) => (
               <Pressable
                 key={pr.url}
                 style={[styles.pr, i > 0 && styles.stacked]}
@@ -73,11 +104,11 @@ export default function App() {
                 <Text style={styles.text}>{pr.title}</Text>
               </Pressable>
             ))}
-          </View>
+          </ScrollView>
         </View>
-      ))}
+      )}
       <StatusBar style="auto" />
-    </ScrollView>
+    </View>
   );
 }
 
@@ -116,14 +147,47 @@ const styles = StyleSheet.create({
   },
   card: {
     flex: 1,
+    justifyContent: 'space-between',
+    gap: 12,
+    padding: 12,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#2E3946',
   },
+  selectedCard: {
+    borderColor: '#D0CFD4',
+  },
   cardHeader: {
-    paddingHorizontal: 12,
-    paddingTop: 12,
     gap: 2,
+  },
+  refs: {
+    gap: 2,
+  },
+  sidebar: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: '25%',
+    backgroundColor: '#19212A',
+    borderLeftWidth: 1,
+    borderLeftColor: '#2E3946',
+  },
+  sidebarHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2E3946',
+  },
+  sidebarTitle: {
+    flex: 1,
+  },
+  close: {
+    color: '#D0CFD4',
+    fontSize: 20,
+    lineHeight: 20,
   },
   name: {
     color: '#D0CFD4',
@@ -146,9 +210,9 @@ const styles = StyleSheet.create({
     color: '#D0CFD4',
     opacity: 0.6,
     fontSize: 12,
-    marginBottom: 4,
   },
   text: {
     color: '#D0CFD4',
+    marginTop: 4,
   },
 });
