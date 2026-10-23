@@ -112,7 +112,7 @@ struct ShownThread {
 async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
     let list: Vec<String> = prs
         .iter()
-        .map(|pr| format!("- {}#{}: {}", pr.repository, pr.number, pr.title))
+        .map(|pr| format!("- {}#{}: {}", full_name(pr), pr.number, pr.title))
         .collect();
     let first = &prs[0];
     let output = t3(&[
@@ -120,7 +120,7 @@ async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
         "start",
         ".",
         "--title",
-        &format!("Name PR cluster {}#{}", first.repository, first.number),
+        &format!("Name PR cluster {}#{}", full_name(first), first.number),
         "--wait",
         "--json",
         &format!("{PROMPT}\n\n{}", list.join("\n")),
@@ -137,6 +137,11 @@ async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
 
     let name = run.reply?.trim().to_string();
     (run.status == "completed" && !name.is_empty()).then_some(name)
+}
+
+fn full_name(pr: &PullRequest) -> String {
+    let repository = pr.repository.clone().unwrap_or_default();
+    format!("{}/{}", repository.owner, repository.name)
 }
 
 // T3 Code installs its CLI here and keeps it pointing at the running app.

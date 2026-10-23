@@ -72,7 +72,7 @@ export default function App() {
                   )}
                 </View>
                 <View style={styles.refs}>
-                  {[...new Set(cluster.pullRequests.map((pr) => pr.repository.split('/')[1]))].map((repository) => (
+                  {[...new Set(cluster.pullRequests.map((pr) => pr.repository?.name))].map((repository) => (
                     <Text key={repository} style={styles.repo}>
                       {repository}
                     </Text>
@@ -99,7 +99,7 @@ export default function App() {
                 onPress={() => Linking.openURL(pr.url)}
               >
                 <Text style={styles.repo}>
-                  {pr.repository}#{pr.number}
+                  {pr.repository?.owner}/{pr.repository?.name}#{pr.number}
                 </Text>
                 <Text style={styles.text}>{pr.title}</Text>
               </Pressable>

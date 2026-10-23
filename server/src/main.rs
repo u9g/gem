@@ -18,6 +18,7 @@ use tower_http::cors::CorsLayer;
 use names::Names;
 use proto::{
     ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, PullRequest, PullRequestCluster,
+    Repository,
 };
 
 mod names;
@@ -41,7 +42,7 @@ query($endCursor: String) {
     nodes {
       ... on PullRequest {
         number title url headRefName baseRefName createdAt updatedAt
-        repository { nameWithOwner }
+        repository { nameWithOwner name owner { login } }
         headRepository { nameWithOwner }
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
           nodes { ... on CrossReferencedEvent { source { ... on PullRequest { url } } } }
@@ -55,7 +56,7 @@ query($endCursor: String) {
 // A fork's head branch can share a name with a base-repo branch (e.g. `main`), so only
 // same-repository heads can have dependents.
 const PRS_JQ: &str = r#".data.search.nodes[] | {
-  repository: .repository.nameWithOwner, number, title, url,
+  repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   base: .baseRefName,
   created_at: .createdAt,
@@ -65,7 +66,7 @@ const PRS_JQ: &str = r#".data.search.nodes[] | {
 
 #[derive(Deserialize)]
 struct SearchedPullRequest {
-    repository: String,
+    repository: Repository,
     number: u32,
     title: String,
     url: String,
@@ -177,15 +178,15 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         .enumerate()
         .map(|(i, pr)| (pr.url.as_str(), i))
         .collect();
-    let by_head: HashMap<(&str, &str), usize> = prs
+    let by_head: HashMap<(&Repository, &str), usize> = prs
         .iter()
         .enumerate()
-        .filter_map(|(i, pr)| Some(((pr.repository.as_str(), pr.head.as_deref()?), i)))
+        .filter_map(|(i, pr)| Some(((&pr.repository, pr.head.as_deref()?), i)))
         .collect();
 
     let mut parent: Vec<usize> = (0..prs.len()).collect();
     for (i, pr) in prs.iter().enumerate() {
-        let stacked_on = by_head.get(&(pr.repository.as_str(), pr.base.as_str()));
+        let stacked_on = by_head.get(&(&pr.repository, pr.base.as_str()));
         let mentioned_by = pr
             .mentioned_by
             .iter()
@@ -220,7 +221,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                 pull_requests: members
                     .into_iter()
                     .map(|pr| PullRequest {
-                        repository: pr.repository.clone(),
+                        repository: Some(pr.repository.clone()),
                         number: pr.number,
                         title: pr.title.clone(),
                         url: pr.url.clone(),
