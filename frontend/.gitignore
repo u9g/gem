@@ -42,3 +42,4 @@ yarn-error.*
 
 # generated from ../protocol by `npm run generate`
 gen/
+storybook-static/
