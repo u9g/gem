@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
+  Bot,
   CheckCheck,
   ChevronRight,
   CircleAlert,
@@ -52,6 +53,7 @@ export function visibleMarkdown(markdown: string): string {
 // T3 Code's work-log grouping: one sentence for what approving does.
 export function stepSentence(proposal: Proposal): string {
   const phrases: string[] = [];
+  if (proposal.followUp) phrases.push('start a follow-up agent');
   if (proposal.patch) {
     const n = diffFiles(proposal.patch.diff).length;
     phrases.push(`change ${n} ${n === 1 ? 'file' : 'files'}`);
@@ -221,6 +223,7 @@ export function proposalIcon(proposal: Proposal) {
   if (proposal.error) return CircleAlert;
   if (proposal.requestedTool) return Hammer;
   if (proposal.patch) return SquarePen;
+  if (proposal.followUp) return Bot;
   return MessageCircle;
 }
 

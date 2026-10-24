@@ -235,10 +235,16 @@ and propose it. A proposal can:
 `gh pr checkout {number}` in it, edit, and save `git diff` to a file. Never commit or push.
 - reply as u9g, in the first person, with --reply: write the markdown to a file. It is posted as \
 {reply_kind}.{resolve}
+- hand the work to another agent, with --follow-up: when the right fix is too big to review as \
+one patch on this pull request, such as matching changes in other repositories, write a prompt \
+for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
+~/code), the branches or pull requests to build on, what to change, and how to verify it. \
+Approving starts that agent, so pair it with a reply saying the work follows. Prefer --patch \
+when the change fits this pull request.
 
 Record each proposal with:
 
-{propose} --summary \"<one line saying what approving does>\" [--patch <diff file> --message \"<commit message>\"] [--reply <markdown file>]{resolve_flag}
+{propose} --summary \"<one line saying what approving does>\" [--patch <diff file> --message \"<commit message>\"] [--reply <markdown file>] [--follow-up <markdown file>]{resolve_flag}
 
 Approving a proposal runs its steps in that order. Run the command once per alternative when more \
 than one answer is reasonable. It checks the proposal and exits non-zero with the reason when \

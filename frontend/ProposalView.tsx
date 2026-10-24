@@ -8,6 +8,7 @@ import {
   Clamp,
   DiffSurface,
   EditableReply,
+  FollowUpCard,
   Html,
   Quote,
   type ReplyDraft,
@@ -39,8 +40,9 @@ export function ProposalGroup({
   proposals: Proposal[];
   // The proposal being approved or dismissed, if any.
   busy?: string;
-  // Called with u9g's rewrite of the reply when that version is showing, and '' otherwise.
-  onApprove: (id: string, reply: string) => void;
+  // Called with u9g's rewrites of the reply and follow-up prompt where that version is showing,
+  // and '' otherwise.
+  onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
 }) {
   const [picked, setPicked] = useState(0);
@@ -71,7 +73,7 @@ export function ProposalGroup({
       }
       busy={busy === proposal.id}
       disabled={busy !== undefined}
-      onApprove={(reply) => onApprove(proposal.id, reply)}
+      onApprove={(reply, followUp) => onApprove(proposal.id, reply, followUp)}
       onDismiss={() => onDismiss(proposal.id)}
     />
   );
@@ -89,11 +91,12 @@ function ProposalView({
   stepper: ReactNode;
   busy: boolean;
   disabled: boolean;
-  onApprove: (reply: string) => void;
+  onApprove: (reply: string, followUp: string) => void;
   onDismiss: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
+  const [followUp, setFollowUp] = useState<ReplyDraft>({ yours: proposal.followUp, showing: 'suggested' });
   const comment = proposal.comment!;
   const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
   const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
@@ -114,7 +117,12 @@ function ProposalView({
             label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
             variant="default"
             disabled={disabled}
-            onPress={() => onApprove(draft.showing === 'yours' ? draft.yours : '')}
+            onPress={() =>
+              onApprove(
+                draft.showing === 'yours' ? draft.yours : '',
+                followUp.showing === 'yours' ? followUp.yours : '',
+              )
+            }
           />
         )}
       </View>
@@ -167,6 +175,14 @@ function ProposalView({
           )}
         </View>
         <View style={styles.column}>
+          {proposal.followUp !== '' && (
+            <FollowUpCard
+              suggested={proposal.followUp}
+              html={proposal.followUpHtml}
+              draft={followUp}
+              onChange={setFollowUp}
+            />
+          )}
           {proposal.patch ? (
             <>
               <Text style={styles.meta}>
@@ -184,7 +200,9 @@ function ProposalView({
           ) : proposal.requestedTool ? (
             <ToolRequestBanner proposal={proposal} />
           ) : (
-            <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
+            !proposal.followUp && (
+              <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
+            )
           )}
         </View>
       </View>

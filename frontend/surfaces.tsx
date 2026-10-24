@@ -1,4 +1,4 @@
-import { CheckCheck, FileCode, Hammer } from 'lucide-react';
+import { Bot, CheckCheck, FileCode, Hammer } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -217,23 +217,69 @@ export function EditableReply({
           />
         </View>
       </View>
-      {hasYours && (
-        <View style={styles.versions}>
-          <View style={styles.segmented}>
-            {(['suggested', 'yours'] as const).map((version) => (
-              <Pressable
-                key={version}
-                onPress={() => onChange({ ...draft, showing: version })}
-                style={[styles.segment, draft.showing === version && styles.segmentOn]}
-              >
-                <Text style={[styles.segmentText, draft.showing === version && { color: t3.foreground }]}>
-                  {version === 'suggested' ? 'Suggested' : 'Yours'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
+      {hasYours && <Versions draft={draft} onChange={onChange} />}
+    </View>
+  );
+}
+
+// Switches between the agent's suggestion and u9g's rewrite of it.
+function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: ReplyDraft) => void }) {
+  return (
+    <View style={styles.versions}>
+      <View style={styles.segmented}>
+        {(['suggested', 'yours'] as const).map((version) => (
+          <Pressable
+            key={version}
+            onPress={() => onChange({ ...draft, showing: version })}
+            style={[styles.segment, draft.showing === version && styles.segmentOn]}
+          >
+            <Text style={[styles.segmentText, draft.showing === version && { color: t3.foreground }]}>
+              {version === 'suggested' ? 'Suggested' : 'Yours'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// The prompt approving hands to a new T3 Code agent, as GitHub would render it. Clicking it edits
+// the prompt, with the same Suggested / Yours switch as replies.
+export function FollowUpCard({
+  suggested,
+  html,
+  draft,
+  onChange,
+}: {
+  suggested: string;
+  html: string;
+  draft: ReplyDraft;
+  onChange: (draft: ReplyDraft) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <View style={styles.followUp}>
+      <View style={styles.followUpHeader}>
+        <Icon icon={Bot} size={14} color={t3.primary} />
+        <Text style={styles.meta}>
+          <Text style={{ color: t3.foreground, fontWeight: '500' }}>Follow-up agent</Text>
+          {'  '}starts in T3 Code when approved
+        </Text>
+      </View>
+      {editing ? (
+        <TextInput
+          multiline
+          autoFocus
+          value={draft.showing === 'yours' ? draft.yours : suggested.trim()}
+          onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
+          style={styles.input}
+        />
+      ) : (
+        <Clamp max={130}>
+          <Html html={html} onPress={() => setEditing(true)} />
+        </Clamp>
       )}
+      {draft.yours.trim() !== suggested.trim() && <Versions draft={draft} onChange={onChange} />}
     </View>
   );
 }
@@ -422,6 +468,18 @@ const styles = StyleSheet.create({
   inlineTagText: {
     color: t3.muted,
     fontSize: 11,
+  },
+  followUp: {
+    gap: 8,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(55, 103, 232, 0.35)',
+    backgroundColor: 'rgba(55, 103, 232, 0.06)',
+  },
+  followUpHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   warning: {
     flexDirection: 'row',

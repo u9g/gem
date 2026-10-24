@@ -41,6 +41,26 @@ pub async fn ask(title: &str, prompt: &str) -> Option<String> {
     (run.status == "completed" && !reply.is_empty()).then_some(reply)
 }
 
+// Starts an agent on `prompt` without waiting for it, in T3 Code's scratch space for threads
+// outside any project. Returns the thread's id.
+pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
+    let scratch = PathBuf::from(env::var("HOME").map_err(|e| e.to_string())?).join(".t3/scratch");
+    let scratch = scratch.to_string_lossy();
+    let output = t3(&[
+        "thread", "start", &scratch, "--title", title, "--json", prompt,
+    ])
+    .await
+    .ok_or("t3: could not run the CLI")?;
+    #[derive(Deserialize)]
+    struct Started {
+        #[serde(rename = "threadId")]
+        thread_id: String,
+    }
+    serde_json::from_slice::<Started>(&output)
+        .map(|started| started.thread_id)
+        .map_err(|_| format!("t3: {}", String::from_utf8_lossy(&output).trim()))
+}
+
 // T3 Code installs its CLI here and keeps it pointing at the running app.
 async fn t3(args: &[&str]) -> Option<Vec<u8>> {
     let cli = PathBuf::from(env::var("HOME").ok()?).join(".t3/bin/t3");
