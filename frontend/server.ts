@@ -5,10 +5,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
-// Where the one project was saved before there were profiles.
+// Where the one project was saved before there were profiles, when every server joined the room gem.
 const PROJECT_KEY = 'gem.project';
-// The server joins its profile's room, this one unless its GEM_ROOM names another, as SERVER.
-export const DEFAULT_ROOM = 'gem';
+// The server joins its profile's room, its GEM_ROOM, as SERVER.
 const SERVER = 'server';
 // Approving pushes a commit and posts to GitHub before it answers.
 const RESPONSE_TIMEOUT_MS = 5 * 60_000;
@@ -43,7 +42,7 @@ function savedProfiles(): Profile[] {
   const saved = localStorage.getItem(PROFILES_KEY);
   if (saved) return JSON.parse(saved);
   const project = localStorage.getItem(PROJECT_KEY);
-  return project ? [{ ...JSON.parse(project), id: crypto.randomUUID(), name: 'gem', room: DEFAULT_ROOM }] : [];
+  return project ? [{ ...JSON.parse(project), id: crypto.randomUUID(), name: 'gem', room: 'gem' }] : [];
 }
 
 // The selected profile's gem server, reached through its room. It is offline while the room has

@@ -10,9 +10,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tower::ServiceExt;
 
-// The room the frontend joins in the same project, unless GEM_ROOM names another, so several
-// servers can share a project.
-const ROOM: &str = "gem";
 // The frontend sends every request to this participant.
 const IDENTITY: &str = "server";
 // How long a frontend waits for the server to join after the frontend does.
@@ -38,13 +35,13 @@ enum Left {
 
 // The router's requests, carried over a room in the user's own LiveKit project instead of a port:
 // nothing listens on the network. LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET name the
-// project and GEM_ROOM the room. Returns on SIGTERM.
+// project and GEM_ROOM the room, so several servers can share a project. Returns on SIGTERM.
 //
 // Every connected participant costs the project's connection minutes, so the server is in the
 // room only while a frontend is.
 pub async fn serve(app: Router) {
     let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
-    let room = env::var("GEM_ROOM").unwrap_or_else(|_| ROOM.to_string());
+    let room = env::var("GEM_ROOM").expect("GEM_ROOM is not set");
     let rooms = RoomClient::new(&url).expect("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set");
     let mut terminate = terminate();
     loop {
