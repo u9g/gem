@@ -14,12 +14,7 @@ use axum::{
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use tokio::{
-    process::Command,
-    signal::unix::{SignalKind, signal},
-    sync::RwLock,
-};
-use tower_http::cors::CorsLayer;
+use tokio::{process::Command, sync::RwLock};
 
 use conversations::Conversations;
 use names::Names;
@@ -32,6 +27,7 @@ use proto::{
 mod conversations;
 mod names;
 mod proposals;
+mod room;
 mod t3;
 
 mod proto {
@@ -163,14 +159,9 @@ async fn main() {
                 proposals::dismiss(&request.id).await;
                 Json(DismissProposalResponse {})
             }),
-        )
-        .layer(CorsLayer::permissive());
+        );
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await
-        .unwrap();
+    room::serve(app).await;
 }
 
 async fn healthz() -> Json<Value> {
@@ -338,9 +329,4 @@ async fn gh(args: &[&str]) -> Option<Vec<u8>> {
 
 async fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
     serde_json::from_slice(&gh(args).await?).ok()
-}
-
-// Kubernetes sends SIGTERM before killing the pod; in-flight requests must drain.
-async fn shutdown() {
-    signal(SignalKind::terminate()).unwrap().recv().await;
 }
