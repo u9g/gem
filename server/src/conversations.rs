@@ -132,8 +132,21 @@ impl Conversations {
             }
         }
 
+        let heads = prs
+            .iter()
+            .map(|pr| (pr.url.as_str(), pr.head_oid.as_str()))
+            .collect();
+        let stale = proposals::remove_stale(&heads).await;
+        if !stale.is_empty() {
+            let mut started = self.0.started.lock().await;
+            started.retain(|id| !stale.contains(id));
+            let json = serde_json::to_vec_pretty(&*started).unwrap();
+            let _ = tokio::fs::write(HANDLED_FILE, json).await;
+        }
+
         let known = self.0.prs.read().await;
         let mut handled = self.0.handled.lock().await;
+        handled.retain(|id| !stale.contains(id));
         for pr in prs {
             let Some((_, waiting)) = known.get(&pr.url) else {
                 continue;

@@ -59,6 +59,35 @@ pub async fn approve(id: &str, reply: &str) {
     }
 }
 
+// Deletes every proposal answering a comment whose patch was written against a head commit its
+// branch has since moved past, keyed by PR URL in `heads`. Returns those comments' IDs, so their
+// conversations can be answered again against the new head.
+pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
+    let proposals = load(Path::new(DIR)).await;
+    let stale: HashSet<String> = proposals
+        .iter()
+        .filter(|(_, p)| {
+            p.patch.as_ref().is_some_and(|patch| {
+                !patch.head_oid.is_empty()
+                    && heads
+                        .get(p.pull_request_url.as_str())
+                        .is_some_and(|head| *head != patch.head_oid)
+            })
+        })
+        .filter_map(|(_, p)| p.comment.as_ref().map(|c| c.id.clone()))
+        .collect();
+    for (path, proposal) in &proposals {
+        if proposal
+            .comment
+            .as_ref()
+            .is_some_and(|c| stale.contains(&c.id))
+        {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    stale
+}
+
 pub async fn dismiss(id: &str) {
     for (path, proposal) in load(Path::new(DIR)).await {
         if proposal.id == id {
@@ -169,11 +198,12 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     let patch = match flags.get("patch") {
         Some(file) => {
             let diff = read(file).await?;
-            apply_patch(pr, &diff, None).await?;
+            let head_oid = apply_patch(pr, &diff, None).await?;
             let commit_message = required("message")?.to_string();
             Some(Patch {
                 diff,
                 commit_message,
+                head_oid,
             })
         }
         None => None,
@@ -280,9 +310,9 @@ struct Login {
 }
 
 // Applies the diff to the head of the PR's branch in a fresh worktree, then commits and pushes
-// when given a commit message, or only checks that it applies when not. Each repository is
-// cloned once and kept outside any T3 Code project.
-async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Result<(), String> {
+// when given a commit message, or only checks that it applies when not. Returns the head commit
+// the diff was applied to. Each repository is cloned once and kept outside any T3 Code project.
+async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Result<String, String> {
     let head = command(
         "gh",
         &[
@@ -345,6 +375,8 @@ async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Resu
     )
     .await?;
     let result = async {
+        let oid = command("git", &["-C", worktree_str, "rev-parse", "HEAD"], None).await?;
+        let oid = String::from_utf8_lossy(&oid).trim().to_string();
         match commit_message {
             None => {
                 command(
@@ -372,6 +404,7 @@ async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Resu
                 .await
             }
         }
+        .map(|_| oid)
     }
     .await;
     let _ = command(
@@ -387,7 +420,7 @@ async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Resu
         None,
     )
     .await;
-    result.map(|_| ())
+    result
 }
 
 async fn graphql(query: &str, variables: &[(&str, &str)]) -> Result<Vec<u8>, String> {
