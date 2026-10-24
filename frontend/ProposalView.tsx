@@ -98,6 +98,10 @@ function Details({
   const error = <Text style={styles.error}>{proposal.error}</Text>;
   return (
     <View style={styles.detailsBody}>
+      {!quoting &&
+        proposal.earlierComments.map((earlier) => (
+          <Theirs key={earlier.id} author={earlier.author} body={earlier.body} />
+        ))}
       {!quoting && (
         <Theirs
           author={comment.author}
