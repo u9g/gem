@@ -119,20 +119,27 @@ export function Theirs({ comment, trailing }: { comment: Comment; trailing?: Rea
         {trailing}
       </View>
       <Bubble side={side}>
-        <div
-          className="markdown-body"
-          style={markdownBody}
-          dangerouslySetInnerHTML={{ __html: comment.bodyHtml }}
-          // Links leave the app for a new tab.
-          onClick={(event) => {
-            const link = (event.target as Element).closest('a');
-            if (!link) return;
-            event.preventDefault();
-            window.open(link.href, '_blank');
-          }}
-        />
+        <Html html={comment.bodyHtml} />
       </Bubble>
     </View>
+  );
+}
+
+// GitHub's rendering of a body, styled with GitHub's stylesheet. Links leave the app for a new
+// tab; a click anywhere else calls onPress.
+export function Html({ html, onPress }: { html: string; onPress?: () => void }) {
+  return (
+    <div
+      className="markdown-body"
+      style={markdownBody}
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={(event) => {
+        const link = (event.target as Element).closest('a');
+        if (!link) return onPress?.();
+        event.preventDefault();
+        window.open(link.href, '_blank');
+      }}
+    />
   );
 }
 

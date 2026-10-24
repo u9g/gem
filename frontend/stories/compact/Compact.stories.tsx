@@ -5,7 +5,15 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Proposal } from '../../gen/gem_pb';
 import { byComment, ProposalGroup } from '../../ProposalView';
-import { Bubble, DiffSurface, EditableReply, type ReplyDraft, ResolvesTag, ToolRequestBanner } from '../../surfaces';
+import {
+  Bubble,
+  DiffSurface,
+  EditableReply,
+  Html,
+  type ReplyDraft,
+  ResolvesTag,
+  ToolRequestBanner,
+} from '../../surfaces';
 import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3 } from '../../t3';
 import { proposals } from '../fixtures';
 import { long, replyHtml } from './long';
@@ -36,23 +44,6 @@ function Clamp({ max, children, align = 'left' }: { max: number; children: React
         </Pressable>
       )}
     </View>
-  );
-}
-
-// GitHub's rendering of a body, with links opening a new tab.
-function Html({ html, onPress }: { html: string; onPress?: () => void }) {
-  return (
-    <div
-      className="markdown-body"
-      style={markdownBody}
-      dangerouslySetInnerHTML={{ __html: html }}
-      onClick={(event) => {
-        const link = (event.target as Element).closest('a');
-        if (!link) return onPress?.();
-        event.preventDefault();
-        window.open(link.href, '_blank');
-      }}
-    />
   );
 }
 
@@ -339,14 +330,6 @@ export const CDigest: StoryObj = {
       ))}
     </Page>
   ),
-};
-
-const markdownBody = {
-  backgroundColor: 'transparent',
-  color: t3.foreground,
-  fontSize: 13,
-  lineHeight: 1.55,
-  minWidth: 0,
 };
 
 const styles = StyleSheet.create({
