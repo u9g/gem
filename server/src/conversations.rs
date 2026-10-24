@@ -332,7 +332,9 @@ one patch on this pull request, such as matching changes in other repositories, 
 for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
 ~/code), the branches or pull requests to build on, what to change, and how to verify it. \
 Approving starts that agent, so pair it with a reply saying the work follows. Prefer --patch \
-when the change fits this pull request.
+when the change fits this pull request. The agent must be able to finish without anyone else \
+reviewing, merging or releasing something first: when the fix waits on that, reply saying what \
+it waits on instead.
 - close the pull request without merging it, with --close-pull-request: when the conversation \
 settles that it should not land, such as being superseded or no longer wanted. Pair it with a \
 reply saying why.
@@ -432,7 +434,9 @@ one patch on this pull request, such as matching changes in other repositories, 
 branch already fixed it and the pull request needs a rebase onto it. Write a prompt for a T3 Code \
 agent to a markdown file. It must stand alone: the repositories (checked out under ~/code), the \
 branches or pull requests to build on, what to change and why (such as the commit that fixed it), \
-and how to verify it.
+and how to verify it. The agent must be able to finish without anyone else reviewing, merging \
+or releasing something first: when the fix waits on that, such as another pull request that \
+needs review or a dependency that has not been released, propose nothing for that check.
 
 Record each proposal with:
 
