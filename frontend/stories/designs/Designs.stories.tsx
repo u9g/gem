@@ -3,11 +3,9 @@ import { Check, GitPullRequest, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { ProposalView } from '../../ProposalView';
 import { type Item, items, pr } from '../fixtures';
 import {
   Button,
-  Code,
   CommentRow,
   diffFiles,
   ErrorLine,
@@ -144,27 +142,6 @@ function Question({ group }: { group: Item[] }) {
   );
 }
 
-// 3. Banners: one approval banner per proposal, like T3 Code's command-approval banner above the
-// composer. The app's sidebar uses this design.
-function Banners() {
-  return (
-    <Sidebar title="TTS retry fixes">
-      <View style={[styles.list, { gap: 8 }]}>
-        {items.map(({ proposal }) => (
-          <ProposalView
-            key={proposal.id}
-            proposal={proposal}
-            busy={false}
-            disabled={false}
-            onApprove={() => {}}
-            onDismiss={() => {}}
-          />
-        ))}
-      </View>
-    </Sidebar>
-  );
-}
-
 // 4. One fold: the sidebar says only what is waiting, as one T3 Code group sentence. Opening it
 // shows the work log.
 function OneFold({ expanded = false }: { expanded?: boolean }) {
@@ -264,7 +241,6 @@ export default meta;
 export const WorkLogStory: StoryObj = { name: '1 Work log', render: () => <WorkLog /> };
 export const WorkLogOpenStory: StoryObj = { name: '1 Work log, one open', render: () => <WorkLog expanded /> };
 export const ChooseOneStory: StoryObj = { name: '2 Choose one', render: () => <ChooseOne /> };
-export const BannersStory: StoryObj = { name: '3 Banners', render: () => <Banners /> };
 export const OneFoldStory: StoryObj = { name: '4 One fold', render: () => <OneFold /> };
 export const OneFoldOpenStory: StoryObj = { name: '4 One fold, open', render: () => <OneFold expanded /> };
 export const UnderThePrStory: StoryObj = { name: '5 Under the PR', render: () => <UnderThePr /> };
