@@ -155,7 +155,9 @@ message Patch {
 }
 
 // Runs the proposal. Its outcome shows in the proposal: it disappears, along
-// with the other proposals for the same comment, or its error is set.
+// with the other proposals for the same comment, or its error is set. A
+// proposal that closes its pull request takes the pull request and all of its
+// proposals with it.
 message ApproveProposalRequest {
   string id = 1;
   // The user's rewrite of the proposal's reply, posted in its place. Empty posts the
