@@ -105,9 +105,9 @@ export default function App() {
     return () => clearInterval(timer);
   }, [load]);
 
-  function approve(id: string, reply: string) {
+  function approve(id: string, reply: string, followUp: string) {
     setBusy(id);
-    post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply })))
+    post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp })))
       .then(load)
       .finally(() => setBusy(undefined));
   }
