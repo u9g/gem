@@ -16,14 +16,15 @@ use crate::t3;
 // them with `server propose`, which checks them first.
 pub const DIR: &str = "proposals";
 
+// The conversation a proposal answers. Proposals answering the same one are alternatives.
+fn subject(proposal: &Proposal) -> Option<&str> {
+    proposal.comment.as_ref().map(|c| c.id.as_str())
+}
+
 pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>) {
     let mut by_pr: HashMap<String, Vec<Proposal>> = HashMap::new();
     for (_, proposal) in load(Path::new(DIR)).await {
-        let waits = proposal
-            .comment
-            .as_ref()
-            .is_some_and(|c| waiting.contains(&c.id));
-        if waits {
+        if subject(&proposal).is_some_and(|id| waiting.contains(id)) {
             by_pr
                 .entry(proposal.pull_request_url.clone())
                 .or_default()
@@ -53,11 +54,10 @@ pub async fn approve(id: &str, reply: &str, follow_up: &str) {
         }
     }
     match run(&path, &mut proposal).await {
-        // The other proposals answered the same comment.
+        // The other proposals answered the same conversation.
         Ok(()) => {
-            let comment = proposal.comment.map(|c| c.id);
             for (path, other) in &proposals {
-                if other.comment.as_ref().map(|c| &c.id) == comment.as_ref() {
+                if subject(other) == subject(&proposal) {
                     let _ = tokio::fs::remove_file(path).await;
                 }
             }
@@ -69,9 +69,9 @@ pub async fn approve(id: &str, reply: &str, follow_up: &str) {
     }
 }
 
-// Deletes every proposal answering a comment whose patch was written against a head commit its
-// branch has since moved past, keyed by PR URL in `heads`. Returns those comments' IDs, so their
-// conversations can be answered again against the new head.
+// Deletes every proposal answering a conversation whose patch was written against a head commit its
+// branch has since moved past, keyed by PR URL in `heads`. Returns those conversations' IDs, so
+// they can be answered again against the new head.
 pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let proposals = load(Path::new(DIR)).await;
     let stale: HashSet<String> = proposals
@@ -84,14 +84,10 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
                         .is_some_and(|head| *head != patch.head_oid)
             })
         })
-        .filter_map(|(_, p)| p.comment.as_ref().map(|c| c.id.clone()))
+        .filter_map(|(_, p)| subject(p).map(str::to_string))
         .collect();
     for (path, proposal) in &proposals {
-        if proposal
-            .comment
-            .as_ref()
-            .is_some_and(|c| stale.contains(&c.id))
-        {
+        if subject(proposal).is_some_and(|id| stale.contains(id)) {
             let _ = tokio::fs::remove_file(path).await;
         }
     }

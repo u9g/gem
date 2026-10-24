@@ -20,8 +20,8 @@ import {
 } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, usePhone, visibleMarkdown } from './t3';
 
-// Proposals answering the same comment are alternatives: approving one clears the rest.
-export function byComment(list: Proposal[]): Proposal[][] {
+// Proposals answering the same conversation are alternatives: approving one clears the rest.
+export function bySubject(list: Proposal[]): Proposal[][] {
   const groups = new Map<string, Proposal[]>();
   for (const proposal of list) {
     const id = proposal.comment?.id ?? proposal.id;

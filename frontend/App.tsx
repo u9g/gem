@@ -6,7 +6,7 @@ import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { byComment, ProposalGroup } from './ProposalView';
+import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, PullRequestList } from './PullRequestList';
 import { type Project, useServer } from './server';
 import { Login } from './surfaces';
@@ -287,7 +287,7 @@ function ClusterView({
       <View style={styles.pullRequests}>
         <PullRequestList pullRequests={cluster.pullRequests} />
       </View>
-      {byComment(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
+      {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
         <ProposalGroup
           key={group[0].id}
           proposals={group}

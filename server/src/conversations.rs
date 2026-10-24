@@ -54,16 +54,50 @@ struct Conversation {
     comment: Comment,
 }
 
+impl Conversation {
+    // What its proposals answer: they show only while this is still waiting on the user.
+    fn id(&self) -> &str {
+        &self.comment.id
+    }
+}
+
+// The conversations waiting on the user on each PR, by GraphQL node ID.
+async fn fetch(ids: &[&str]) -> Vec<Fetched> {
+    let mut fetched = Vec::new();
+    for chunk in ids.chunks(100) {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={CONVERSATIONS_QUERY}"),
+            "--jq".to_string(),
+            CONVERSATIONS_JQ.to_string(),
+        ];
+        for id in chunk {
+            args.extend(["-f".to_string(), format!("ids[]={id}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let Some(stdout) = gh(&args).await else {
+            continue;
+        };
+        for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {
+            let Ok(result) = result else { break };
+            fetched.push(result);
+        }
+    }
+    fetched
+}
+
 #[derive(Clone)]
 pub struct Conversations(Arc<Inner>);
 
 struct Inner {
     // By PR URL: the PR's updatedAt when its conversations were fetched, and the waiting ones.
     prs: RwLock<HashMap<String, (Timestamp, Vec<Conversation>)>>,
-    // Comments an agent was queued for.
+    // Conversations an agent was queued for.
     handled: Mutex<HashSet<String>>,
-    // Comments an agent was started for: the persisted part of `handled`. Never cleared, so a
-    // restart answers comments that were only queued, and not the others.
+    // Conversations an agent was started for: the persisted part of `handled`. Never cleared, so a
+    // restart answers conversations that were only queued, and not the others.
     started: Mutex<HashSet<String>>,
     agents: Semaphore,
 }
@@ -82,11 +116,11 @@ impl Conversations {
         }))
     }
 
-    // IDs of the latest comment of every conversation waiting on the user.
+    // IDs of every conversation waiting on the user.
     pub async fn waiting(&self) -> HashSet<String> {
         let prs = self.0.prs.read().await;
         prs.values()
-            .flat_map(|(_, waiting)| waiting.iter().map(|c| c.comment.id.clone()))
+            .flat_map(|(_, waiting)| waiting.iter().map(|c| c.id().to_string()))
             .collect()
     }
 
@@ -97,28 +131,11 @@ impl Conversations {
                 .filter(|pr| known.get(&pr.url).map(|(at, _)| at) != Some(&pr.updated_at))
                 .collect()
         };
+        let ids: Vec<&str> = changed.iter().map(|pr| pr.id.as_str()).collect();
         let mut fetched = HashMap::new();
-        for chunk in changed.chunks(100) {
-            let mut args = vec![
-                "api".to_string(),
-                "graphql".to_string(),
-                "-f".to_string(),
-                format!("query={CONVERSATIONS_QUERY}"),
-                "--jq".to_string(),
-                CONVERSATIONS_JQ.to_string(),
-            ];
-            for pr in chunk {
-                args.extend(["-f".to_string(), format!("ids[]={}", pr.id)]);
-            }
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let Some(stdout) = gh(&args).await else {
-                continue;
-            };
-            for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {
-                let Ok(mut result) = result else { break };
-                result.waiting.retain(|c| c.comment.author != login());
-                fetched.insert(result.url, result.waiting);
-            }
+        for mut result in fetch(&ids).await {
+            result.waiting.retain(|c| c.comment.author != login());
+            fetched.insert(result.url, result.waiting);
         }
 
         {
@@ -151,7 +168,7 @@ impl Conversations {
                 continue;
             };
             for conversation in waiting {
-                if !handled.insert(conversation.comment.id.clone()) {
+                if !handled.insert(conversation.id().to_string()) {
                     continue;
                 }
                 let this = self.clone();
@@ -161,7 +178,7 @@ impl Conversations {
                     let _permit = this.0.agents.acquire().await.unwrap();
                     {
                         let mut started = this.0.started.lock().await;
-                        started.insert(conversation.comment.id.clone());
+                        started.insert(conversation.id().to_string());
                         let json = serde_json::to_vec_pretty(&*started).unwrap();
                         let _ = tokio::fs::write(HANDLED_FILE, json).await;
                     }
