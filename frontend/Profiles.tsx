@@ -3,7 +3,7 @@ import { Check, ChevronDown, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { DEFAULT_ROOM, type Profile } from './server';
+import type { Profile } from './server';
 import { Icon, t3 } from './t3';
 
 // Only the selected profile is connected, so the others show what their servers last reported.
@@ -206,7 +206,7 @@ export function ProfileForm({
       onChangeText={(value) => setProfile({ ...profile, [key]: value })}
     />
   );
-  const save = () => onSave({ ...profile, name: profile.name.trim() || 'gem', room: profile.room.trim() || DEFAULT_ROOM });
+  const save = () => onSave({ ...profile, name: profile.name.trim() || 'gem', room: profile.room.trim() });
   return (
     <View style={styles.form}>
       <Text style={styles.formText}>{editing ? `Change ${editing.name}` : 'Add a gem server'}</Text>
@@ -214,7 +214,7 @@ export function ProfileForm({
       {field('url', 'LIVEKIT_URL')}
       {field('apiKey', 'LIVEKIT_API_KEY')}
       {field('apiSecret', 'LIVEKIT_API_SECRET')}
-      {field('room', `GEM_ROOM (${DEFAULT_ROOM})`)}
+      {field('room', 'GEM_ROOM')}
       <View style={styles.formButtons}>
         {onRemove && (
           <Pressable style={styles.formButton} onPress={onRemove}>
