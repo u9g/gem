@@ -128,7 +128,54 @@ export default function App() {
   // A cluster is identified by its oldest PR, which stays put as the cluster grows. Until one is
   // picked, the most recently updated one is shown.
   const selected = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl) ?? visible[0];
-  const proposals = (selected?.pullRequests ?? []).flatMap((pr) => pr.proposals);
+
+  const filters = (
+    <View style={styles.filters}>
+      <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
+        <Text style={styles.filter}>server: {status}</Text>
+      </Pressable>
+      <Text style={styles.filter}>author: {login}</Text>
+      <Select.Root
+        value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
+        onValueChange={(option) =>
+          setRepoFilter(repositories.find((repository) => repositoryValue(repository) === option?.value))
+        }
+      >
+        <Select.Trigger>
+          <Text style={styles.filter}>repos: {repoFilter?.name ?? '*'}</Text>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Content position="popper" sideOffset={4} style={styles.menu}>
+            <Select.Viewport>
+              {[undefined, ...repositories].map((repository) => {
+                const value = repository ? repositoryValue(repository) : '*';
+                const label = repository?.name ?? '*';
+                return (
+                  <Select.Item
+                    key={value}
+                    value={value}
+                    label={label}
+                    // On web the Item is Radix's DOM element, so its style must be one plain
+                    // object of CSS properties. Radix focuses whichever item the pointer or
+                    // keyboard highlights.
+                    onFocus={() => setHighlightedRepo(value)}
+                    onBlur={() => setHighlightedRepo(undefined)}
+                    style={StyleSheet.flatten([
+                      styles.menuItem,
+                      sameRepository(repository, repoFilter) && styles.menuItemSelected,
+                      highlightedRepo === value && styles.menuItemActive,
+                    ])}
+                  >
+                    <Select.ItemText style={styles.menuText} />
+                  </Select.Item>
+                );
+              })}
+            </Select.Viewport>
+          </Select.Content>
+        </Select.Portal>
+      </Select.Root>
+    </View>
+  );
 
   if (status === 'no-project') {
     return <AddProject onAdd={addProject} />;
@@ -142,51 +189,7 @@ export default function App() {
           onResize={(width) => setSidebarWidth(clampSidebarWidth(width))}
           onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
         />
-        <View style={styles.filters}>
-          <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
-            <Text style={styles.filter}>server: {status}</Text>
-          </Pressable>
-          <Text style={styles.filter}>author: {login}</Text>
-          <Select.Root
-            value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
-            onValueChange={(option) =>
-              setRepoFilter(repositories.find((repository) => repositoryValue(repository) === option?.value))
-            }
-          >
-            <Select.Trigger>
-              <Text style={styles.filter}>repos: {repoFilter?.name ?? '*'}</Text>
-            </Select.Trigger>
-            <Select.Portal>
-              <Select.Content position="popper" sideOffset={4} style={styles.menu}>
-                <Select.Viewport>
-                  {[undefined, ...repositories].map((repository) => {
-                    const value = repository ? repositoryValue(repository) : '*';
-                    const label = repository?.name ?? '*';
-                    return (
-                      <Select.Item
-                        key={value}
-                        value={value}
-                        label={label}
-                        // On web the Item is Radix's DOM element, so its style must be one plain
-                        // object of CSS properties. Radix focuses whichever item the pointer or
-                        // keyboard highlights.
-                        onFocus={() => setHighlightedRepo(value)}
-                        onBlur={() => setHighlightedRepo(undefined)}
-                        style={StyleSheet.flatten([
-                          styles.menuItem,
-                          sameRepository(repository, repoFilter) && styles.menuItemSelected,
-                          highlightedRepo === value && styles.menuItemActive,
-                        ])}
-                      >
-                        <Select.ItemText style={styles.menuText} />
-                      </Select.Item>
-                    );
-                  })}
-                </Select.Viewport>
-              </Select.Content>
-            </Select.Portal>
-          </Select.Root>
-        </View>
+        {filters}
         <ScrollView contentContainerStyle={styles.rows}>
           {visible.map((cluster) => (
             <ClusterRow
@@ -201,30 +204,47 @@ export default function App() {
       <Login value={login}>
         <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
           {selected && (
-            <View style={styles.column}>
-              <View style={styles.titleBlock}>
-                <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
-                <Text style={styles.meta}>
-                  {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
-                </Text>
-              </View>
-              <View style={styles.pullRequests}>
-                <PullRequestList pullRequests={selected.pullRequests} />
-              </View>
-              {byComment(proposals).map((group) => (
-                <ProposalGroup
-                  key={group[0].id}
-                  proposals={group}
-                  busy={busy}
-                  onApprove={approve}
-                  onDismiss={dismiss}
-                />
-              ))}
-            </View>
+            <ClusterView cluster={selected} busy={busy} onApprove={approve} onDismiss={dismiss} />
           )}
         </ScrollView>
       </Login>
       <StatusBar style="auto" />
+    </View>
+  );
+}
+
+// A cluster's title, its PRs, and the conversations waiting on u9g.
+function ClusterView({
+  cluster,
+  busy,
+  onApprove,
+  onDismiss,
+}: {
+  cluster: PullRequestCluster;
+  busy?: string;
+  onApprove: (id: string, reply: string, followUp: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  return (
+    <View style={styles.column}>
+      <View style={styles.titleBlock}>
+        <Text style={[styles.title, ready(cluster) && styles.ready]}>{cluster.name}</Text>
+        <Text style={styles.meta}>
+          {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+        </Text>
+      </View>
+      <View style={styles.pullRequests}>
+        <PullRequestList pullRequests={cluster.pullRequests} />
+      </View>
+      {byComment(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
+        <ProposalGroup
+          key={group[0].id}
+          proposals={group}
+          busy={busy}
+          onApprove={onApprove}
+          onDismiss={onDismiss}
+        />
+      ))}
     </View>
   );
 }
