@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ProposalView } from './ProposalView';
+import { byComment, ProposalGroup } from './ProposalView';
 import {
   ApproveProposalRequestSchema,
   DismissProposalRequestSchema,
@@ -216,14 +216,13 @@ export default function App() {
                 ))}
               </Text>
             </View>
-            {proposals.map((proposal) => (
-              <ProposalView
-                key={proposal.id}
-                proposal={proposal}
-                busy={busy === proposal.id}
-                disabled={busy !== undefined}
-                onApprove={(reply) => approve(proposal.id, reply)}
-                onDismiss={() => dismiss(proposal.id)}
+            {byComment(proposals).map((group) => (
+              <ProposalGroup
+                key={group[0].id}
+                proposals={group}
+                busy={busy}
+                onApprove={approve}
+                onDismiss={dismiss}
               />
             ))}
             <View>
@@ -445,7 +444,7 @@ const styles = StyleSheet.create({
   },
   column: {
     width: '100%',
-    maxWidth: 736,
+    maxWidth: 1240,
     gap: 12,
   },
   titleBlock: {
