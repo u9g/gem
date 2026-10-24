@@ -3,3 +3,5 @@
 /proposals
 /handled-comments.json
 /.env
+/releases
+/launcher.lock

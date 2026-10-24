@@ -28,6 +28,7 @@ use proto::{
 
 mod conversations;
 mod investigations;
+mod launcher;
 mod names;
 mod proposals;
 mod room;
@@ -110,22 +111,28 @@ struct SearchedPullRequest {
 // A refresh costs one GitHub API request per 100 results, far under GitHub's hourly limits.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
-#[tokio::main]
-async fn main() {
+// `serve` runs the server, `propose` records a proposal for it, and no command runs the launcher,
+// which runs `serve` and keeps it up to date.
+fn main() {
     // LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, GEM_ROOM and GEM_SEARCH can live in .env in the
     // working directory, next to the server's other state. The real environment wins.
     let _ = dotenvy::dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|command| command == "propose") {
-        match proposals::propose(&args[1..]).await {
+    let runtime = || tokio::runtime::Runtime::new().unwrap();
+    match args.first().map(String::as_str) {
+        Some("serve") => runtime().block_on(run_server()),
+        Some("propose") => match runtime().block_on(proposals::propose(&args[1..])) {
             Ok(id) => println!("{id}"),
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(1);
             }
-        }
-        return;
+        },
+        _ => launcher::run(),
     }
+}
+
+async fn run_server() {
     // Servers from before GEM_ROOM was required joined the room gem.
     if std::env::var_os("GEM_ROOM").is_none() {
         let env = std::fs::read_to_string(".env").unwrap_or_default();
