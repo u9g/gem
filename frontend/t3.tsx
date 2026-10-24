@@ -10,7 +10,7 @@ import {
   SquarePen,
 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import type { Proposal, PullRequest } from './gen/gem_pb';
 
@@ -126,15 +126,23 @@ export function Row({
   );
 }
 
+// Narrower than this, the app is laid out for a phone: one screen at a time and stacked cards.
+export function usePhone(): boolean {
+  return useWindowDimensions().width < 700;
+}
+
 export function Button({
   label,
   variant = 'outline',
   disabled = false,
+  large = false,
   onPress,
 }: {
   label: string;
   variant?: 'default' | 'outline' | 'ghost';
   disabled?: boolean;
+  // Sized for a thumb, sharing its row's width with the other large buttons.
+  large?: boolean;
   onPress?: () => void;
 }) {
   return (
@@ -143,13 +151,16 @@ export function Button({
       disabled={disabled}
       style={[
         styles.button,
+        large && styles.buttonLarge,
         disabled && { opacity: 0.5 },
         variant === 'default' && { backgroundColor: t3.primary, borderColor: t3.primary },
         variant === 'outline' && { backgroundColor: t3.input, borderColor: t3.input },
         variant === 'ghost' && { borderColor: 'transparent' },
       ]}
     >
-      <Text style={[styles.buttonText, variant === 'ghost' && { color: t3.muted }]}>{label}</Text>
+      <Text style={[styles.buttonText, large && styles.buttonTextLarge, variant === 'ghost' && { color: t3.muted }]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -301,10 +312,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     justifyContent: 'center',
   },
+  buttonLarge: {
+    flex: 1,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
   buttonText: {
     color: t3.foreground,
     fontSize: 12,
     fontWeight: '500',
+  },
+  buttonTextLarge: {
+    fontSize: 15,
   },
   codeBox: {
     maxHeight: 240,

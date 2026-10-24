@@ -1,12 +1,14 @@
-import { CircleCheck, CircleDashed, CircleX } from 'lucide-react';
+import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { PullRequest } from './gen/gem_pb';
-import { Icon, t3 } from './t3';
+import { Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
+// On a phone the review state is a check mark when approved, leaving the title room.
 export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] }) {
+  const phone = usePhone();
   // Wide enough for the longest repo#number, so they line up and never wrap.
   const refWidth = Math.max(...pullRequests.map((pr) => `${pr.repository?.name}#${pr.number}`.length)) * 7.5;
   return (
@@ -24,9 +26,13 @@ export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] 
           <Text numberOfLines={1} style={styles.title}>
             {pr.title}
           </Text>
-          <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
-            {pr.approved ? 'Approved' : 'Review required'}
-          </Text>
+          {phone ? (
+            pr.approved && <Icon icon={Check} size={14} color={t3.addition} />
+          ) : (
+            <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
+              {pr.approved ? 'Approved' : 'Review required'}
+            </Text>
+          )}
           <View style={styles.countSlot}>
             {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
           </View>
@@ -37,10 +43,10 @@ export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] 
 }
 
 // Checks on the head commit: failed, passed, or still running.
-function ChecksIcon({ pr }: { pr: PullRequest }) {
-  if (pr.checksFailing) return <Icon icon={CircleX} size={14} color={t3.deletion} />;
-  if (pr.checksPassing) return <Icon icon={CircleCheck} size={14} color={t3.addition} />;
-  return <Icon icon={CircleDashed} size={14} color={t3.warning} />;
+export function ChecksIcon({ pr, size = 14 }: { pr: PullRequest; size?: number }) {
+  if (pr.checksFailing) return <Icon icon={CircleX} size={size} color={t3.deletion} />;
+  if (pr.checksPassing) return <Icon icon={CircleCheck} size={size} color={t3.addition} />;
+  return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
 }
 
 const styles = StyleSheet.create({
