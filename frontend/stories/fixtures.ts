@@ -275,4 +275,12 @@ export const investigations: Investigation[] = [
       }),
     ],
   }),
+  create(InvestigationSchema, {
+    id: 'follow-up-working',
+    title: 'Open a PR on main pinning ruff to 0.5',
+    pullRequestUrl: pr.url,
+    threadId: 'thread-follow-up',
+    startedAt: { seconds: now - 60n },
+    working: true,
+  }),
 ];

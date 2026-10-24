@@ -16,20 +16,21 @@ message ListOpenPullRequestsResponse {
   // The search qualifiers narrowing their PRs, from GEM_SEARCH, e.g.
   // `org:livekit`. Empty when every open PR of theirs is listed.
   string search = 3;
-  // Open investigations, most recently started first.
+  // Open investigations and follow-ups, most recently started first.
   repeated Investigation investigations = 4;
 }
 
-// A T3 Code agent finding the root cause of failed checks that were rerun as flaky. It outlives
-// the pull request it started from, until the user closes it.
+// A T3 Code agent finding the root cause of failed checks that were rerun as flaky, or doing the
+// follow-up of an approved proposal. It outlives the pull request it started from, until the
+// user closes it.
 message Investigation {
   string id = 1;
   string title = 2;
   // The pull request whose checks failed.
   string pull_request_url = 3;
-  // The failed checks, with the excerpts the rerun proposal showed.
+  // The failed checks, with the excerpts the rerun proposal showed. Unset on a follow-up.
   CheckFailure check_failure = 4;
-  // Why the rerun proposal called the failure flaky.
+  // Why the rerun proposal called the failure flaky. Empty on a follow-up.
   string rerun_summary = 5;
   // The T3 Code thread doing the work.
   string thread_id = 6;

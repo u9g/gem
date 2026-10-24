@@ -29,35 +29,30 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
         .ok_or("only a rerun of failed checks can be investigated")?;
     proposals::approve(proposal_id, "", "").await?;
 
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let id = format!("{nanos:x}");
     let pr = &proposal.pull_request_url;
     let (repository, number) = short(pr);
     let checks: Vec<&str> = failure.checks.iter().map(|c| c.name.as_str()).collect();
     let title = format!("Investigate {} on {repository}#{number}", checks.join(", "));
-    let thread_id = t3::start(&title, &prompt(&id, pr, &failure, &proposal.summary)).await?;
+    let nanos = now();
+    let prompt = prompt(&id(nanos), pr, &failure, &proposal.summary);
+    let thread_id = t3::start(&title, &prompt).await?;
+    track(nanos, title, pr, Some(failure), proposal.summary, thread_id).await;
+    Ok(())
+}
 
-    let _files = FILES.lock().await;
-    save(&Investigation {
-        id,
-        title,
-        pull_request_url: pr.clone(),
-        check_failure: Some(failure),
-        rerun_summary: proposal.summary,
-        thread_id,
-        started_at: Some(Timestamp {
-            seconds: (nanos / 1_000_000_000) as i64,
-            nanos: (nanos % 1_000_000_000) as i32,
-        }),
-        working: true,
-        reply: String::new(),
-        reply_html: String::new(),
-        proposals: Vec::new(),
-    })
-    .await;
+// Starts the agent an approved proposal hands `follow_up` to, and follows it like an
+// investigation, so its replies show in gem and the user can message it.
+pub async fn follow_up(title: &str, pr: &str, follow_up: &str) -> Result<(), String> {
+    let prompt = format!(
+        "{follow_up}
+
+{login} follows this thread in an app that shows only your latest reply, so end each reply \
+with where things stand, such as a link to the pull request you opened. {login} may message you \
+afterwards in this thread.",
+        login = login(),
+    );
+    let thread_id = t3::start(title, &prompt).await?;
+    track(now(), title.to_string(), pr, None, String::new(), thread_id).await;
     Ok(())
 }
 
@@ -124,6 +119,47 @@ pub fn watch() {
             tokio::time::sleep(REFRESH_INTERVAL).await;
         }
     });
+}
+
+fn now() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+}
+
+// An investigation started at `nanos` since the epoch.
+fn id(nanos: u128) -> String {
+    format!("{nanos:x}")
+}
+
+// Saves an investigation started at `nanos` since the epoch.
+async fn track(
+    nanos: u128,
+    title: String,
+    pr: &str,
+    check_failure: Option<CheckFailure>,
+    rerun_summary: String,
+    thread_id: String,
+) {
+    let _files = FILES.lock().await;
+    save(&Investigation {
+        id: id(nanos),
+        title,
+        pull_request_url: pr.to_string(),
+        check_failure,
+        rerun_summary,
+        thread_id,
+        started_at: Some(Timestamp {
+            seconds: (nanos / 1_000_000_000) as i64,
+            nanos: (nanos % 1_000_000_000) as i32,
+        }),
+        working: true,
+        reply: String::new(),
+        reply_html: String::new(),
+        proposals: Vec::new(),
+    })
+    .await;
 }
 
 // The repository's name and the pull request's number in `pr`'s URL.

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tokio::{io::AsyncWriteExt, process::Command};
 
 use crate::proto::{Comment, Patch, Proposal, PullRequestCluster};
-use crate::{conversations, t3};
+use crate::{conversations, investigations};
 
 // One `<id>.json` file per proposal, relative to the server's working directory. Agents write
 // them with `server propose`, which checks them first.
@@ -162,7 +162,12 @@ pub async fn dismiss(id: &str) {
 
 async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
     if !proposal.follow_up.is_empty() {
-        t3::start(&proposal.summary, &proposal.follow_up).await?;
+        investigations::follow_up(
+            &proposal.summary,
+            &proposal.pull_request_url,
+            &proposal.follow_up,
+        )
+        .await?;
         proposal.follow_up.clear();
         save(path, proposal).await;
     }
