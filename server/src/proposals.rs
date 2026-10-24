@@ -47,9 +47,11 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>
 }
 
 // Returns the PR's URL when approving closed it.
-pub async fn approve(id: &str, reply: &str, follow_up: &str) -> Option<String> {
+pub async fn approve(id: &str, reply: &str, follow_up: &str) -> Result<Option<String>, String> {
     let proposals = load(Path::new(DIR)).await;
-    let (path, mut proposal) = proposals.iter().find(|(_, p)| p.id == id).cloned()?;
+    let Some((path, mut proposal)) = proposals.iter().find(|(_, p)| p.id == id).cloned() else {
+        return Err(format!("no proposal {id}"));
+    };
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
@@ -67,7 +69,7 @@ pub async fn approve(id: &str, reply: &str, follow_up: &str) -> Option<String> {
         // Nothing else on a closed PR needs answering.
         Ok(()) if closes => {
             remove_on(std::slice::from_ref(&proposal.pull_request_url)).await;
-            Some(proposal.pull_request_url)
+            Ok(Some(proposal.pull_request_url))
         }
         Ok(()) => {
             let answered = answers(&proposal);
@@ -76,12 +78,12 @@ pub async fn approve(id: &str, reply: &str, follow_up: &str) -> Option<String> {
                     let _ = tokio::fs::remove_file(path).await;
                 }
             }
-            None
+            Ok(None)
         }
         Err(error) => {
-            proposal.error = error;
+            proposal.error = error.clone();
             save(&path, &proposal).await;
-            None
+            Err(error)
         }
     }
 }

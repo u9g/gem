@@ -163,7 +163,7 @@ async fn main() {
                     proposals::approve(&request.id, &request.reply, &request.follow_up).await;
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.
-                if let (Some(url), Some(response)) = (closed, &mut *prs.write().await) {
+                if let (Ok(Some(url)), Some(response)) = (closed, &mut *prs.write().await) {
                     for cluster in &mut response.clusters {
                         cluster.pull_requests.retain(|pr| pr.url != url);
                     }
