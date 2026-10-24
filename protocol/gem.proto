@@ -81,8 +81,7 @@ message Proposal {
   repeated Comment earlier_comments = 11;
   // `reply` as GitHub renders it.
   string reply_html = 12;
-  // A prompt for a T3 Code agent to finish what the reply promises, when that
-  // is too big for a patch here, such as changes across repositories.
+  // A prompt for a T3 Code agent to do work the other steps cannot.
   // Approving starts the agent before the other steps.
   string follow_up = 13;
   // `follow_up` as GitHub renders it.

@@ -234,12 +234,11 @@ and propose it. A proposal can:
 `gh pr checkout {number}` in it, edit, and save `git diff` to a file. Never commit or push.
 - reply as {login}, in the first person, with --reply: write the markdown to a file. It is posted as \
 {reply_kind}.{resolve}
-- hand the work to another agent, with --follow-up: when the right fix is too big to review as \
-one patch on this pull request, such as matching changes in other repositories, write a prompt \
-for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
-~/code), the branches or pull requests to build on, what to change, and how to verify it. \
-Approving starts that agent, so pair it with a reply saying the work follows. Prefer --patch \
-when the change fits this pull request.
+- hand any other work to another agent, with --follow-up: when the next step is something the \
+other steps cannot do, write a prompt for a T3 Code agent to a markdown file. It must stand \
+alone: the repositories (checked out under ~/code), the branches or pull requests to work on, \
+what to do, and how to verify it. Approving starts that agent, so pair it with a reply saying \
+the work follows. Prefer the other steps when they fit.
 - close the pull request without merging it, with --close-pull-request: when the conversation \
 settles that it should not land, such as being superseded or no longer wanted. Pair it with a \
 reply saying why.
