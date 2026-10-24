@@ -46,7 +46,7 @@ export function ProposalGroup({
   onDismiss,
 }: {
   proposals: Proposal[];
-  // The proposal being approved or dismissed, if any.
+  // The proposal being dismissed, if any.
   busy?: string;
   // Called with the user's rewrites of the reply and follow-up prompt where that version is showing,
   // and '' otherwise.
@@ -54,8 +54,10 @@ export function ProposalGroup({
   onDismiss: (id: string) => void;
 }) {
   const [picked, setPicked] = useState(0);
-  // Approving or dismissing an alternative removes it from the list.
-  const index = Math.min(picked, proposals.length - 1);
+  // Approving or dismissing an alternative removes it from the list. While one runs, it shows and
+  // the others wait: approving it clears them.
+  const running = proposals.findIndex((p) => p.running);
+  const index = running >= 0 ? running : Math.min(picked, proposals.length - 1);
   const proposal = proposals[index];
   return (
     <ProposalView
@@ -79,8 +81,8 @@ export function ProposalGroup({
           </View>
         )
       }
-      busy={busy === proposal.id}
-      disabled={busy !== undefined}
+      busy={proposal.running || busy === proposal.id}
+      disabled={busy !== undefined || running >= 0}
       onApprove={(reply, followUp) => onApprove(proposal.id, reply, followUp)}
       onDismiss={() => onDismiss(proposal.id)}
     />

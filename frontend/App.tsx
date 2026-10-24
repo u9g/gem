@@ -90,13 +90,15 @@ export default function App() {
     setRepoFilter(undefined);
   }, [profileId]);
 
-  // Proposals arrive whenever their agents finish, not only when the page loads.
+  // Proposals arrive whenever their agents finish, not only when the page loads. An approval
+  // running on the server is checked on more often, to show soon how it went.
+  const running = clusters.some((cluster) => cluster.pullRequests.some((pr) => pr.proposals.some((p) => p.running)));
   useEffect(() => {
     if (status !== 'online') return;
     load();
-    const timer = setInterval(load, 30_000);
+    const timer = setInterval(load, running ? 3_000 : 30_000);
     return () => clearInterval(timer);
-  }, [status, load]);
+  }, [status, load, running]);
 
   // On a phone an open cluster is a history entry, so the browser's back returns to the list.
   useEffect(() => {
@@ -105,11 +107,10 @@ export default function App() {
     return () => removeEventListener('popstate', close);
   }, []);
 
+  // The server answers at once and runs the steps on its own; the proposal shows them running.
   function approve(id: string, reply: string, followUp: string) {
-    setBusy(id);
     post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+      .then(load);
   }
 
   function dismiss(id: string) {

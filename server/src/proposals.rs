@@ -3,6 +3,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::{LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -31,6 +32,19 @@ fn answers(proposal: &Proposal) -> Vec<&str> {
     }
 }
 
+// Proposals whose approval is still running, by ID. Approving returns before the steps finish, so
+// the frontend learns how it went from the proposals it lists, not from the approval's response.
+static RUNNING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+// Marks the proposal as running. False when it already is, so a second approval does not run it twice.
+pub fn begin(id: &str) -> bool {
+    RUNNING.lock().unwrap().insert(id.to_string())
+}
+
+pub fn finish(id: &str) {
+    RUNNING.lock().unwrap().remove(id);
+}
+
 pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>) {
     let mut by_pr: HashMap<String, Vec<Proposal>> = HashMap::new();
     for (_, proposal) in load(Path::new(DIR)).await {
@@ -41,8 +55,12 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>
                 .push(proposal);
         }
     }
+    let running = RUNNING.lock().unwrap().clone();
     for pr in clusters.iter_mut().flat_map(|c| c.pull_requests.iter_mut()) {
         pr.proposals = by_pr.remove(&pr.url).unwrap_or_default();
+        for proposal in &mut pr.proposals {
+            proposal.running = running.contains(&proposal.id);
+        }
     }
 }
 
@@ -120,7 +138,11 @@ pub async fn remove_on(urls: &[String]) {
     }
 }
 
+// A running proposal is left alone: its steps would write it back.
 pub async fn dismiss(id: &str) {
+    if RUNNING.lock().unwrap().contains(id) {
+        return;
+    }
     for (path, proposal) in load(Path::new(DIR)).await {
         if proposal.id == id {
             let _ = tokio::fs::remove_file(path).await;
@@ -398,6 +420,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         check_failure,
         rerun,
         summary_html,
+        running: false,
     };
     tokio::fs::create_dir_all(&dir)
         .await

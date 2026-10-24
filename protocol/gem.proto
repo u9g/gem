@@ -99,6 +99,8 @@ message Proposal {
   bool rerun = 17;
   // `summary` as GitHub renders it.
   string summary_html = 18;
+  // Approved, and its steps are still running on the server.
+  bool running = 19;
 }
 
 // The checks that failed on a pull request's head commit, once all of its
@@ -154,8 +156,10 @@ message Patch {
   string head_oid = 3;
 }
 
-// Runs the proposal. Its outcome shows in the proposal: it disappears, along
-// with the other proposals for the same comment, or its error is set. A
+// Starts running the proposal and returns without waiting for it: the proposal
+// is `running` until it finishes. Its outcome shows in the proposal: it
+// disappears, along with the other proposals for the same comment, or its
+// error is set. A
 // proposal that closes its pull request takes the pull request and all of its
 // proposals with it.
 message ApproveProposalRequest {
