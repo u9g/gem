@@ -1,0 +1,8 @@
+/* GitHub's stylesheet gives .markdown-body ::before and ::after tables, which -webkit-line-clamp
+   counts as lines, so the clamp is on the <p> GitHub renders. */
+.one-line > p {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

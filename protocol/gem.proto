@@ -94,6 +94,8 @@ message Proposal {
   CheckFailure check_failure = 16;
   // Reruns the failed jobs of the GitHub Actions runs in `check_failure`.
   bool rerun = 17;
+  // `summary` as GitHub renders it.
+  string summary_html = 18;
 }
 
 // The checks that failed on a pull request's head commit, once all of its

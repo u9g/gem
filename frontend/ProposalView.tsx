@@ -2,6 +2,8 @@ import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink } from 'lucide-rea
 import { type ReactNode, useContext, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import './ProposalView.css';
+
 import type { Proposal } from './gen/gem_pb';
 import {
   Bubble,
@@ -135,9 +137,9 @@ function ProposalView({
     <View style={[styles.band, proposal.error !== '' && styles.bandError]}>
       <View style={styles.header}>
         <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
-        <Text numberOfLines={phone ? undefined : 1} style={styles.summary}>
-          {proposal.summary}
-        </Text>
+        <View style={styles.summary}>
+          <Html html={proposal.summaryHtml} className={phone ? undefined : 'one-line'} style={summaryHtml} />
+        </View>
         {stepper}
         {!phone && actions}
       </View>
@@ -234,6 +236,8 @@ function ProposalView({
   );
 }
 
+const summaryHtml = { fontSize: 14, lineHeight: '22px' };
+
 const styles = StyleSheet.create({
   band: {
     gap: 10,
@@ -253,9 +257,7 @@ const styles = StyleSheet.create({
   },
   summary: {
     flex: 1,
-    color: t3.foreground,
-    fontSize: 14,
-    lineHeight: 22,
+    minWidth: 0,
   },
   stepper: {
     flexDirection: 'row',

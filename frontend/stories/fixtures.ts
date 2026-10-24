@@ -48,6 +48,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'patch-reply-resolve',
     summary: 'Use conn_options for the retry count and interval, reply, and resolve',
+    summaryHtml: '<p dir="auto">Use conn_options for the retry count and interval, reply, and resolve</p>',
     pullRequestUrl: pr.url,
     comment: comment(
       'devin-ai-integration',
@@ -64,6 +65,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'alternative-patch',
     summary: 'Honor max_retry like the STT path, and say so',
+    summaryHtml: '<p dir="auto">Honor max_retry like the STT path, and say so</p>',
     pullRequestUrl: pr.url,
     comment: reviewQuestion,
     threadId: 'thread-1',
@@ -74,6 +76,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'alternative-reply',
     summary: 'Explain why TTS retries once, and keep it',
+    summaryHtml: '<p dir="auto">Explain why TTS retries once, and keep it</p>',
     pullRequestUrl: pr.url,
     comment: reviewQuestion,
     threadId: 'thread-1',
@@ -84,6 +87,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'quote-reply',
     summary: 'Quote reply that the changeset is not needed',
+    summaryHtml: '<p dir="auto">Quote reply that the changeset is not needed</p>',
     pullRequestUrl: pr.url,
     comment: comment(
       'changeset-bot',
@@ -97,6 +101,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'close',
     summary: 'Close this PR in favor of #2650',
+    summaryHtml: '<p dir="auto">Close this PR in favor of <a class="issue-link js-issue-link" data-error-text="Failed to load title" data-id="3160627175" data-permission-text="Title is private" data-url="https://github.com/livekit/agents/issues/2650" data-hovercard-type="issue" data-hovercard-url="/livekit/agents/issues/2650/hovercard" href="https://github.com/livekit/agents/issues/2650">#2650</a></p>',
     pullRequestUrl: pr.url,
     comment: comment(
       'davidzhao',
@@ -111,6 +116,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'tool-request',
     summary: 'slack_message: ask a channel a question',
+    summaryHtml: '<p dir="auto">slack_message: ask a channel a question</p>',
     pullRequestUrl: pr.url,
     comment: comment(
       'adrian',
@@ -124,6 +130,7 @@ export const proposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'failed',
     summary: 'Log the retry attempt',
+    summaryHtml: '<p dir="auto">Log the retry attempt</p>',
     pullRequestUrl: pr.url,
     comment: comment(
       'copilot-pull-request-reviewer',
@@ -197,6 +204,7 @@ export const checkProposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'checks-patch',
     summary: 'Drop the unused import ruff flags',
+    summaryHtml: '<p dir="auto">Drop the unused import ruff flags</p>',
     pullRequestUrl: pr.url,
     checkFailure: { ...failure, checks: [ruff] },
     patch: { diff: lintDiff, commitMessage: 'chore(voice): drop unused import' },
@@ -204,6 +212,7 @@ export const checkProposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'checks-flush',
     summary: 'Stop waiting forever for playout on close, which hangs the test',
+    summaryHtml: '<p dir="auto">Stop waiting forever for playout on close, which hangs the test</p>',
     pullRequestUrl: pr.url,
     checkFailure: { ...failure, checks: [tests] },
     patch: { diff: flushDiff, commitMessage: 'fix(voice): bound the playout wait on close' },
@@ -211,6 +220,7 @@ export const checkProposals: Proposal[] = [
   create(ProposalSchema, {
     id: 'checks-rerun',
     summary: 'Rerun the tests: the runner lost its network',
+    summaryHtml: '<p dir="auto">Rerun the tests: the runner lost its network</p>',
     pullRequestUrl: pr.url,
     checkFailure: { ...failure, checks: [tests] },
     rerun: true,
