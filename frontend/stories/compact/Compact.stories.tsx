@@ -11,6 +11,7 @@ import {
   EditableReply,
   Html,
   type ReplyDraft,
+  ClosesTag,
   ResolvesTag,
   ToolRequestBanner,
 } from '../../surfaces';
@@ -82,9 +83,10 @@ function Reply({ proposal, max }: { proposal: Proposal; max: number }) {
           </Clamp>
         </Bubble>
       )}
-      {proposal.resolveThread && (
+      {(proposal.resolveThread || proposal.closePullRequest) && (
         <View style={styles.rightRow}>
-          <ResolvesTag />
+          {proposal.resolveThread && <ResolvesTag />}
+          {proposal.closePullRequest && <ClosesTag />}
         </View>
       )}
     </View>
@@ -326,6 +328,7 @@ const styles = StyleSheet.create({
   rightRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: 6,
   },
   buttons: {
     flexDirection: 'row',

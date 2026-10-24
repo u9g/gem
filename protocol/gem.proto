@@ -52,7 +52,7 @@ message Repository {
 
 // An answer an agent proposes to a conversation on a pull request, run as the
 // user once approved. Approving runs the steps that are set in this order:
-// follow_up, patch, reply, resolve_thread. A step that succeeded is cleared, so approving again
+// follow_up, patch, reply, resolve_thread, close_pull_request. A step that succeeded is cleared, so approving again
 // after a failure resumes at the step that failed.
 message Proposal {
   string id = 1;
@@ -87,6 +87,8 @@ message Proposal {
   string follow_up = 13;
   // `follow_up` as GitHub renders it.
   string follow_up_html = 14;
+  // Closes the pull request without merging it.
+  bool close_pull_request = 15;
 }
 
 message Comment {

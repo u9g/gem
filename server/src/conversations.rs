@@ -240,10 +240,13 @@ for a T3 Code agent to a markdown file. It must stand alone: the repositories (c
 ~/code), the branches or pull requests to build on, what to change, and how to verify it. \
 Approving starts that agent, so pair it with a reply saying the work follows. Prefer --patch \
 when the change fits this pull request.
+- close the pull request without merging it, with --close-pull-request: when the conversation \
+settles that it should not land, such as being superseded or no longer wanted. Pair it with a \
+reply saying why.
 
 Record each proposal with:
 
-{propose} --summary \"<one line saying what approving does>\" [--patch <diff file> --message \"<commit message>\"] [--reply <markdown file>] [--follow-up <markdown file>]{resolve_flag}
+{propose} --summary \"<one line saying what approving does>\" [--patch <diff file> --message \"<commit message>\"] [--reply <markdown file>] [--follow-up <markdown file>]{resolve_flag} [--close-pull-request]
 
 Approving a proposal runs its steps in that order. Run the command once per alternative when more \
 than one answer is reasonable. It checks the proposal and exits non-zero with the reason when \

@@ -4,6 +4,7 @@ import {
   CheckCheck,
   ChevronRight,
   CircleAlert,
+  GitPullRequestClosed,
   Hammer,
   MessageCircle,
   MessageSquareQuote,
@@ -60,6 +61,7 @@ export function stepSentence(proposal: Proposal): string {
   }
   if (proposal.reply) phrases.push(proposal.threadId ? 'reply in thread' : 'quote reply');
   if (proposal.resolveThread) phrases.push('resolve');
+  if (proposal.closePullRequest) phrases.push('close the pull request');
   if (proposal.requestedTool) phrases.push('needs a new tool');
   const sentence =
     phrases.length > 1 ? `${phrases.slice(0, -1).join(', ')} and ${phrases[phrases.length - 1]}` : phrases[0] ?? '';
@@ -221,6 +223,7 @@ export function Steps({ proposal }: { proposal: Proposal }) {
         </Row>
       )}
       {proposal.resolveThread && <Row icon={CheckCheck} label="Resolve thread" />}
+      {proposal.closePullRequest && <Row icon={GitPullRequestClosed} label="Close pull request" />}
       {proposal.requestedTool !== '' && (
         <Row icon={Hammer} label="Needs a tool">
           <Markdown>{proposal.requestedTool}</Markdown>

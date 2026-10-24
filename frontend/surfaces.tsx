@@ -1,4 +1,4 @@
-import { Bot, CheckCheck, FileCode, Hammer } from 'lucide-react';
+import { Bot, CheckCheck, FileCode, GitPullRequestClosed, Hammer } from 'lucide-react';
 import { createContext, type ReactNode, useContext, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -292,6 +292,15 @@ export function ResolvesTag() {
     <View style={styles.inlineTag}>
       <Icon icon={CheckCheck} size={12} />
       <Text style={styles.inlineTagText}>resolves</Text>
+    </View>
+  );
+}
+
+export function ClosesTag() {
+  return (
+    <View style={styles.inlineTag}>
+      <Icon icon={GitPullRequestClosed} size={12} />
+      <Text style={styles.inlineTagText}>closes PR</Text>
     </View>
   );
 }
