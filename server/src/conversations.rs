@@ -346,7 +346,10 @@ and propose it. A proposal can:
 - change the code, with --patch and --message: clone {full_name} into a temporary directory, run \
 `gh pr checkout {number}` in it, edit, and save `git diff` to a file. Never commit or push.
 - reply as {login}, in the first person, with --reply: write the markdown to a file. It is posted as \
-{reply_kind}.{resolve}
+{reply_kind}. Open with what {login} is doing about the comment, then why: {login} reads only the \
+first lines before approving, and they must not concede a suggestion the reply goes on to decline. \
+Pin each link to the commit you read the lines at, so the lines it highlights are the ones you \
+describe.{resolve}
 - hand the work to another agent, with --follow-up: when the right fix is too big to review as \
 one patch on this pull request, such as matching changes in other repositories, write a prompt \
 for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
