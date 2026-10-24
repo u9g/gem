@@ -4,11 +4,13 @@ import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { ClusterRow, PhoneClusterRow, ready, units } from './ClusterRow';
 import { bySubject, ProposalGroup } from './ProposalView';
-import { ChecksIcon, PullRequestList } from './PullRequestList';
-import { type Project, useServer } from './server';
+import { PullRequestList } from './PullRequestList';
+import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
+import { type Profile, useServer } from './server';
 import { Login } from './surfaces';
 import { Button, usePhone } from './t3';
 import {
@@ -17,20 +19,10 @@ import {
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
   RestartClusterRequestSchema,
-  type PullRequest,
   type PullRequestCluster,
   type Repository,
 } from './gen/gem_pb';
 
-const units: [Intl.RelativeTimeFormatUnit, number][] = [
-  ['year', 365 * 24 * 60 * 60],
-  ['month', 30 * 24 * 60 * 60],
-  ['week', 7 * 24 * 60 * 60],
-  ['day', 24 * 60 * 60],
-  ['hour', 60 * 60],
-  ['minute', 60],
-  ['second', 1],
-];
 const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
 
 // Largest unit that fits, truncated: 59 minutes stays "59 minutes ago", not "1 hour ago".
@@ -60,23 +52,10 @@ function repositoryValue(repository: Repository): string {
   return JSON.stringify([repository.owner, repository.name]);
 }
 
-// "5m", "3h", "2d": the largest unit that fits, truncated, for one-line rows.
-function shortAgo(date: Date): string {
-  const seconds = (Date.now() - date.getTime()) / 1000;
-  const [unit, size] = units.find(([, size]) => seconds >= size) ?? units[units.length - 1];
-  return `${Math.trunc(seconds / size)}${unit === 'month' ? 'mo' : unit[0]}`;
-}
-
-function ready(cluster: PullRequestCluster): boolean {
-  return cluster.pullRequests.every((pr) => pr.approved && pr.checksPassing);
-}
-
-function pending(cluster: PullRequestCluster): number {
-  return cluster.pullRequests.reduce((sum, pr) => sum + pr.proposals.length, 0);
-}
-
 export default function App() {
-  const { status, addProject, post } = useServer();
+  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post } = useServer();
+  // The profile being changed, or 'new' while one is being added.
+  const [editing, setEditing] = useState<Profile | 'new'>();
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
   const [login, setLogin] = useState('');
   const [selectedUrl, setSelectedUrl] = useState<string>();
@@ -96,10 +75,20 @@ export default function App() {
           const response = fromJson(ListOpenPullRequestsResponseSchema, json);
           setClusters(response.clusters);
           setLogin(response.login);
+          reported(response.login, response.search);
         },
       ),
-    [post],
+    [post, reported],
   );
+
+  // Another profile is another server: nothing shown belongs to it.
+  const profileId = profile?.id;
+  useEffect(() => {
+    setClusters([]);
+    setLogin('');
+    setSelectedUrl(undefined);
+    setRepoFilter(undefined);
+  }, [profileId]);
 
   // Proposals arrive whenever their agents finish, not only when the page loads.
   useEffect(() => {
@@ -151,10 +140,12 @@ export default function App() {
 
   const filters = (
     <View style={styles.filters}>
-      <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
+      <Pressable accessibilityLabel="Change profile" onPress={() => setEditing(profile)}>
         <Text style={styles.filter}>server: {status}</Text>
       </Pressable>
-      <Text style={styles.filter}>author: {login}</Text>
+      {!phone && profile && (
+        <ProfileChip profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
+      )}
       <Select.Root
         value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
         onValueChange={(option) =>
@@ -197,8 +188,26 @@ export default function App() {
     </View>
   );
 
-  if (status === 'no-project') {
-    return <AddProject onAdd={addProject} />;
+  if (!profile || editing) {
+    const changing = editing === 'new' ? undefined : (editing ?? undefined);
+    return (
+      <ProfileForm
+        key={changing?.id ?? 'new'}
+        editing={changing}
+        onSave={(saved) => {
+          saveProfile(saved);
+          setEditing(undefined);
+        }}
+        onCancel={profile && (() => setEditing(undefined))}
+        onRemove={
+          changing &&
+          (() => {
+            removeProfile(changing.id);
+            setEditing(undefined);
+          })
+        }
+      />
+    );
   }
 
   // One screen at a time: the cluster list, or the cluster tapped in it.
@@ -219,7 +228,7 @@ export default function App() {
             </>
           ) : (
             <>
-              <Text style={styles.largeTitle}>Clusters</Text>
+              <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
               <ScrollView>
                 {visible.map((cluster) => (
@@ -318,34 +327,6 @@ function ClusterView({
   );
 }
 
-// The LiveKit project the gem server is configured with: its LIVEKIT_URL, LIVEKIT_API_KEY and
-// LIVEKIT_API_SECRET.
-function AddProject({ onAdd }: { onAdd: (project: Project) => void }) {
-  const [project, setProject] = useState<Project>({ url: '', apiKey: '', apiSecret: '' });
-  const field = (key: keyof Project, placeholder: string) => (
-    <TextInput
-      style={styles.projectInput}
-      placeholder={placeholder}
-      placeholderTextColor="#6B6A70"
-      secureTextEntry={key === 'apiSecret'}
-      autoCapitalize="none"
-      value={project[key]}
-      onChangeText={(value) => setProject({ ...project, [key]: value })}
-    />
-  );
-  return (
-    <View style={[styles.container, styles.project]}>
-      <Text style={styles.projectText}>Add the LiveKit project your gem server uses</Text>
-      {field('url', 'LIVEKIT_URL')}
-      {field('apiKey', 'LIVEKIT_API_KEY')}
-      {field('apiSecret', 'LIVEKIT_API_SECRET')}
-      <Pressable style={styles.projectButton} onPress={() => onAdd(project)}>
-        <Text style={styles.projectText}>Connect</Text>
-      </Pressable>
-    </View>
-  );
-}
-
 // T3 Code's panel resize handle: an 8px strip over the sidebar's right edge whose 1px line shows
 // on hover and turns blue while dragging. The width is saved when the drag ends, not on every move.
 function ResizeHandle({
@@ -385,84 +366,10 @@ function ResizeHandle({
   );
 }
 
-// One line per cluster, like a thread in T3 Code's sidebar: a red dot when a PR's checks fail, the
-// name (green when every PR is approved and passing), how many proposals wait, and how long ago.
-function ClusterRow({
-  cluster,
-  selected,
-  onPress,
-}: {
-  cluster: PullRequestCluster;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const count = pending(cluster);
-  return (
-    <Pressable
-      onPress={onPress}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      style={[styles.row, (selected || hovered) && styles.rowActive]}
-    >
-      <View style={[styles.dot, cluster.pullRequests.some((pr) => pr.checksFailing) && styles.dotFailing]} />
-      <Text numberOfLines={1} style={[styles.rowName, ready(cluster) && styles.ready]}>
-        {cluster.name || cluster.pullRequests[0].title}
-      </Text>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
-      {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
-    </Pressable>
-  );
-}
-
-// One PR per repository, the one whose checks look worst: failing, then running, then passing.
-function worstPerRepository(cluster: PullRequestCluster): PullRequest[] {
-  const rank = (pr: PullRequest) => (pr.checksFailing ? 0 : pr.checksPassing ? 2 : 1);
-  const worst = new Map<string, PullRequest>();
-  for (const pr of cluster.pullRequests) {
-    const name = pr.repository?.name ?? '';
-    const seen = worst.get(name);
-    if (!seen || rank(pr) < rank(seen)) worst.set(name, pr);
-  }
-  return [...worst.values()];
-}
-
-// A cluster sized for a thumb: its name over each PR's checks and repository, then how many
-// proposals wait and how long ago.
-function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestCluster; onPress: () => void }) {
-  const count = pending(cluster);
-  return (
-    <Pressable onPress={onPress} style={styles.phoneRow}>
-      <View style={{ flex: 1, gap: 3 }}>
-        <Text numberOfLines={1} style={[styles.phoneRowName, ready(cluster) && styles.ready]}>
-          {cluster.name || cluster.pullRequests[0].title}
-        </Text>
-        <View style={styles.phoneRepos}>
-          {worstPerRepository(cluster).map((pr) => (
-            <View key={pr.url} style={styles.phoneRepo}>
-              <ChecksIcon pr={pr} size={11} />
-              <Text style={styles.meta}>{pr.repository?.name}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
-      {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   phone: {
     flex: 1,
     backgroundColor: '#19212A',
-  },
-  largeTitle: {
-    color: '#D0CFD4',
-    fontSize: 28,
-    fontWeight: '700',
-    paddingHorizontal: 16,
-    paddingTop: 16,
   },
   back: {
     flexDirection: 'row',
@@ -478,28 +385,6 @@ const styles = StyleSheet.create({
   },
   phoneContent: {
     padding: 12,
-  },
-  phoneRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: 64,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  phoneRowName: {
-    color: '#D0CFD4',
-    fontSize: 16,
-  },
-  phoneRepos: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  phoneRepo: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   container: {
     flex: 1,
@@ -539,31 +424,6 @@ const styles = StyleSheet.create({
     gap: 6,
     padding: 10,
   },
-  project: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  projectInput: {
-    width: 320,
-    color: '#D0CFD4',
-    fontSize: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  projectButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  projectText: {
-    color: '#D0CFD4',
-    fontSize: 14,
-  },
   filter: {
     color: '#D0CFD4',
     fontSize: 11,
@@ -602,47 +462,6 @@ const styles = StyleSheet.create({
   rows: {
     paddingHorizontal: 8,
     paddingBottom: 8,
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 32,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  rowActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-  },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  dotFailing: {
-    backgroundColor: '#F87171',
-  },
-  rowName: {
-    flex: 1,
-    color: '#D0CFD4',
-    fontSize: 14,
-  },
-  count: {
-    color: '#8FA9F5',
-    fontSize: 10,
-    fontWeight: '600',
-    paddingHorizontal: 6,
-    lineHeight: 18,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: 'rgba(55, 103, 232, 0.4)',
-    backgroundColor: 'rgba(55, 103, 232, 0.1)',
-    fontVariant: ['tabular-nums'],
-  },
-  rowTime: {
-    color: 'rgba(208, 207, 212, 0.45)',
-    fontSize: 11,
-    fontVariant: ['tabular-nums'],
   },
   main: {
     flex: 1,

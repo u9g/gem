@@ -10,7 +10,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use tower::ServiceExt;
 
-// The room the frontend joins in the same project.
+// The room the frontend joins in the same project, unless GEM_ROOM names another, so several
+// servers can share a project.
 const ROOM: &str = "gem";
 // The frontend sends every request to this participant.
 const IDENTITY: &str = "server";
@@ -37,19 +38,20 @@ enum Left {
 
 // The router's requests, carried over a room in the user's own LiveKit project instead of a port:
 // nothing listens on the network. LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET name the
-// project. Returns on SIGTERM.
+// project and GEM_ROOM the room. Returns on SIGTERM.
 //
 // Every connected participant costs the project's connection minutes, so the server is in the
 // room only while a frontend is.
 pub async fn serve(app: Router) {
     let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
+    let room = env::var("GEM_ROOM").unwrap_or_else(|_| ROOM.to_string());
     let rooms = RoomClient::new(&url).expect("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set");
     let mut terminate = terminate();
     loop {
         // A room that does not exist yet has no frontend in it.
-        let occupied = rooms.list_participants(ROOM).await.is_ok_and(|p| !p.is_empty());
+        let occupied = rooms.list_participants(&room).await.is_ok_and(|p| !p.is_empty());
         if occupied {
-            match join(&url, &app, &mut terminate).await {
+            match join(&url, &room, &app, &mut terminate).await {
                 Ok(Left::Terminated) => return,
                 Ok(Left::Empty) => {}
                 Err(error) => eprintln!("room: {error}"),
@@ -65,12 +67,12 @@ pub async fn serve(app: Router) {
 // Leaves the room once no frontend is in it, and on SIGTERM, so the frontend sees the server go
 // offline at once instead of after LiveKit's participant timeout. Errors when the room is lost;
 // the SDK reconnects through shorter outages itself.
-async fn join(url: &str, app: &Router, terminate: &mut Terminate) -> Result<Left, Box<dyn Error>> {
+async fn join(url: &str, name: &str, app: &Router, terminate: &mut Terminate) -> Result<Left, Box<dyn Error>> {
     let token = AccessToken::new()?
         .with_identity(IDENTITY)
         .with_grants(VideoGrants {
             room_join: true,
-            room: ROOM.to_string(),
+            room: name.to_string(),
             can_publish: Some(false),
             can_subscribe: Some(false),
             can_publish_data: Some(true),

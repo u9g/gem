@@ -109,7 +109,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
-    // LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_SEARCH can live in .env in the
+    // LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, GEM_ROOM and GEM_SEARCH can live in .env in the
     // working directory, next to the server's other state. The real environment wins.
     let _ = dotenvy::dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -224,6 +224,7 @@ async fn open_pull_requests(
     names: Names,
     conversations: Conversations,
 ) -> Option<ListOpenPullRequestsResponse> {
+    let search = std::env::var("GEM_SEARCH").unwrap_or_default();
     let stdout = gh(&[
         "api",
         "graphql",
@@ -231,11 +232,7 @@ async fn open_pull_requests(
         "-f",
         &format!("query={PRS_QUERY}"),
         "-f",
-        &format!(
-            "q=is:pr is:open author:{} {}",
-            login(),
-            std::env::var("GEM_SEARCH").unwrap_or_default()
-        ),
+        &format!("q=is:pr is:open author:{} {search}", login()),
         "--jq",
         PRS_JQ,
     ])
@@ -250,6 +247,7 @@ async fn open_pull_requests(
     Some(ListOpenPullRequestsResponse {
         clusters,
         login: login().to_string(),
+        search,
     })
 }
 
