@@ -179,7 +179,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     if !thread_id.is_empty() {
         let value: serde_json::Value = serde_json::from_slice(
             &graphql(
-                "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } comments(first: 100) { nodes { id body url author { login } } } } } }",
+                "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } comments(first: 100) { nodes { id body bodyHTML url author { login } } } } } }",
                 &[("id", thread_id)],
             )
             .await?,
@@ -201,6 +201,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
                 author: c["author"]["login"].as_str().unwrap_or("ghost").to_string(),
                 body: c["body"].as_str().unwrap_or_default().to_string(),
                 url: c["url"].as_str().unwrap_or_default().to_string(),
+                body_html: c["bodyHTML"].as_str().unwrap_or_default().to_string(),
             });
         }
     }
@@ -270,6 +271,8 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     struct Node {
         id: String,
         body: String,
+        #[serde(rename = "bodyHTML")]
+        body_html: String,
         url: String,
         author: Option<Author>,
         #[serde(rename = "pullRequest")]
@@ -283,7 +286,7 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     struct Url {
         url: String,
     }
-    let fields = "id body url author { login } pullRequest { url }";
+    let fields = "id body bodyHTML url author { login } pullRequest { url }";
     let output = graphql(
         &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} }} }} }}"),
         &[("id", id)],
@@ -299,6 +302,7 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
             author: node.author.map_or("ghost".into(), |a| a.login),
             body: node.body,
             url: node.url,
+            body_html: node.body_html,
         },
     })
 }

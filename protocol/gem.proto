@@ -86,6 +86,8 @@ message Comment {
   // Markdown.
   string body = 3;
   string url = 4;
+  // The body as GitHub renders it.
+  string body_html = 5;
 }
 
 // Committed and pushed to the pull request's head branch.
