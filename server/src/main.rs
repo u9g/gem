@@ -150,19 +150,28 @@ async fn main() {
                 Json(RestartClusterResponse {})
             })
         })
-        .route(
-            "/prs",
+        .route("/prs", {
+            let prs = prs.clone();
             post(move |Json(_): Json<ListOpenPullRequestsRequest>| {
                 serve_prs(prs, names, conversations)
-            }),
-        )
-        .route(
-            "/proposals/approve",
+            })
+        })
+        .route("/proposals/approve", {
+            let prs = prs.clone();
             post(|Json(request): Json<ApproveProposalRequest>| async move {
-                proposals::approve(&request.id, &request.reply, &request.follow_up).await;
+                let closed =
+                    proposals::approve(&request.id, &request.reply, &request.follow_up).await;
+                // Search can list a PR as open for a while after it closes, so drop it here
+                // rather than wait for the next refresh.
+                if let (Some(url), Some(response)) = (closed, &mut *prs.write().await) {
+                    for cluster in &mut response.clusters {
+                        cluster.pull_requests.retain(|pr| pr.url != url);
+                    }
+                    response.clusters.retain(|c| !c.pull_requests.is_empty());
+                }
                 Json(ApproveProposalResponse {})
-            }),
-        )
+            })
+        })
         .route(
             "/proposals/dismiss",
             post(|Json(request): Json<DismissProposalRequest>| async move {
