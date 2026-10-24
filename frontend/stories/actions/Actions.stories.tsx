@@ -125,7 +125,7 @@ function ThreadReplyStory() {
         </Row>
       </Approach>
       <Approach name="B · Conversation" note="Their comment, then your reply as a T3 Code message bubble">
-        <Theirs author={comment.author} body={comment.body} />
+        <Theirs comment={comment} />
         <Bubble>
           <Markdown>{threadReply.reply}</Markdown>
         </Bubble>

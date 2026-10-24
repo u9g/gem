@@ -28,16 +28,19 @@ index 3d723da..c883a61 100644
          return await synthesize_with_retry(tts, text, conn_options=conn_options, attempt=attempt + 1)
 `;
 
-const comment = (author: string, body: string, anchor: string) => ({
+// bodyHtml is what GitHub's markdown API renders for body.
+const comment = (author: string, body: string, bodyHtml: string, anchor: string) => ({
   id: `comment-${anchor}`,
   author,
   body,
+  bodyHtml,
   url: `${pr.url}#${anchor}`,
 });
 
 const reviewQuestion = comment(
   'theo',
   "Should this retry honor `conn_options.max_retry`? It always retries exactly once.\n\nAsking because the STT path uses the options, so these two would behave differently.",
+  '<p dir="auto">Should this retry honor <code class="notranslate">conn_options.max_retry</code>? It always retries exactly once.</p>\n<p dir="auto">Asking because the STT path uses the options, so these two would behave differently.</p>',
   'discussion_r1',
 );
 
@@ -48,7 +51,8 @@ export const proposals: Proposal[] = [
     pullRequestUrl: pr.url,
     comment: comment(
       'devin-ai-integration',
-      '<!-- devin-review-comment {"id": "BUG_0001"} -->\n🟡 **Retry ignores the configured interval**\n\nThe retry sleeps a fixed 100 ms instead of `conn_options.retry_interval`.',
+      '<!-- devin-review-comment {"id": "BUG_0001"} -->\n🟡 **Retry ignores the configured interval**\n\nThe retry in [`synthesize_with_retry`](https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/voice/tts_retry.py) sleeps a fixed 100 ms instead of `conn_options.retry_interval`.\n\n<details>\n<summary>Learn more</summary>\n\n`conn_options.retry_interval` defaults to 2 s, so a dropped stream retries 20× faster than configured.\n</details>',
+      '\n<p dir="auto">🟡 <strong>Retry ignores the configured interval</strong></p>\n<p dir="auto">The retry in <a href="https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/voice/tts_retry.py"><code class="notranslate">synthesize_with_retry</code></a> sleeps a fixed 100 ms instead of <code class="notranslate">conn_options.retry_interval</code>.</p>\n<details>\n<summary>Learn more</summary>\n<p dir="auto"><code class="notranslate">conn_options.retry_interval</code> defaults to 2 s, so a dropped stream retries 20× faster than configured.</p>\n</details>',
       'discussion_r0',
     ),
     threadId: 'thread-0',
@@ -81,6 +85,7 @@ export const proposals: Proposal[] = [
     comment: comment(
       'changeset-bot',
       "### ⚠️ No Changeset found\n\nLatest commit: c883a61\n\nMerging this PR will not cause a version bump for any packages.",
+      '<h3 dir="auto"><g-emoji class="g-emoji" alias="warning">⚠️</g-emoji> No Changeset found</h3>\n<p dir="auto">Latest commit: c883a61</p>\n<p dir="auto">Merging this PR will not cause a version bump for any packages.</p>',
       'issuecomment-1',
     ),
     reply: 'No release needed: this only changes an internal retry.\n',
@@ -92,6 +97,7 @@ export const proposals: Proposal[] = [
     comment: comment(
       'adrian',
       'Is the voice team OK with retries changing the latency budget?',
+      '<p dir="auto">Is the voice team OK with retries changing the latency budget?</p>',
       'issuecomment-2',
     ),
     requestedTool:
@@ -101,7 +107,12 @@ export const proposals: Proposal[] = [
     id: 'failed',
     summary: 'Log the retry attempt',
     pullRequestUrl: pr.url,
-    comment: comment('copilot-pull-request-reviewer', 'Consider logging retries so they show up in traces.', 'discussion_r2'),
+    comment: comment(
+      'copilot-pull-request-reviewer',
+      'Consider logging retries so they show up in traces.',
+      '<p dir="auto">Consider logging retries so they show up in traces.</p>',
+      'discussion_r2',
+    ),
     threadId: 'thread-2',
     patch: { diff, commitMessage: 'chore(voice): log TTS retries' },
     reply: 'Added a debug log for each retry.\n',

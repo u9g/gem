@@ -39,7 +39,7 @@ function Conversation({ quote, children }: { quote?: boolean; children: ReactNod
   const comment = proposal.comment!;
   return (
     <View style={styles.conversation}>
-      {!quote && <Theirs author={comment.author} body={comment.body} />}
+      {!quote && <Theirs comment={comment} />}
       {children}
     </View>
   );
