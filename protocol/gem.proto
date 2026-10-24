@@ -215,6 +215,19 @@ message RestartClusterRequest {
 
 message RestartClusterResponse {}
 
+// Starts an agent on the user's message about a cluster, followed like an investigation. The
+// agent reads the cluster and its pull requests through gem's MCP server.
+message MessageClusterRequest {
+  // The cluster's pull requests, oldest first.
+  repeated string pull_request_urls = 1;
+  string message = 2;
+}
+
+message MessageClusterResponse {
+  // The investigation following the agent.
+  string investigation_id = 1;
+}
+
 // Approves a rerun proposal, then starts an investigation of the checks it reruns.
 message InvestigateRequest {
   string proposal_id = 1;

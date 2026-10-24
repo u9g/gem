@@ -27,16 +27,7 @@ export function InvestigationView({
   onMessage: (message: string) => Promise<unknown>;
   onClose: () => void;
 }) {
-  const [message, setMessage] = useState('');
-  const [sending, setSending] = useState(false);
   const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(investigation.pullRequestUrl) ?? [];
-  const send = () => {
-    if (!message.trim()) return;
-    setSending(true);
-    onMessage(message)
-      .then(() => setMessage(''))
-      .finally(() => setSending(false));
-  };
   return (
     <View style={styles.column}>
       <View style={styles.header}>
@@ -60,17 +51,40 @@ export function InvestigationView({
       {investigation.proposals.map((proposal) => (
         <ProposalGroup key={proposal.id} proposals={[proposal]} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
       ))}
-      <View style={styles.composer}>
-        <TextInput
-          multiline
-          value={message}
-          onChangeText={setMessage}
-          placeholder="Message the agent…"
-          placeholderTextColor={t3.faint}
-          style={styles.input}
-        />
-        <Button label={sending ? 'Sending…' : 'Send'} variant="default" disabled={sending || !message.trim()} onPress={send} />
-      </View>
+      <Composer placeholder="Message the agent…" onSend={onMessage} />
+    </View>
+  );
+}
+
+// A box to write a message in and send it. It empties once the message is sent.
+export function Composer({
+  placeholder,
+  onSend,
+}: {
+  placeholder: string;
+  // Resolves once the message is sent.
+  onSend: (message: string) => Promise<unknown>;
+}) {
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const send = () => {
+    if (!message.trim()) return;
+    setSending(true);
+    onSend(message)
+      .then(() => setMessage(''))
+      .finally(() => setSending(false));
+  };
+  return (
+    <View style={styles.composer}>
+      <TextInput
+        multiline
+        value={message}
+        onChangeText={setMessage}
+        placeholder={placeholder}
+        placeholderTextColor={t3.faint}
+        style={styles.input}
+      />
+      <Button label={sending ? 'Sending…' : 'Send'} variant="default" disabled={sending || !message.trim()} onPress={send} />
     </View>
   );
 }
