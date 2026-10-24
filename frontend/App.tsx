@@ -2,18 +2,21 @@ import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
+import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { byComment, ProposalGroup } from './ProposalView';
-import { PullRequestList } from './PullRequestList';
+import { ChecksIcon, PullRequestList } from './PullRequestList';
 import { type Project, useServer } from './server';
 import { Login } from './surfaces';
+import { usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
   DismissProposalRequestSchema,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
+  type PullRequest,
   type PullRequestCluster,
   type Repository,
 } from './gen/gem_pb';
@@ -80,6 +83,7 @@ export default function App() {
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Proposal being approved or dismissed.
   const [busy, setBusy] = useState<string>();
+  const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || SIDEBAR_DEFAULT_WIDTH),
   );
@@ -103,6 +107,13 @@ export default function App() {
     const timer = setInterval(load, 30_000);
     return () => clearInterval(timer);
   }, [status, load]);
+
+  // On a phone an open cluster is a history entry, so the browser's back returns to the list.
+  useEffect(() => {
+    const close = () => setSelectedUrl(undefined);
+    addEventListener('popstate', close);
+    return () => removeEventListener('popstate', close);
+  }, []);
 
   function approve(id: string, reply: string, followUp: string) {
     setBusy(id);
@@ -128,10 +139,97 @@ export default function App() {
   // A cluster is identified by its oldest PR, which stays put as the cluster grows. Until one is
   // picked, the most recently updated one is shown.
   const selected = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl) ?? visible[0];
-  const proposals = (selected?.pullRequests ?? []).flatMap((pr) => pr.proposals);
+
+  const filters = (
+    <View style={styles.filters}>
+      <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
+        <Text style={styles.filter}>server: {status}</Text>
+      </Pressable>
+      <Text style={styles.filter}>author: {login}</Text>
+      <Select.Root
+        value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
+        onValueChange={(option) =>
+          setRepoFilter(repositories.find((repository) => repositoryValue(repository) === option?.value))
+        }
+      >
+        <Select.Trigger>
+          <Text style={styles.filter}>repos: {repoFilter?.name ?? '*'}</Text>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Content position="popper" sideOffset={4} style={styles.menu}>
+            <Select.Viewport>
+              {[undefined, ...repositories].map((repository) => {
+                const value = repository ? repositoryValue(repository) : '*';
+                const label = repository?.name ?? '*';
+                return (
+                  <Select.Item
+                    key={value}
+                    value={value}
+                    label={label}
+                    // On web the Item is Radix's DOM element, so its style must be one plain
+                    // object of CSS properties. Radix focuses whichever item the pointer or
+                    // keyboard highlights.
+                    onFocus={() => setHighlightedRepo(value)}
+                    onBlur={() => setHighlightedRepo(undefined)}
+                    style={StyleSheet.flatten([
+                      styles.menuItem,
+                      sameRepository(repository, repoFilter) && styles.menuItemSelected,
+                      highlightedRepo === value && styles.menuItemActive,
+                    ])}
+                  >
+                    <Select.ItemText style={styles.menuText} />
+                  </Select.Item>
+                );
+              })}
+            </Select.Viewport>
+          </Select.Content>
+        </Select.Portal>
+      </Select.Root>
+    </View>
+  );
 
   if (status === 'no-project') {
     return <AddProject onAdd={addProject} />;
+  }
+
+  // One screen at a time: the cluster list, or the cluster tapped in it.
+  if (phone) {
+    const opened = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
+    return (
+      <Login value={login}>
+        <View style={styles.phone}>
+          {opened ? (
+            <>
+              <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={() => history.back()}>
+                <ChevronLeft size={20} color="#8FA8F5" />
+                <Text style={styles.backText}>Clusters</Text>
+              </Pressable>
+              <ScrollView contentContainerStyle={styles.phoneContent}>
+                <ClusterView cluster={opened} busy={busy} onApprove={approve} onDismiss={dismiss} />
+              </ScrollView>
+            </>
+          ) : (
+            <>
+              <Text style={styles.largeTitle}>Clusters</Text>
+              {filters}
+              <ScrollView>
+                {visible.map((cluster) => (
+                  <PhoneClusterRow
+                    key={cluster.pullRequests[0].url}
+                    cluster={cluster}
+                    onPress={() => {
+                      history.pushState(null, '');
+                      setSelectedUrl(cluster.pullRequests[0].url);
+                    }}
+                  />
+                ))}
+              </ScrollView>
+            </>
+          )}
+        </View>
+        <StatusBar style="auto" />
+      </Login>
+    );
   }
 
   return (
@@ -142,51 +240,7 @@ export default function App() {
           onResize={(width) => setSidebarWidth(clampSidebarWidth(width))}
           onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
         />
-        <View style={styles.filters}>
-          <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
-            <Text style={styles.filter}>server: {status}</Text>
-          </Pressable>
-          <Text style={styles.filter}>author: {login}</Text>
-          <Select.Root
-            value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
-            onValueChange={(option) =>
-              setRepoFilter(repositories.find((repository) => repositoryValue(repository) === option?.value))
-            }
-          >
-            <Select.Trigger>
-              <Text style={styles.filter}>repos: {repoFilter?.name ?? '*'}</Text>
-            </Select.Trigger>
-            <Select.Portal>
-              <Select.Content position="popper" sideOffset={4} style={styles.menu}>
-                <Select.Viewport>
-                  {[undefined, ...repositories].map((repository) => {
-                    const value = repository ? repositoryValue(repository) : '*';
-                    const label = repository?.name ?? '*';
-                    return (
-                      <Select.Item
-                        key={value}
-                        value={value}
-                        label={label}
-                        // On web the Item is Radix's DOM element, so its style must be one plain
-                        // object of CSS properties. Radix focuses whichever item the pointer or
-                        // keyboard highlights.
-                        onFocus={() => setHighlightedRepo(value)}
-                        onBlur={() => setHighlightedRepo(undefined)}
-                        style={StyleSheet.flatten([
-                          styles.menuItem,
-                          sameRepository(repository, repoFilter) && styles.menuItemSelected,
-                          highlightedRepo === value && styles.menuItemActive,
-                        ])}
-                      >
-                        <Select.ItemText style={styles.menuText} />
-                      </Select.Item>
-                    );
-                  })}
-                </Select.Viewport>
-              </Select.Content>
-            </Select.Portal>
-          </Select.Root>
-        </View>
+        {filters}
         <ScrollView contentContainerStyle={styles.rows}>
           {visible.map((cluster) => (
             <ClusterRow
@@ -201,30 +255,47 @@ export default function App() {
       <Login value={login}>
         <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
           {selected && (
-            <View style={styles.column}>
-              <View style={styles.titleBlock}>
-                <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
-                <Text style={styles.meta}>
-                  {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
-                </Text>
-              </View>
-              <View style={styles.pullRequests}>
-                <PullRequestList pullRequests={selected.pullRequests} />
-              </View>
-              {byComment(proposals).map((group) => (
-                <ProposalGroup
-                  key={group[0].id}
-                  proposals={group}
-                  busy={busy}
-                  onApprove={approve}
-                  onDismiss={dismiss}
-                />
-              ))}
-            </View>
+            <ClusterView cluster={selected} busy={busy} onApprove={approve} onDismiss={dismiss} />
           )}
         </ScrollView>
       </Login>
       <StatusBar style="auto" />
+    </View>
+  );
+}
+
+// A cluster's title, its PRs, and the conversations waiting on u9g.
+function ClusterView({
+  cluster,
+  busy,
+  onApprove,
+  onDismiss,
+}: {
+  cluster: PullRequestCluster;
+  busy?: string;
+  onApprove: (id: string, reply: string, followUp: string) => void;
+  onDismiss: (id: string) => void;
+}) {
+  return (
+    <View style={styles.column}>
+      <View style={styles.titleBlock}>
+        <Text style={[styles.title, ready(cluster) && styles.ready]}>{cluster.name}</Text>
+        <Text style={styles.meta}>
+          {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+        </Text>
+      </View>
+      <View style={styles.pullRequests}>
+        <PullRequestList pullRequests={cluster.pullRequests} />
+      </View>
+      {byComment(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
+        <ProposalGroup
+          key={group[0].id}
+          proposals={group}
+          busy={busy}
+          onApprove={onApprove}
+          onDismiss={onDismiss}
+        />
+      ))}
     </View>
   );
 }
@@ -326,7 +397,92 @@ function ClusterRow({
   );
 }
 
+// One PR per repository, the one whose checks look worst: failing, then running, then passing.
+function worstPerRepository(cluster: PullRequestCluster): PullRequest[] {
+  const rank = (pr: PullRequest) => (pr.checksFailing ? 0 : pr.checksPassing ? 2 : 1);
+  const worst = new Map<string, PullRequest>();
+  for (const pr of cluster.pullRequests) {
+    const name = pr.repository?.name ?? '';
+    const seen = worst.get(name);
+    if (!seen || rank(pr) < rank(seen)) worst.set(name, pr);
+  }
+  return [...worst.values()];
+}
+
+// A cluster sized for a thumb: its name over each PR's checks and repository, then how many
+// proposals wait and how long ago.
+function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestCluster; onPress: () => void }) {
+  const count = pending(cluster);
+  return (
+    <Pressable onPress={onPress} style={styles.phoneRow}>
+      <View style={{ flex: 1, gap: 3 }}>
+        <Text numberOfLines={1} style={[styles.phoneRowName, ready(cluster) && styles.ready]}>
+          {cluster.name || cluster.pullRequests[0].title}
+        </Text>
+        <View style={styles.phoneRepos}>
+          {worstPerRepository(cluster).map((pr) => (
+            <View key={pr.url} style={styles.phoneRepo}>
+              <ChecksIcon pr={pr} size={11} />
+              <Text style={styles.meta}>{pr.repository?.name}</Text>
+            </View>
+          ))}
+        </View>
+      </View>
+      {count > 0 && <Text style={styles.count}>{count}</Text>}
+      {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
+  phone: {
+    flex: 1,
+    backgroundColor: '#19212A',
+  },
+  largeTitle: {
+    color: '#D0CFD4',
+    fontSize: 28,
+    fontWeight: '700',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  back: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 44,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  backText: {
+    color: '#8FA8F5',
+    fontSize: 16,
+  },
+  phoneContent: {
+    padding: 12,
+  },
+  phoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minHeight: 64,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  phoneRowName: {
+    color: '#D0CFD4',
+    fontSize: 16,
+  },
+  phoneRepos: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  phoneRepo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   container: {
     flex: 1,
     flexDirection: 'row',

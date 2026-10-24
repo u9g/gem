@@ -17,7 +17,7 @@ import {
   Theirs,
   ToolRequestBanner,
 } from './surfaces';
-import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, visibleMarkdown } from './t3';
+import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, usePhone, visibleMarkdown } from './t3';
 
 // Proposals answering the same comment are alternatives: approving one clears the rest.
 export function byComment(list: Proposal[]): Proposal[][] {
@@ -96,6 +96,7 @@ function ProposalView({
   onDismiss: () => void;
 }) {
   const login = useContext(Login);
+  const phone = usePhone();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   const [followUp, setFollowUp] = useState<ReplyDraft>({ yours: proposal.followUp, showing: 'suggested' });
@@ -105,28 +106,34 @@ function ProposalView({
   const quote = proposal.threadId
     ? undefined
     : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
+  const actions = (
+    <>
+      <Button label="Dismiss" large={phone} disabled={disabled} onPress={onDismiss} />
+      {!proposal.requestedTool && (
+        <Button
+          label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
+          variant="default"
+          large={phone}
+          disabled={disabled}
+          onPress={() =>
+            onApprove(
+              draft.showing === 'yours' ? draft.yours : '',
+              followUp.showing === 'yours' ? followUp.yours : '',
+            )
+          }
+        />
+      )}
+    </>
+  );
   return (
     <View style={[styles.band, proposal.error !== '' && styles.bandError]}>
       <View style={styles.header}>
         <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
-        <Text numberOfLines={1} style={styles.summary}>
+        <Text numberOfLines={phone ? undefined : 1} style={styles.summary}>
           {proposal.summary}
         </Text>
         {stepper}
-        <Button label="Dismiss" disabled={disabled} onPress={onDismiss} />
-        {!proposal.requestedTool && (
-          <Button
-            label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
-            variant="default"
-            disabled={disabled}
-            onPress={() =>
-              onApprove(
-                draft.showing === 'yours' ? draft.yours : '',
-                followUp.showing === 'yours' ? followUp.yours : '',
-              )
-            }
-          />
-        )}
+        {!phone && actions}
       </View>
       {proposal.error !== '' && (
         <View style={styles.errorRow}>
@@ -134,8 +141,8 @@ function ProposalView({
           <Text style={styles.error}>{proposal.error}</Text>
         </View>
       )}
-      <View style={styles.columns}>
-        <View style={styles.column}>
+      <View style={[styles.columns, phone && styles.stacked]}>
+        <View style={[styles.column, phone && styles.columnStacked]}>
           <Text style={styles.where}>
             {repository}#{number} · {proposal.threadId ? 'review thread' : 'conversation'}
           </Text>
@@ -152,7 +159,7 @@ function ProposalView({
             }
           />
         </View>
-        <View style={styles.column}>
+        <View style={[styles.column, phone && styles.columnStacked]}>
           {proposal.reply ? (
             <>
               <Text style={[styles.meta, styles.author]}>{login}</Text>
@@ -176,7 +183,7 @@ function ProposalView({
             </View>
           )}
         </View>
-        <View style={styles.column}>
+        <View style={[styles.column, phone && styles.columnStacked]}>
           {proposal.followUp !== '' && (
             <FollowUpCard
               suggested={proposal.followUp}
@@ -208,6 +215,7 @@ function ProposalView({
           )}
         </View>
       </View>
+      {phone && <View style={styles.phoneActions}>{actions}</View>}
     </View>
   );
 }
@@ -251,6 +259,19 @@ const styles = StyleSheet.create({
     fontFamily: t3.mono,
     fontSize: 11,
     lineHeight: 16,
+  },
+  stacked: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 12,
+  },
+  // Stacked columns are as tall as their content.
+  columnStacked: {
+    flexBasis: 'auto',
+  },
+  phoneActions: {
+    flexDirection: 'row',
+    gap: 8,
   },
   columns: {
     flexDirection: 'row',
