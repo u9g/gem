@@ -154,20 +154,30 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         proposal.resolve_thread = false;
         save(path, proposal).await;
     }
+    if proposal.close_pull_request {
+        command("gh", &["pr", "close", &proposal.pull_request_url], None).await?;
+        proposal.close_pull_request = false;
+        save(path, proposal).await;
+    }
     Ok(())
 }
 
 // `server propose --dir <dir> --pr <url> --comment <id> [--thread <id>] --summary <text>
 // [--patch <diff file> --message <text>] [--reply <markdown file>] [--resolve-thread]
-// [--follow-up <markdown file>]
+// [--follow-up <markdown file>] [--close-pull-request]
 // [--request-tool <markdown file>]`
 pub async fn propose(args: &[String]) -> Result<String, String> {
     let mut flags: HashMap<&str, &str> = HashMap::new();
     let mut resolve_thread = false;
+    let mut close_pull_request = false;
     let mut args = args.iter();
     while let Some(flag) = args.next() {
         if flag == "--resolve-thread" {
             resolve_thread = true;
+            continue;
+        }
+        if flag == "--close-pull-request" {
+            close_pull_request = true;
             continue;
         }
         let name = flag
@@ -255,10 +265,11 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     let steps = patch.is_some()
         || !reply.trim().is_empty()
         || resolve_thread
-        || !follow_up.trim().is_empty();
+        || !follow_up.trim().is_empty()
+        || close_pull_request;
     if steps == !requested_tool.trim().is_empty() {
         return Err(
-            "propose either steps (--patch, --reply, --resolve-thread, --follow-up) or --request-tool"
+            "propose either steps (--patch, --reply, --resolve-thread, --follow-up, --close-pull-request) or --request-tool"
                 .into(),
         );
     }
@@ -282,6 +293,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         reply_html,
         follow_up,
         follow_up_html,
+        close_pull_request,
     };
     tokio::fs::create_dir_all(&dir)
         .await

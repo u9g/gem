@@ -6,6 +6,7 @@ import type { Proposal } from './gen/gem_pb';
 import {
   Bubble,
   Clamp,
+  ClosesTag,
   DiffSurface,
   EditableReply,
   FollowUpCard,
@@ -177,9 +178,10 @@ function ProposalView({
           ) : (
             <Text style={styles.meta}>No reply</Text>
           )}
-          {proposal.resolveThread && (
+          {(proposal.resolveThread || proposal.closePullRequest) && (
             <View style={styles.rightRow}>
-              <ResolvesTag />
+              {proposal.resolveThread && <ResolvesTag />}
+              {proposal.closePullRequest && <ClosesTag />}
             </View>
           )}
         </View>
@@ -300,5 +302,6 @@ const styles = StyleSheet.create({
   rightRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    gap: 6,
   },
 });

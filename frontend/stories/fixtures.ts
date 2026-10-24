@@ -95,6 +95,20 @@ export const proposals: Proposal[] = [
     replyHtml: "<p dir=\"auto\">No release needed: this only changes an internal retry.</p>",
   }),
   create(ProposalSchema, {
+    id: 'close',
+    summary: 'Close this PR in favor of #2650',
+    pullRequestUrl: pr.url,
+    comment: comment(
+      'davidzhao',
+      '#2650 fixes this in the base class, so every TTS gets it. Can we close this one?',
+      '<p dir="auto">#2650 fixes this in the base class, so every TTS gets it. Can we close this one?</p>',
+      'issuecomment-3',
+    ),
+    reply: 'Agreed, #2650 covers it. Closing.\n',
+    replyHtml: '<p dir="auto">Agreed, #2650 covers it. Closing.</p>',
+    closePullRequest: true,
+  }),
+  create(ProposalSchema, {
     id: 'tool-request',
     summary: 'slack_message: ask a channel a question',
     pullRequestUrl: pr.url,
