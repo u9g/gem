@@ -114,13 +114,17 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 // `serve` runs the server, `propose` records a proposal for it, and no command runs the launcher,
 // which runs `serve` and keeps it up to date.
 fn main() {
-    // LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET, GEM_ROOM and GEM_SEARCH can live in .env in the
-    // working directory, next to the server's other state. The real environment wins.
+    // GEM_SEARCH and GEM_OP_ITEM, or LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_ROOM
+    // themselves, can live in .env in the working directory, next to the server's other state.
+    // The real environment wins.
     let _ = dotenvy::dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runtime = || tokio::runtime::Runtime::new().unwrap();
     match args.first().map(String::as_str) {
-        Some("serve") => runtime().block_on(run_server()),
+        Some("serve") => {
+            load_op_item().unwrap_or_else(|error| panic!("{error}"));
+            runtime().block_on(run_server())
+        }
         Some("propose") => match runtime().block_on(proposals::propose(&args[1..])) {
             Ok(id) => println!("{id}"),
             Err(error) => {
@@ -128,8 +132,79 @@ fn main() {
                 std::process::exit(1);
             }
         },
-        _ => launcher::run(),
+        _ => {
+            // Nothing restarts the launcher, so it asks again rather than exit.
+            while let Err(error) = load_op_item() {
+                eprintln!("launcher: {error}; asking again in {OP_RETRY_DELAY:?}");
+                std::thread::sleep(OP_RETRY_DELAY);
+            }
+            launcher::run()
+        }
     }
+}
+
+// How long the launcher waits to read the 1Password item again after it could not, e.g. when the
+// read was denied.
+const OP_RETRY_DELAY: Duration = Duration::from_secs(60);
+
+// The variables a 1Password item can hold, each in a field named after it.
+const OP_FIELDS: &[&str] = &[
+    "LIVEKIT_URL",
+    "LIVEKIT_API_KEY",
+    "LIVEKIT_API_SECRET",
+    "GEM_ROOM",
+];
+
+// Sets OP_FIELDS from the 1Password item GEM_OP_ITEM names, as op://<vault>/<item>, so the
+// LiveKit login stays out of .env. A variable already set, by .env or the real environment, wins.
+// The launcher reads the item once; the servers it starts and the builds it hands off to inherit
+// the variables, so they ask 1Password, and the phone, nothing.
+fn load_op_item() -> Result<(), String> {
+    #[derive(Deserialize)]
+    struct Item {
+        fields: Vec<Field>,
+    }
+    #[derive(Deserialize)]
+    struct Field {
+        label: String,
+        value: Option<String>,
+    }
+
+    let Ok(reference) = std::env::var("GEM_OP_ITEM") else {
+        return Ok(());
+    };
+    if OP_FIELDS
+        .iter()
+        .all(|name| std::env::var_os(name).is_some())
+    {
+        return Ok(());
+    }
+    let (vault, item) = reference
+        .strip_prefix("op://")
+        .and_then(|path| path.trim_end_matches('/').split_once('/'))
+        .ok_or_else(|| format!("GEM_OP_ITEM {reference} is not op://<vault>/<item>"))?;
+    let output = std::process::Command::new("op")
+        .args([
+            "item", "get", item, "--vault", vault, "--format", "json", "--reveal",
+        ])
+        .output()
+        .map_err(|error| format!("cannot run op: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot read {reference}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let item: Item = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("op printed no item for {reference}: {error}"))?;
+    for Field { label, value } in item.fields {
+        let Some(value) = value else { continue };
+        if OP_FIELDS.contains(&label.as_str()) && std::env::var_os(&label).is_none() {
+            // SAFETY: main calls this before starting any other thread.
+            unsafe { std::env::set_var(&label, value) };
+        }
+    }
+    Ok(())
 }
 
 async fn run_server() {
