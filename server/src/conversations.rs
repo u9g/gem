@@ -8,7 +8,7 @@ use pbjson_types::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
-use crate::{SearchedPullRequest, gh, proposals, proto::Comment, t3};
+use crate::{SearchedPullRequest, gh, login, proposals, proto::Comment, t3};
 
 // Relative to the server's working directory, like the cluster names.
 const HANDLED_FILE: &str = "handled-comments.json";
@@ -30,15 +30,13 @@ query($ids: [ID!]!) {
 }
 "#;
 
-// A conversation waits on u9g when its latest comment is someone else's: an unresolved review
-// thread's latest reply, or the PR's latest top-level comment. Only bots and members of the PR's
-// organization are answered.
+// An unresolved review thread's latest reply, or the PR's latest top-level comment, from a bot or
+// a member of the PR's organization. It waits on the user unless it is the user's own.
 const CONVERSATIONS_JQ: &str = r#".data.nodes[] | {
   url,
   waiting: [
     (.reviewThreads.nodes[] | select(.isResolved | not) | {thread_id: .id, comment: .comments.nodes[0]}),
     (.comments.nodes[] | {thread_id: null, comment: .})
-    | select(.comment.author.login != "u9g")
     | select(.comment.author.__typename == "Bot" or .comment.authorAssociation == "MEMBER" or .comment.authorAssociation == "OWNER")
     | .comment |= {id, body, url, author: (.author.login // "ghost")}
   ]
@@ -84,7 +82,7 @@ impl Conversations {
         }))
     }
 
-    // IDs of the latest comment of every conversation waiting on u9g.
+    // IDs of the latest comment of every conversation waiting on the user.
     pub async fn waiting(&self) -> HashSet<String> {
         let prs = self.0.prs.read().await;
         prs.values()
@@ -117,7 +115,8 @@ impl Conversations {
                 continue;
             };
             for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {
-                let Ok(result) = result else { break };
+                let Ok(mut result) = result else { break };
+                result.waiting.retain(|c| c.comment.author != login());
                 fetched.insert(result.url, result.waiting);
             }
         }
@@ -225,15 +224,15 @@ async fn answer(pr: &Target, conversation: &Conversation) {
         .collect();
 
     let prompt = format!(
-        "{author} is waiting on u9g {where_} on the pull request {url} (\"{title}\"). Their latest \
+        "{author} is waiting on {login} {where_} on the pull request {url} (\"{title}\"). Their latest \
 comment ({comment_url}):
 
 {quoted}
-Read the whole conversation and the pull request with `gh`, then work out how u9g should answer \
+Read the whole conversation and the pull request with `gh`, then work out how {login} should answer \
 and propose it. A proposal can:
 - change the code, with --patch and --message: clone {full_name} into a temporary directory, run \
 `gh pr checkout {number}` in it, edit, and save `git diff` to a file. Never commit or push.
-- reply as u9g, in the first person, with --reply: write the markdown to a file. It is posted as \
+- reply as {login}, in the first person, with --reply: write the markdown to a file. It is posted as \
 {reply_kind}.{resolve}
 - hand the work to another agent, with --follow-up: when the right fix is too big to review as \
 one patch on this pull request, such as matching changes in other repositories, write a prompt \
@@ -248,7 +247,7 @@ Record each proposal with:
 
 Approving a proposal runs its steps in that order. Run the command once per alternative when more \
 than one answer is reasonable. It checks the proposal and exits non-zero with the reason when \
-something is wrong: fix it and run it again. If the comment needs nothing from u9g, propose \
+something is wrong: fix it and run it again. If the comment needs nothing from {login}, propose \
 nothing.
 
 If answering well needs something these steps cannot do, describe the missing tool in a markdown \
@@ -256,11 +255,12 @@ file (what it would do and why this conversation needs it) and record it with:
 
 {propose} --summary \"<tool name: one line>\" --request-tool <markdown file>
 
-Never push, comment, review or resolve anything on GitHub yourself: u9g approves proposals later.
+Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread. Then reply with one line saying what you proposed.",
         author = comment.author,
+        login = login(),
         url = pr.url,
         title = pr.title,
         comment_url = comment.url,

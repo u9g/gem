@@ -1,5 +1,5 @@
 import { Bot, CheckCheck, FileCode, Hammer } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { createContext, type ReactNode, useContext, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
@@ -8,6 +8,9 @@ import type { Comment, Proposal } from './gen/gem_pb';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // T3 Code's surfaces for what a proposal does, rebuilt in React Native.
+
+// GitHub login of the user the server runs as.
+export const Login = createContext('');
 
 type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string; number?: number };
 
@@ -87,7 +90,7 @@ export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode
   );
 }
 
-// T3 Code's message bubble: rounded-2xl on the message surface, at most 80% wide. u9g's messages
+// T3 Code's message bubble: rounded-2xl on the message surface, at most 80% wide. The user's messages
 // sit on the right and everyone else's on the left, as in a chat.
 export function Bubble({ children, side = 'right' }: { children: ReactNode; side?: 'left' | 'right' }) {
   return (
@@ -108,11 +111,11 @@ export function Quote({ children, lines }: { children: string; lines?: number })
   );
 }
 
-// A comment in the conversation, as a message from its author: u9g's on the right like the reply,
+// A comment in the conversation, as a message from its author: the user's on the right like the reply,
 // everyone else's on the left. The body is GitHub's own rendering, styled with GitHub's stylesheet,
 // cut to `max` pixels when given.
 export function Theirs({ comment, trailing, max }: { comment: Comment; trailing?: ReactNode; max?: number }) {
-  const side = comment.author === 'u9g' ? 'right' : 'left';
+  const side = comment.author === useContext(Login) ? 'right' : 'left';
   return (
     <View style={{ gap: 4 }}>
       <View style={[styles.theirsHeader, side === 'right' && styles.theirsHeaderRight]}>
@@ -181,7 +184,7 @@ const markdownBody = {
   minWidth: 0,
 };
 
-// A reply as both versions: the agent's suggestion and u9g's rewrite of it.
+// A reply as both versions: the agent's suggestion and the user's rewrite of it.
 export type ReplyDraft = { yours: string; showing: 'suggested' | 'yours' };
 
 // The reply's bubble, always editable. Once the text differs from the suggestion, a Suggested /
@@ -222,7 +225,7 @@ export function EditableReply({
   );
 }
 
-// Switches between the agent's suggestion and u9g's rewrite of it.
+// Switches between the agent's suggestion and the user's rewrite of it.
 function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: ReplyDraft) => void }) {
   return (
     <View style={styles.versions}>

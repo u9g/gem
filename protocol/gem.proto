@@ -10,6 +10,9 @@ message ListOpenPullRequestsRequest {}
 message ListOpenPullRequestsResponse {
   // Most recently updated first, by the latest update to any PR in the cluster.
   repeated PullRequestCluster clusters = 1;
+  // GitHub login of the user the server runs as. Their PRs are listed, and
+  // proposals are run as them.
+  string login = 2;
 }
 
 // Pull requests connected by links, directly or through other PRs in the
@@ -36,7 +39,7 @@ message PullRequest {
   bool checks_passing = 6;
   // A check on the head commit failed or errored. False while checks are only pending.
   bool checks_failing = 7;
-  // Proposed answers to conversations on this PR that still wait on u9g.
+  // Proposed answers to conversations on this PR that still wait on the user.
   repeated Proposal proposals = 8;
 }
 
@@ -47,8 +50,8 @@ message Repository {
   string name = 2;
 }
 
-// An answer an agent proposes to a conversation on a pull request, run as u9g
-// once approved. Approving runs the steps that are set in this order:
+// An answer an agent proposes to a conversation on a pull request, run as the
+// user once approved. Approving runs the steps that are set in this order:
 // follow_up, patch, reply, resolve_thread. A step that succeeded is cleared, so approving again
 // after a failure resumes at the step that failed.
 message Proposal {
@@ -57,13 +60,13 @@ message Proposal {
   string summary = 2;
   string pull_request_url = 3;
   // Latest comment in the conversation when the agent started. The proposal is
-  // shown only while this is still the latest comment waiting on u9g.
+  // shown only while this is still the latest comment waiting on the user.
   Comment comment = 4;
   // Review thread holding the comment. Empty when the comment is a top-level
   // comment.
   string thread_id = 5;
   Patch patch = 6;
-  // Markdown posted as u9g: a reply in the review thread, or a top-level
+  // Markdown posted as the user: a reply in the review thread, or a top-level
   // comment that quotes `comment`.
   string reply = 7;
   bool resolve_thread = 8;
@@ -112,10 +115,10 @@ message Patch {
 // with the other proposals for the same comment, or its error is set.
 message ApproveProposalRequest {
   string id = 1;
-  // u9g's rewrite of the proposal's reply, posted in its place. Empty posts the
+  // The user's rewrite of the proposal's reply, posted in its place. Empty posts the
   // reply as proposed.
   string reply = 2;
-  // u9g's rewrite of the proposal's follow-up prompt, run in its place. Empty
+  // The user's rewrite of the proposal's follow-up prompt, run in its place. Empty
   // runs the prompt as proposed.
   string follow_up = 3;
 }

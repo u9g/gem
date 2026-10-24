@@ -7,6 +7,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { byComment, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
+import { Login } from './surfaces';
 import {
   ApproveProposalRequestSchema,
   DismissProposalRequestSchema,
@@ -81,6 +82,7 @@ function pending(cluster: PullRequestCluster): number {
 
 export default function App() {
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
+  const [login, setLogin] = useState('');
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
@@ -93,7 +95,11 @@ export default function App() {
   const load = useCallback(
     () =>
       post('/prs', toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))).then(
-        (json) => setClusters(fromJson(ListOpenPullRequestsResponseSchema, json).clusters),
+        (json) => {
+          const response = fromJson(ListOpenPullRequestsResponseSchema, json);
+          setClusters(response.clusters);
+          setLogin(response.login);
+        },
       ),
     [],
   );
@@ -140,11 +146,7 @@ export default function App() {
           onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
         />
         <View style={styles.filters}>
-          {['org: livekit, livekit-examples', 'author: u9g'].map((filter) => (
-            <Text key={filter} style={styles.filter}>
-              {filter}
-            </Text>
-          ))}
+          <Text style={styles.filter}>author: {login}</Text>
           <Select.Root
             value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
             onValueChange={(option) =>
@@ -196,30 +198,32 @@ export default function App() {
           ))}
         </ScrollView>
       </View>
-      <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
-        {selected && (
-          <View style={styles.column}>
-            <View style={styles.titleBlock}>
-              <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
-              <Text style={styles.meta}>
-                {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
-              </Text>
+      <Login value={login}>
+        <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
+          {selected && (
+            <View style={styles.column}>
+              <View style={styles.titleBlock}>
+                <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
+                <Text style={styles.meta}>
+                  {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
+                </Text>
+              </View>
+              <View style={styles.pullRequests}>
+                <PullRequestList pullRequests={selected.pullRequests} />
+              </View>
+              {byComment(proposals).map((group) => (
+                <ProposalGroup
+                  key={group[0].id}
+                  proposals={group}
+                  busy={busy}
+                  onApprove={approve}
+                  onDismiss={dismiss}
+                />
+              ))}
             </View>
-            <View style={styles.pullRequests}>
-              <PullRequestList pullRequests={selected.pullRequests} />
-            </View>
-            {byComment(proposals).map((group) => (
-              <ProposalGroup
-                key={group[0].id}
-                proposals={group}
-                busy={busy}
-                onApprove={approve}
-                onDismiss={dismiss}
-              />
-            ))}
-          </View>
-        )}
-      </ScrollView>
+          )}
+        </ScrollView>
+      </Login>
       <StatusBar style="auto" />
     </View>
   );

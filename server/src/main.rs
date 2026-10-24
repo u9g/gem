@@ -1,4 +1,10 @@
-use std::{cmp::Reverse, collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    cmp::Reverse,
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -35,14 +41,21 @@ mod proto {
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
-const REPOS: &[&str] = &[
-    "repo", "list", "u9g", "--limit", "1000", "--json", "name,url",
-];
+// Without an owner, gh lists the authenticated user's repositories.
+const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
 
-// Paginated by `gh api graphql --paginate`, which fills in $endCursor.
+static LOGIN: OnceLock<String> = OnceLock::new();
+
+// The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.
+pub fn login() -> &'static str {
+    LOGIN.get().unwrap()
+}
+
+// Paginated by `gh api graphql --paginate`, which fills in $endCursor. $q is the user's open PRs,
+// narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`.
 const PRS_QUERY: &str = r#"
-query($endCursor: String) {
-  search(query: "is:pr is:open author:u9g org:livekit org:livekit-examples", type: ISSUE, first: 100, after: $endCursor) {
+query($endCursor: String, $q: String!) {
+  search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -111,6 +124,13 @@ async fn main() {
         }
         return;
     }
+
+    let login = gh(&["api", "user", "--jq", ".login"])
+        .await
+        .expect("gh is not authenticated");
+    LOGIN
+        .set(String::from_utf8(login).unwrap().trim().to_string())
+        .unwrap();
 
     let repos: Cache<Value> = cached(|| gh_json(REPOS));
     let names = Names::load().await;
@@ -209,6 +229,12 @@ async fn open_pull_requests(
         "--paginate",
         "-f",
         &format!("query={PRS_QUERY}"),
+        "-f",
+        &format!(
+            "q=is:pr is:open author:{} {}",
+            login(),
+            std::env::var("GEM_SEARCH").unwrap_or_default()
+        ),
         "--jq",
         PRS_JQ,
     ])
@@ -220,7 +246,10 @@ async fn open_pull_requests(
     let clusters = cluster(&prs);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
-    Some(ListOpenPullRequestsResponse { clusters })
+    Some(ListOpenPullRequestsResponse {
+        clusters,
+        login: login().to_string(),
+    })
 }
 
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
