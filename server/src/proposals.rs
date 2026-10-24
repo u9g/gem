@@ -104,6 +104,15 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     stale
 }
 
+// Deletes every proposal on the PRs at `urls`.
+pub async fn remove_on(urls: &[String]) {
+    for (path, proposal) in load(Path::new(DIR)).await {
+        if urls.contains(&proposal.pull_request_url) {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+}
+
 pub async fn dismiss(id: &str) {
     for (path, proposal) in load(Path::new(DIR)).await {
         if proposal.id == id {

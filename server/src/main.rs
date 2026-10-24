@@ -21,7 +21,7 @@ use names::Names;
 use proto::{
     ApproveProposalRequest, ApproveProposalResponse, DismissProposalRequest,
     DismissProposalResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse,
-    PullRequest, PullRequestCluster, Repository,
+    PullRequest, PullRequestCluster, Repository, RestartClusterRequest, RestartClusterResponse,
 };
 
 mod conversations;
@@ -143,6 +143,13 @@ async fn main() {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/repos", get(move || serve(repos)))
+        .route("/clusters/restart", {
+            let conversations = conversations.clone();
+            post(|Json(request): Json<RestartClusterRequest>| async move {
+                conversations.restart(&request.pull_request_urls).await;
+                Json(RestartClusterResponse {})
+            })
+        })
         .route(
             "/prs",
             post(move |Json(_): Json<ListOpenPullRequestsRequest>| {

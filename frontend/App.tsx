@@ -10,12 +10,13 @@ import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, PullRequestList } from './PullRequestList';
 import { type Project, useServer } from './server';
 import { Login } from './surfaces';
-import { usePhone } from './t3';
+import { Button, usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
   DismissProposalRequestSchema,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
+  RestartClusterRequestSchema,
   type PullRequest,
   type PullRequestCluster,
   type Repository,
@@ -81,7 +82,7 @@ export default function App() {
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
-  // Proposal being approved or dismissed.
+  // Proposal being approved or dismissed, or the oldest PR's URL of the cluster being restarted.
   const [busy, setBusy] = useState<string>();
   const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
@@ -125,6 +126,14 @@ export default function App() {
   function dismiss(id: string) {
     setBusy(id);
     post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id })))
+      .then(load)
+      .finally(() => setBusy(undefined));
+  }
+
+  function restart(cluster: PullRequestCluster) {
+    setBusy(cluster.pullRequests[0].url);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
+    post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })))
       .then(load)
       .finally(() => setBusy(undefined));
   }
@@ -205,7 +214,7 @@ export default function App() {
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
-                <ClusterView cluster={opened} busy={busy} onApprove={approve} onDismiss={dismiss} />
+                <ClusterView cluster={opened} busy={busy} onApprove={approve} onDismiss={dismiss} onRestart={restart} />
               </ScrollView>
             </>
           ) : (
@@ -255,7 +264,7 @@ export default function App() {
       <Login value={login}>
         <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
           {selected && (
-            <ClusterView cluster={selected} busy={busy} onApprove={approve} onDismiss={dismiss} />
+            <ClusterView cluster={selected} busy={busy} onApprove={approve} onDismiss={dismiss} onRestart={restart} />
           )}
         </ScrollView>
       </Login>
@@ -270,19 +279,28 @@ function ClusterView({
   busy,
   onApprove,
   onDismiss,
+  onRestart,
 }: {
   cluster: PullRequestCluster;
   busy?: string;
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
+  onRestart: (cluster: PullRequestCluster) => void;
 }) {
   return (
     <View style={styles.column}>
-      <View style={styles.titleBlock}>
-        <Text style={[styles.title, ready(cluster) && styles.ready]}>{cluster.name}</Text>
-        <Text style={styles.meta}>
-          {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
-        </Text>
+      <View style={styles.header}>
+        <View style={styles.titleBlock}>
+          <Text style={[styles.title, ready(cluster) && styles.ready]}>{cluster.name}</Text>
+          <Text style={styles.meta}>
+            {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+          </Text>
+        </View>
+        <Button
+          label={busy === cluster.pullRequests[0].url ? 'Restarting…' : 'Restart investigation'}
+          disabled={busy !== undefined}
+          onPress={() => onRestart(cluster)}
+        />
       </View>
       <View style={styles.pullRequests}>
         <PullRequestList pullRequests={cluster.pullRequests} />
@@ -639,9 +657,15 @@ const styles = StyleSheet.create({
     maxWidth: 1240,
     gap: 12,
   },
-  titleBlock: {
-    gap: 4,
+  header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
     marginBottom: 8,
+  },
+  titleBlock: {
+    flex: 1,
+    gap: 4,
   },
   pullRequests: {
     marginBottom: 16,
