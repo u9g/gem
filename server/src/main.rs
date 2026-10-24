@@ -22,13 +22,15 @@ use proto::{
     ApproveProposalRequest, ApproveProposalResponse, CloseInvestigationRequest,
     CloseInvestigationResponse, DismissProposalRequest, DismissProposalResponse,
     InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
-    ListOpenPullRequestsResponse, MessageInvestigationRequest, MessageInvestigationResponse,
-    PullRequest, PullRequestCluster, Repository, RestartClusterRequest, RestartClusterResponse,
+    ListOpenPullRequestsResponse, MessageClusterRequest, MessageClusterResponse,
+    MessageInvestigationRequest, MessageInvestigationResponse, PullRequest, PullRequestCluster,
+    Repository, RestartClusterRequest, RestartClusterResponse,
 };
 
 mod conversations;
 mod investigations;
 mod launcher;
+mod mcp;
 mod names;
 mod proposals;
 mod room;
@@ -111,8 +113,8 @@ struct SearchedPullRequest {
 // A refresh costs one GitHub API request per 100 results, far under GitHub's hourly limits.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
-// `serve` runs the server, `propose` records a proposal for it, and no command runs the launcher,
-// which runs `serve` and keeps it up to date.
+// `serve` runs the server, `propose` records a proposal for it, `mcp` serves its clusters to
+// agents over MCP, and no command runs the launcher, which runs `serve` and keeps it up to date.
 fn main() {
     // GEM_SEARCH and GEM_OP_ITEM, or LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_ROOM
     // themselves, can live in .env in the working directory, next to the server's other state.
@@ -125,6 +127,7 @@ fn main() {
             load_op_item().unwrap_or_else(|error| panic!("{error}"));
             runtime().block_on(run_server())
         }
+        Some("mcp") => mcp::serve(&args[1..]),
         Some("propose") => match runtime().block_on(proposals::propose(&args[1..])) {
             Ok(id) => println!("{id}"),
             Err(error) => {
@@ -237,6 +240,20 @@ async fn run_server() {
         cached(move || open_pull_requests(names.clone(), conversations.clone()))
     };
 
+    // Agents read the clusters through `server mcp`, from a snapshot kept as fresh as the cache.
+    tokio::task::spawn_blocking(mcp::register);
+    {
+        let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+        tokio::spawn(async move {
+            loop {
+                if let Some(response) = filled(&prs, &names, &conversations).await {
+                    mcp::save(&response).await;
+                }
+                tokio::time::sleep(REFRESH_INTERVAL).await;
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/repos", get(move || serve(repos)))
@@ -245,6 +262,20 @@ async fn run_server() {
             post(|Json(request): Json<RestartClusterRequest>| async move {
                 conversations.restart(&request.pull_request_urls).await;
                 Json(RestartClusterResponse {})
+            })
+        })
+        .route("/clusters/message", {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            post(|Json(request): Json<MessageClusterRequest>| async move {
+                let response = filled(&prs, &names, &conversations).await;
+                let first = request.pull_request_urls.first();
+                let cluster = (response.iter().flat_map(|r| &r.clusters))
+                    .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
+                    .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                investigations::ask(cluster, &request.message)
+                    .await
+                    .map(|investigation_id| Json(MessageClusterResponse { investigation_id }))
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })
         .route("/prs", {
@@ -350,11 +381,22 @@ async fn serve_prs(
     names: Names,
     conversations: Conversations,
 ) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
-    let Json(mut response) = serve(cache).await?;
+    (filled(&cache, &names, &conversations).await)
+        .map(Json)
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+}
+
+// The cached clusters with their names, proposals and investigations, as gem shows them.
+async fn filled(
+    cache: &Cache<ListOpenPullRequestsResponse>,
+    names: &Names,
+    conversations: &Conversations,
+) -> Option<ListOpenPullRequestsResponse> {
+    let mut response = cache.read().await.clone()?;
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     investigations::fill(&mut response).await;
-    Ok(Json(response))
+    Some(response)
 }
 
 async fn open_pull_requests(

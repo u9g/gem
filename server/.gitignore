@@ -5,3 +5,5 @@
 /.env
 /releases
 /launcher.lock
+/clusters.json
+/clusters.json.partial

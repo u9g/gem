@@ -15,7 +15,7 @@ import {
   SectionTitle,
   units,
 } from './ClusterRow';
-import { InvestigationView } from './InvestigationView';
+import { Composer, InvestigationView } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
@@ -30,6 +30,8 @@ import {
   type Investigation,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
+  MessageClusterRequestSchema,
+  MessageClusterResponseSchema,
   MessageInvestigationRequestSchema,
   RestartClusterRequestSchema,
   type PullRequestCluster,
@@ -156,6 +158,17 @@ export default function App() {
     post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId })))
       .then(load)
       .finally(() => setBusy(undefined));
+  }
+
+  // Starts an agent on the message, then opens it, where the conversation goes on.
+  function messageCluster(cluster: PullRequestCluster, message: string) {
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
+    return post(
+      '/clusters/message',
+      toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
+    )
+      .then((json) => fromJson(MessageClusterResponseSchema, json).investigationId)
+      .then((id) => load().then(() => setSelectedInvestigation(id)));
   }
 
   function messageInvestigation(id: string, message: string) {
@@ -293,6 +306,7 @@ export default function App() {
                     onDismiss={dismiss}
                     onRestart={restart}
                     onInvestigate={investigate}
+                    onMessage={(message) => messageCluster(opened!, message)}
                   />
                 )}
               </ScrollView>
@@ -385,6 +399,7 @@ export default function App() {
                 onDismiss={dismiss}
                 onRestart={restart}
                 onInvestigate={investigate}
+                onMessage={(message) => messageCluster(selected, message)}
               />
             ))}
         </ScrollView>
@@ -394,7 +409,8 @@ export default function App() {
   );
 }
 
-// A cluster's title, its PRs, and the conversations waiting on u9g.
+// A cluster's title, its PRs, the conversations waiting on u9g, and a box to ask an agent about
+// it.
 function ClusterView({
   cluster,
   busy,
@@ -402,6 +418,7 @@ function ClusterView({
   onDismiss,
   onRestart,
   onInvestigate,
+  onMessage,
 }: {
   cluster: PullRequestCluster;
   busy?: string;
@@ -409,6 +426,9 @@ function ClusterView({
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
   onInvestigate: (id: string) => void;
+  // Starts an agent on the message, which reads the cluster through gem's MCP server. Resolves
+  // once the agent started.
+  onMessage: (message: string) => Promise<unknown>;
 }) {
   return (
     <View style={styles.column}>
@@ -438,6 +458,7 @@ function ClusterView({
           onInvestigate={onInvestigate}
         />
       ))}
+      <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />
     </View>
   );
 }

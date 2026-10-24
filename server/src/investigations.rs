@@ -7,7 +7,7 @@ use std::{
 use pbjson_types::Timestamp;
 use tokio::sync::Mutex;
 
-use crate::proto::{CheckFailure, Investigation, ListOpenPullRequestsResponse};
+use crate::proto::{CheckFailure, Investigation, ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::{login, proposals, t3};
 
 // One `<id>.json` file per open investigation, relative to the server's working directory.
@@ -54,6 +54,53 @@ afterwards in this thread.",
     let thread_id = t3::start(title, &prompt).await?;
     track(now(), title.to_string(), pr, None, String::new(), thread_id).await;
     Ok(())
+}
+
+// Starts an agent on the user's message about a cluster, and follows it like an investigation.
+// The prompt names the cluster's pull requests; the agent reads the rest through gem's MCP
+// server. Returns the investigation's id.
+pub async fn ask(cluster: &PullRequestCluster, message: &str) -> Result<String, String> {
+    let first = cluster
+        .pull_requests
+        .first()
+        .ok_or("the cluster is empty")?;
+    let name = match cluster.name.as_str() {
+        "" => &first.title,
+        name => name,
+    };
+    let topic = message
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    let topic: String = topic.trim().chars().take(60).collect();
+    let title = format!("{name}: {topic}");
+    let pull_requests: String = (cluster.pull_requests.iter())
+        .map(|pr| format!("- {} ({})\n", pr.url, pr.title))
+        .collect();
+    let prompt = format!(
+        "{login} is looking at a cluster of their pull requests in gem, an app that groups pull \
+requests linked by stacking or mentions, and sent you a message about it. The cluster, \
+\"{name}\", has:
+
+{pull_requests}
+Read it with the `get_cluster` tool of the `gem` MCP server, passing any of those URLs: it has \
+each pull request's review and check state, and the conversations on them still waiting on \
+{login}, with what other agents propose answering. Use `gh` for anything more, such as diffs, \
+comments and check logs.
+
+{login}'s message:
+
+{message}
+
+{login} follows this thread in an app that shows only your latest reply, so end each reply with \
+where things stand, such as a link to anything you opened. {login} may message you afterwards in \
+this thread.",
+        login = login(),
+    );
+    let thread_id = t3::start(&title, &prompt).await?;
+    let nanos = now();
+    track(nanos, title, &first.url, None, String::new(), thread_id).await;
+    Ok(id(nanos))
 }
 
 pub async fn message(id: &str, message: &str) -> Result<(), String> {
