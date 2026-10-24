@@ -4,12 +4,13 @@ import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { ClusterRow, PhoneClusterRow, ready, units } from './ClusterRow';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
-import { type Project, useServer } from './server';
+import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
+import { type Profile, useServer } from './server';
 import { Login } from './surfaces';
 import { Button, usePhone } from './t3';
 import {
@@ -52,7 +53,9 @@ function repositoryValue(repository: Repository): string {
 }
 
 export default function App() {
-  const { status, addProject, post } = useServer();
+  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post } = useServer();
+  // The profile being changed, or 'new' while one is being added.
+  const [editing, setEditing] = useState<Profile | 'new'>();
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
   const [login, setLogin] = useState('');
   const [selectedUrl, setSelectedUrl] = useState<string>();
@@ -72,10 +75,20 @@ export default function App() {
           const response = fromJson(ListOpenPullRequestsResponseSchema, json);
           setClusters(response.clusters);
           setLogin(response.login);
+          reported(response.login, response.search);
         },
       ),
-    [post],
+    [post, reported],
   );
+
+  // Another profile is another server: nothing shown belongs to it.
+  const profileId = profile?.id;
+  useEffect(() => {
+    setClusters([]);
+    setLogin('');
+    setSelectedUrl(undefined);
+    setRepoFilter(undefined);
+  }, [profileId]);
 
   // Proposals arrive whenever their agents finish, not only when the page loads.
   useEffect(() => {
@@ -127,10 +140,12 @@ export default function App() {
 
   const filters = (
     <View style={styles.filters}>
-      <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
+      <Pressable accessibilityLabel="Change profile" onPress={() => setEditing(profile)}>
         <Text style={styles.filter}>server: {status}</Text>
       </Pressable>
-      <Text style={styles.filter}>author: {login}</Text>
+      {!phone && profile && (
+        <ProfileChip profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
+      )}
       <Select.Root
         value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
         onValueChange={(option) =>
@@ -173,8 +188,26 @@ export default function App() {
     </View>
   );
 
-  if (status === 'no-project') {
-    return <AddProject onAdd={addProject} />;
+  if (!profile || editing) {
+    const changing = editing === 'new' ? undefined : (editing ?? undefined);
+    return (
+      <ProfileForm
+        key={changing?.id ?? 'new'}
+        editing={changing}
+        onSave={(saved) => {
+          saveProfile(saved);
+          setEditing(undefined);
+        }}
+        onCancel={profile && (() => setEditing(undefined))}
+        onRemove={
+          changing &&
+          (() => {
+            removeProfile(changing.id);
+            setEditing(undefined);
+          })
+        }
+      />
+    );
   }
 
   // One screen at a time: the cluster list, or the cluster tapped in it.
@@ -195,7 +228,7 @@ export default function App() {
             </>
           ) : (
             <>
-              <Text style={styles.largeTitle}>Clusters</Text>
+              <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
               <ScrollView>
                 {visible.map((cluster) => (
@@ -294,34 +327,6 @@ function ClusterView({
   );
 }
 
-// The LiveKit project the gem server is configured with: its LIVEKIT_URL, LIVEKIT_API_KEY and
-// LIVEKIT_API_SECRET.
-function AddProject({ onAdd }: { onAdd: (project: Project) => void }) {
-  const [project, setProject] = useState<Project>({ url: '', apiKey: '', apiSecret: '' });
-  const field = (key: keyof Project, placeholder: string) => (
-    <TextInput
-      style={styles.projectInput}
-      placeholder={placeholder}
-      placeholderTextColor="#6B6A70"
-      secureTextEntry={key === 'apiSecret'}
-      autoCapitalize="none"
-      value={project[key]}
-      onChangeText={(value) => setProject({ ...project, [key]: value })}
-    />
-  );
-  return (
-    <View style={[styles.container, styles.project]}>
-      <Text style={styles.projectText}>Add the LiveKit project your gem server uses</Text>
-      {field('url', 'LIVEKIT_URL')}
-      {field('apiKey', 'LIVEKIT_API_KEY')}
-      {field('apiSecret', 'LIVEKIT_API_SECRET')}
-      <Pressable style={styles.projectButton} onPress={() => onAdd(project)}>
-        <Text style={styles.projectText}>Connect</Text>
-      </Pressable>
-    </View>
-  );
-}
-
 // T3 Code's panel resize handle: an 8px strip over the sidebar's right edge whose 1px line shows
 // on hover and turns blue while dragging. The width is saved when the drag ends, not on every move.
 function ResizeHandle({
@@ -365,13 +370,6 @@ const styles = StyleSheet.create({
   phone: {
     flex: 1,
     backgroundColor: '#19212A',
-  },
-  largeTitle: {
-    color: '#D0CFD4',
-    fontSize: 28,
-    fontWeight: '700',
-    paddingHorizontal: 16,
-    paddingTop: 16,
   },
   back: {
     flexDirection: 'row',
@@ -425,31 +423,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     padding: 10,
-  },
-  project: {
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-  },
-  projectInput: {
-    width: 320,
-    color: '#D0CFD4',
-    fontSize: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  projectButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  projectText: {
-    color: '#D0CFD4',
-    fontSize: 14,
   },
   filter: {
     color: '#D0CFD4',

@@ -13,6 +13,9 @@ message ListOpenPullRequestsResponse {
   // GitHub login of the user the server runs as. Their PRs are listed, and
   // proposals are run as them.
   string login = 2;
+  // The search qualifiers narrowing their PRs, from GEM_SEARCH, e.g.
+  // `org:livekit`. Empty when every open PR of theirs is listed.
+  string search = 3;
 }
 
 // Pull requests connected by links, directly or through other PRs in the
