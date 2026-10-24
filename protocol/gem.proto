@@ -76,6 +76,8 @@ message Proposal {
   // The comments before `comment` in its review thread, oldest first, so the
   // whole thread can be read. Empty for a top-level comment.
   repeated Comment earlier_comments = 11;
+  // `reply` as GitHub renders it.
+  string reply_html = 12;
 }
 
 message Comment {

@@ -28,7 +28,7 @@ index 3d723da..c883a61 100644
          return await synthesize_with_retry(tts, text, conn_options=conn_options, attempt=attempt + 1)
 `;
 
-// bodyHtml is what GitHub's markdown API renders for body.
+// bodyHtml and replyHtml are what GitHub's markdown API renders for body and reply.
 const comment = (author: string, body: string, bodyHtml: string, anchor: string) => ({
   id: `comment-${anchor}`,
   author,
@@ -58,6 +58,7 @@ export const proposals: Proposal[] = [
     threadId: 'thread-0',
     patch: { diff, commitMessage: 'fix(voice): retry TTS with the configured interval' },
     reply: 'Good catch. The retry now sleeps for `conn_options.retry_interval`.\n',
+    replyHtml: "<p dir=\"auto\">Good catch. The retry now sleeps for <code class=\"notranslate\">conn_options.retry_interval</code>.</p>",
     resolveThread: true,
   }),
   create(ProposalSchema, {
@@ -68,6 +69,7 @@ export const proposals: Proposal[] = [
     threadId: 'thread-1',
     patch: { diff, commitMessage: 'fix(voice): honor max_retry when retrying TTS' },
     reply: "Yes, it should. It now retries up to `conn_options.max_retry` times, the same as STT.\n",
+    replyHtml: "<p dir=\"auto\">Yes, it should. It now retries up to <code class=\"notranslate\">conn_options.max_retry</code> times, the same as STT.</p>",
   }),
   create(ProposalSchema, {
     id: 'alternative-reply',
@@ -77,6 +79,7 @@ export const proposals: Proposal[] = [
     threadId: 'thread-1',
     reply:
       "On purpose: a TTS retry replays audio the user may have already heard part of, so more than one retry sounds broken. STT retries are silent. I'll add a comment saying so.\n",
+    replyHtml: "<p dir=\"auto\">On purpose: a TTS retry replays audio the user may have already heard part of, so more than one retry sounds broken. STT retries are silent. I'll add a comment saying so.</p>",
   }),
   create(ProposalSchema, {
     id: 'quote-reply',
@@ -89,6 +92,7 @@ export const proposals: Proposal[] = [
       'issuecomment-1',
     ),
     reply: 'No release needed: this only changes an internal retry.\n',
+    replyHtml: "<p dir=\"auto\">No release needed: this only changes an internal retry.</p>",
   }),
   create(ProposalSchema, {
     id: 'tool-request',
@@ -116,6 +120,7 @@ export const proposals: Proposal[] = [
     threadId: 'thread-2',
     patch: { diff, commitMessage: 'chore(voice): log TTS retries' },
     reply: 'Added a debug log for each retry.\n',
+    replyHtml: "<p dir=\"auto\">Added a debug log for each retry.</p>",
     resolveThread: true,
     error: 'git: error: patch failed: livekit-agents/livekit/agents/voice/tts_retry.py:41\nerror: patch does not apply',
   }),

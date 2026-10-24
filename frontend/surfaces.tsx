@@ -109,8 +109,9 @@ export function Quote({ children, lines }: { children: string; lines?: number })
 }
 
 // A comment in the conversation, as a message from its author: u9g's on the right like the reply,
-// everyone else's on the left. The body is GitHub's own rendering, styled with GitHub's stylesheet.
-export function Theirs({ comment, trailing }: { comment: Comment; trailing?: ReactNode }) {
+// everyone else's on the left. The body is GitHub's own rendering, styled with GitHub's stylesheet,
+// cut to `max` pixels when given.
+export function Theirs({ comment, trailing, max }: { comment: Comment; trailing?: ReactNode; max?: number }) {
   const side = comment.author === 'u9g' ? 'right' : 'left';
   return (
     <View style={{ gap: 4 }}>
@@ -119,20 +120,56 @@ export function Theirs({ comment, trailing }: { comment: Comment; trailing?: Rea
         {trailing}
       </View>
       <Bubble side={side}>
-        <div
-          className="markdown-body"
-          style={markdownBody}
-          dangerouslySetInnerHTML={{ __html: comment.bodyHtml }}
-          // Links leave the app for a new tab.
-          onClick={(event) => {
-            const link = (event.target as Element).closest('a');
-            if (!link) return;
-            event.preventDefault();
-            window.open(link.href, '_blank');
-          }}
-        />
+        {max ? (
+          <Clamp max={max}>
+            <Html html={comment.bodyHtml} />
+          </Clamp>
+        ) : (
+          <Html html={comment.bodyHtml} />
+        )}
       </Bubble>
     </View>
+  );
+}
+
+// Cuts its content to `max` pixels, fading out the last lines, with Show more under it when
+// anything was cut.
+export function Clamp({ max, children }: { max: number; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [height, setHeight] = useState(0);
+  // Cutting less than a couple of lines saves nothing.
+  const cut = height > max + 24;
+  return (
+    <View>
+      <View style={[{ overflow: 'hidden' }, cut && !open && ({ maxHeight: max, ...fade } as object)]}>
+        <View onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>{children}</View>
+      </View>
+      {cut && (
+        <Pressable onPress={() => setOpen(!open)} style={{ alignSelf: 'flex-start' }}>
+          <Text style={styles.more}>{open ? 'Show less' : 'Show more'}</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+const fade = { maskImage: 'linear-gradient(to bottom, black 60%, transparent)' };
+
+// GitHub's rendering of a body, styled with GitHub's stylesheet. Links leave the app for a new
+// tab; a click anywhere else calls onPress.
+export function Html({ html, onPress }: { html: string; onPress?: () => void }) {
+  return (
+    <div
+      className="markdown-body"
+      style={markdownBody}
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={(event) => {
+        const link = (event.target as Element).closest('a');
+        if (!link) return onPress?.();
+        event.preventDefault();
+        window.open(link.href, '_blank');
+      }}
+    />
   );
 }
 
@@ -230,6 +267,12 @@ export function ToolRequestBanner({ proposal }: { proposal: Proposal }) {
 }
 
 const styles = StyleSheet.create({
+  more: {
+    color: t3.muted,
+    fontSize: 12,
+    paddingTop: 4,
+    textDecorationLine: 'underline',
+  },
   meta: {
     color: t3.muted,
     fontSize: 11,
