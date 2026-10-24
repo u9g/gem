@@ -133,7 +133,7 @@ async fn main() {
         .route(
             "/proposals/approve",
             post(|Json(request): Json<ApproveProposalRequest>| async move {
-                proposals::approve(&request.id, &request.reply).await;
+                proposals::approve(&request.id, &request.reply, &request.follow_up).await;
                 Json(ApproveProposalResponse {})
             }),
         )

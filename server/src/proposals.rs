@@ -10,6 +10,7 @@ use serde::Deserialize;
 use tokio::{io::AsyncWriteExt, process::Command};
 
 use crate::proto::{Comment, Patch, Proposal, PullRequestCluster};
+use crate::t3;
 
 // One `<id>.json` file per proposal, relative to the server's working directory. Agents write
 // them with `server propose`, which checks them first.
@@ -34,7 +35,7 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>
     }
 }
 
-pub async fn approve(id: &str, reply: &str) {
+pub async fn approve(id: &str, reply: &str, follow_up: &str) {
     let proposals = load(Path::new(DIR)).await;
     let Some((path, mut proposal)) = proposals.iter().find(|(_, p)| p.id == id).cloned() else {
         return;
@@ -43,6 +44,12 @@ pub async fn approve(id: &str, reply: &str) {
         proposal.reply = reply.to_string();
         if let Ok(html) = render(&proposal.pull_request_url, reply).await {
             proposal.reply_html = html;
+        }
+    }
+    if !follow_up.is_empty() && !proposal.follow_up.is_empty() {
+        proposal.follow_up = follow_up.to_string();
+        if let Ok(html) = render(&proposal.pull_request_url, follow_up).await {
+            proposal.follow_up_html = html;
         }
     }
     match run(&path, &mut proposal).await {
@@ -100,6 +107,11 @@ pub async fn dismiss(id: &str) {
 }
 
 async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
+    if !proposal.follow_up.is_empty() {
+        t3::start(&proposal.summary, &proposal.follow_up).await?;
+        proposal.follow_up.clear();
+        save(path, proposal).await;
+    }
     if let Some(patch) = &proposal.patch {
         apply_patch(
             &proposal.pull_request_url,
@@ -147,6 +159,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
 
 // `server propose --dir <dir> --pr <url> --comment <id> [--thread <id>] --summary <text>
 // [--patch <diff file> --message <text>] [--reply <markdown file>] [--resolve-thread]
+// [--follow-up <markdown file>]
 // [--request-tool <markdown file>]`
 pub async fn propose(args: &[String]) -> Result<String, String> {
     let mut flags: HashMap<&str, &str> = HashMap::new();
@@ -230,14 +243,23 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         None => String::new(),
     };
     let reply_html = render(pr, &reply).await?;
+    let follow_up = match flags.get("follow-up") {
+        Some(file) => read(file).await?,
+        None => String::new(),
+    };
+    let follow_up_html = render(pr, &follow_up).await?;
     let requested_tool = match flags.get("request-tool") {
         Some(file) => read(file).await?,
         None => String::new(),
     };
-    let steps = patch.is_some() || !reply.trim().is_empty() || resolve_thread;
+    let steps = patch.is_some()
+        || !reply.trim().is_empty()
+        || resolve_thread
+        || !follow_up.trim().is_empty();
     if steps == !requested_tool.trim().is_empty() {
         return Err(
-            "propose either steps (--patch, --reply, --resolve-thread) or --request-tool".into(),
+            "propose either steps (--patch, --reply, --resolve-thread, --follow-up) or --request-tool"
+                .into(),
         );
     }
 
@@ -258,6 +280,8 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         requested_tool,
         earlier_comments,
         reply_html,
+        follow_up,
+        follow_up_html,
     };
     tokio::fs::create_dir_all(&dir)
         .await

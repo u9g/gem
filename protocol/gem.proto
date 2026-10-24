@@ -48,8 +48,8 @@ message Repository {
 }
 
 // An answer an agent proposes to a conversation on a pull request, run as u9g
-// once approved. Approving runs the steps that are set in field order: patch,
-// reply, resolve_thread. A step that succeeded is cleared, so approving again
+// once approved. Approving runs the steps that are set in this order:
+// follow_up, patch, reply, resolve_thread. A step that succeeded is cleared, so approving again
 // after a failure resumes at the step that failed.
 message Proposal {
   string id = 1;
@@ -78,6 +78,12 @@ message Proposal {
   repeated Comment earlier_comments = 11;
   // `reply` as GitHub renders it.
   string reply_html = 12;
+  // A prompt for a T3 Code agent to finish what the reply promises, when that
+  // is too big for a patch here, such as changes across repositories.
+  // Approving starts the agent before the other steps.
+  string follow_up = 13;
+  // `follow_up` as GitHub renders it.
+  string follow_up_html = 14;
 }
 
 message Comment {
@@ -109,6 +115,9 @@ message ApproveProposalRequest {
   // u9g's rewrite of the proposal's reply, posted in its place. Empty posts the
   // reply as proposed.
   string reply = 2;
+  // u9g's rewrite of the proposal's follow-up prompt, run in its place. Empty
+  // runs the prompt as proposed.
+  string follow_up = 3;
 }
 
 message ApproveProposalResponse {}
