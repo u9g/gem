@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
+dotenvy = "0.15.7"
 livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"] }
 livekit-api = { version = "0.9.1", default-features = false, features = ["access-token"] }
 pbjson = "0.9.0"

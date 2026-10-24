@@ -109,6 +109,9 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
+    // LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_SEARCH can live in .env in the
+    // working directory, next to the server's other state. The real environment wins.
+    let _ = dotenvy::dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|command| command == "propose") {
         match proposals::propose(&args[1..]).await {
