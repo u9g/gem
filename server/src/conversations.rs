@@ -180,6 +180,26 @@ impl Conversations {
             .collect()
     }
 
+    // Deletes the proposals on the PRs at `urls` and forgets that agents answered their waiting
+    // conversations, so the next refresh answers them again.
+    pub async fn restart(&self, urls: &[String]) {
+        proposals::remove_on(urls).await;
+        let ids: HashSet<String> = {
+            let prs = self.0.prs.read().await;
+            urls.iter()
+                .filter_map(|url| prs.get(url))
+                .flat_map(|known| known.waiting.iter().map(|c| c.id().to_string()))
+                .collect()
+        };
+        {
+            let mut started = self.0.started.lock().await;
+            started.retain(|id| !ids.contains(id));
+            let json = serde_json::to_vec_pretty(&*started).unwrap();
+            let _ = tokio::fs::write(HANDLED_FILE, json).await;
+        }
+        self.0.handled.lock().await.retain(|id| !ids.contains(id));
+    }
+
     pub async fn refresh(&self, prs: &[SearchedPullRequest]) {
         let changed: Vec<&SearchedPullRequest> = {
             let known = self.0.prs.read().await;

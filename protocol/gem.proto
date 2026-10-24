@@ -170,3 +170,11 @@ message DismissProposalRequest {
 }
 
 message DismissProposalResponse {}
+
+// Deletes every proposal on the cluster's pull requests, so new agents answer
+// the conversations still waiting on the user at the server's next refresh.
+message RestartClusterRequest {
+  repeated string pull_request_urls = 1;
+}
+
+message RestartClusterResponse {}
