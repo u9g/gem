@@ -7,6 +7,8 @@ import { Icon, t3 } from './t3';
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
 export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] }) {
+  // Wide enough for the longest repo#number, so they line up and never wrap.
+  const refWidth = Math.max(...pullRequests.map((pr) => `${pr.repository?.name}#${pr.number}`.length)) * 7.5;
   return (
     <View style={styles.list}>
       {pullRequests.map((pr, i) => (
@@ -16,7 +18,7 @@ export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] 
           onPress={() => Linking.openURL(pr.url)}
         >
           <ChecksIcon pr={pr} />
-          <Text style={styles.ref}>
+          <Text numberOfLines={1} style={[styles.ref, { width: refWidth }]}>
             {pr.repository?.name}#{pr.number}
           </Text>
           <Text numberOfLines={1} style={styles.title}>
@@ -60,7 +62,6 @@ const styles = StyleSheet.create({
     borderTopColor: t3.border,
   },
   ref: {
-    width: 120,
     color: t3.muted,
     fontFamily: t3.mono,
     fontSize: 12,

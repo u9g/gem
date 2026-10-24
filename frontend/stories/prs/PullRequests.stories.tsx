@@ -230,10 +230,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginRight: 2,
   },
-  review: {
-    color: t3.muted,
-    fontSize: 12,
-  },
   tabs: {
     flexDirection: 'row',
     flexWrap: 'wrap',

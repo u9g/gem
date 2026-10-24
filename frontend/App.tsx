@@ -3,9 +3,10 @@ import { timestampDate } from '@bufbuild/protobuf/wkt';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { byComment, ProposalGroup } from './ProposalView';
+import { PullRequestList } from './PullRequestList';
 import {
   ApproveProposalRequestSchema,
   DismissProposalRequestSchema,
@@ -202,19 +203,10 @@ export default function App() {
               <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
               <Text style={styles.meta}>
                 {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
-                {[...new Set(selected.pullRequests.map((pr) => pr.repository?.name))].map((repository) => (
-                  <Text
-                    key={repository}
-                    style={
-                      selected.pullRequests.some((pr) => pr.repository?.name === repository && pr.checksFailing) &&
-                      styles.failing
-                    }
-                  >
-                    {'  ·  '}
-                    {repository}
-                  </Text>
-                ))}
               </Text>
+            </View>
+            <View style={styles.pullRequests}>
+              <PullRequestList pullRequests={selected.pullRequests} />
             </View>
             {byComment(proposals).map((group) => (
               <ProposalGroup
@@ -225,19 +217,6 @@ export default function App() {
                 onDismiss={dismiss}
               />
             ))}
-            <View>
-              <Text style={styles.section}>Pull requests</Text>
-              {selected.pullRequests.map((pr) => (
-                <Pressable key={pr.url} style={styles.pr} onPress={() => Linking.openURL(pr.url)}>
-                  <Text style={styles.prRef}>
-                    {pr.repository?.owner}/{pr.repository?.name}#{pr.number}
-                  </Text>
-                  <Text numberOfLines={1} style={styles.prTitle}>
-                    {pr.title}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
           </View>
         )}
       </ScrollView>
@@ -451,6 +430,9 @@ const styles = StyleSheet.create({
     gap: 4,
     marginBottom: 8,
   },
+  pullRequests: {
+    marginBottom: 16,
+  },
   title: {
     color: '#D0CFD4',
     fontSize: 20,
@@ -459,38 +441,8 @@ const styles = StyleSheet.create({
   ready: {
     color: '#4ADE80',
   },
-  failing: {
-    color: '#F87171',
-  },
   meta: {
     color: 'rgba(208, 207, 212, 0.55)',
     fontSize: 12,
-  },
-  section: {
-    color: 'rgba(208, 207, 212, 0.55)',
-    fontSize: 11,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginTop: 12,
-    marginBottom: 4,
-  },
-  pr: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 32,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  prRef: {
-    color: 'rgba(208, 207, 212, 0.55)',
-    fontSize: 12,
-    fontVariant: ['tabular-nums'],
-  },
-  prTitle: {
-    flex: 1,
-    color: '#D0CFD4',
-    fontSize: 14,
   },
 });
