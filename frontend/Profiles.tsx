@@ -177,6 +177,17 @@ export function ProfileSheet({
   );
 }
 
+// How each LiveKit field is filled from a password manager. The API key and secret are a login's
+// username and password, which iOS AutoFill fills; the URL and room are custom fields, which
+// 1Password's Safari extension fills by matching their labels, named after the server's variables.
+const autofill = {
+  name: { variable: undefined, autoComplete: 'off' },
+  url: { variable: 'LIVEKIT_URL', autoComplete: 'url' },
+  apiKey: { variable: 'LIVEKIT_API_KEY', autoComplete: 'username' },
+  apiSecret: { variable: 'LIVEKIT_API_SECRET', autoComplete: 'current-password' },
+  room: { variable: 'GEM_ROOM', autoComplete: 'off' },
+} as const;
+
 // A gem server to add, or the selected one to change: its name, the LiveKit project it is
 // configured with (LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET) and its GEM_ROOM.
 export function ProfileForm({
@@ -195,44 +206,77 @@ export function ProfileForm({
   const [profile, setProfile] = useState<Profile>(
     () => editing ?? { id: crypto.randomUUID(), name: '', url: '', apiKey: '', apiSecret: '', room: '' },
   );
-  const field = (key: 'name' | 'url' | 'apiKey' | 'apiSecret' | 'room', placeholder: string) => (
-    <TextInput
-      style={styles.input}
-      placeholder={placeholder}
-      placeholderTextColor="#6B6A70"
-      secureTextEntry={key === 'apiSecret'}
-      autoCapitalize="none"
-      value={profile[key]}
-      onChangeText={(value) => setProfile({ ...profile, [key]: value })}
-    />
-  );
+  const field = (key: keyof typeof autofill, placeholder: string) => {
+    const { variable, autoComplete } = autofill[key];
+    const id = variable ?? key;
+    return (
+      <>
+        {/* Password managers match fields by their labels, which the placeholders already show. */}
+        <label htmlFor={id} style={visuallyHidden}>
+          {variable ?? placeholder}
+        </label>
+        <TextInput
+          id={id}
+          style={styles.input}
+          placeholder={placeholder}
+          placeholderTextColor="#6B6A70"
+          secureTextEntry={key === 'apiSecret'}
+          autoComplete={autoComplete}
+          autoCapitalize="none"
+          value={profile[key]}
+          onChangeText={(value) => setProfile({ ...profile, [key]: value })}
+        />
+      </>
+    );
+  };
   const save = () => onSave({ ...profile, name: profile.name.trim() || 'gem', room: profile.room.trim() });
   return (
-    <View style={styles.form}>
-      <Text style={styles.formText}>{editing ? `Change ${editing.name}` : 'Add a gem server'}</Text>
-      {field('name', 'Name, e.g. LiveKit')}
-      {field('url', 'LIVEKIT_URL')}
-      {field('apiKey', 'LIVEKIT_API_KEY')}
-      {field('apiSecret', 'LIVEKIT_API_SECRET')}
-      {field('room', 'GEM_ROOM')}
-      <View style={styles.formButtons}>
-        {onRemove && (
-          <Pressable style={styles.formButton} onPress={onRemove}>
-            <Text style={[styles.formText, { color: t3.deletion }]}>Remove</Text>
+    // A real form, so password managers see the fields as one login. Submitting it saves instead
+    // of loading the page again.
+    <form
+      method="post"
+      style={{ display: 'contents' }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        save();
+      }}
+    >
+      <View style={styles.form}>
+        <Text style={styles.formText}>{editing ? `Change ${editing.name}` : 'Add a gem server'}</Text>
+        {field('name', 'Name, e.g. LiveKit')}
+        {field('url', 'LIVEKIT_URL')}
+        {field('apiKey', 'LIVEKIT_API_KEY')}
+        {field('apiSecret', 'LIVEKIT_API_SECRET')}
+        {field('room', 'GEM_ROOM')}
+        <View style={styles.formButtons}>
+          {onRemove && (
+            <Pressable style={styles.formButton} onPress={onRemove}>
+              <Text style={[styles.formText, { color: t3.deletion }]}>Remove</Text>
+            </Pressable>
+          )}
+          {onCancel && (
+            <Pressable style={styles.formButton} onPress={onCancel}>
+              <Text style={styles.formText}>Cancel</Text>
+            </Pressable>
+          )}
+          <Pressable style={[styles.formButton, styles.formButtonPrimary]} onPress={save}>
+            <Text style={styles.formText}>{editing ? 'Save' : 'Connect'}</Text>
           </Pressable>
-        )}
-        {onCancel && (
-          <Pressable style={styles.formButton} onPress={onCancel}>
-            <Text style={styles.formText}>Cancel</Text>
-          </Pressable>
-        )}
-        <Pressable style={[styles.formButton, styles.formButtonPrimary]} onPress={save}>
-          <Text style={styles.formText}>{editing ? 'Save' : 'Connect'}</Text>
-        </Pressable>
+        </View>
       </View>
-    </View>
+    </form>
   );
 }
+
+// Kept for assistive technology and password managers, out of sight.
+const visuallyHidden = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clipPath: 'inset(50%)',
+  whiteSpace: 'nowrap',
+} as const;
 
 const styles = StyleSheet.create({
   filter: {

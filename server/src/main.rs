@@ -147,7 +147,8 @@ fn main() {
 // read was denied.
 const OP_RETRY_DELAY: Duration = Duration::from_secs(60);
 
-// The variables a 1Password item can hold, each in a field named after it.
+// The variables a 1Password item can hold, each in a field named after it. A login's username and
+// password hold the API key and secret instead, so iOS AutoFill can fill them into the frontend.
 const OP_FIELDS: &[&str] = &[
     "LIVEKIT_URL",
     "LIVEKIT_API_KEY",
@@ -167,6 +168,8 @@ fn load_op_item() -> Result<(), String> {
     #[derive(Deserialize)]
     struct Field {
         label: String,
+        // USERNAME or PASSWORD for a login's own username and password.
+        purpose: Option<String>,
         value: Option<String>,
     }
 
@@ -197,11 +200,23 @@ fn load_op_item() -> Result<(), String> {
     }
     let item: Item = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("op printed no item for {reference}: {error}"))?;
-    for Field { label, value } in item.fields {
-        let Some(value) = value else { continue };
-        if OP_FIELDS.contains(&label.as_str()) && std::env::var_os(&label).is_none() {
+    for Field {
+        label,
+        purpose,
+        value,
+    } in item.fields
+    {
+        let name = match purpose.as_deref() {
+            Some("USERNAME") => "LIVEKIT_API_KEY",
+            Some("PASSWORD") => "LIVEKIT_API_SECRET",
+            _ => label.as_str(),
+        };
+        let Some(value) = value.filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if OP_FIELDS.contains(&name) && std::env::var_os(name).is_none() {
             // SAFETY: main calls this before starting any other thread.
-            unsafe { std::env::set_var(&label, value) };
+            unsafe { std::env::set_var(name, value) };
         }
     }
     Ok(())
