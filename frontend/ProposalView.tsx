@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useContext, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Proposal } from './gen/gem_pb';
@@ -10,6 +10,7 @@ import {
   EditableReply,
   FollowUpCard,
   Html,
+  Login,
   Quote,
   type ReplyDraft,
   ResolvesTag,
@@ -28,8 +29,8 @@ export function byComment(list: Proposal[]): Proposal[][] {
   return [...groups.values()];
 }
 
-// One conversation waiting on u9g as a band: the proposal's summary and actions on top, then
-// three columns cut to a few lines each: their thread, u9g's reply, and the change. Arrows step
+// One conversation waiting on the user as a band: the proposal's summary and actions on top, then
+// three columns cut to a few lines each: their thread, the user's reply, and the change. Arrows step
 // through alternatives.
 export function ProposalGroup({
   proposals,
@@ -40,7 +41,7 @@ export function ProposalGroup({
   proposals: Proposal[];
   // The proposal being approved or dismissed, if any.
   busy?: string;
-  // Called with u9g's rewrites of the reply and follow-up prompt where that version is showing,
+  // Called with the user's rewrites of the reply and follow-up prompt where that version is showing,
   // and '' otherwise.
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
@@ -94,6 +95,7 @@ function ProposalView({
   onApprove: (reply: string, followUp: string) => void;
   onDismiss: () => void;
 }) {
+  const login = useContext(Login);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   const [followUp, setFollowUp] = useState<ReplyDraft>({ yours: proposal.followUp, showing: 'suggested' });
@@ -153,7 +155,7 @@ function ProposalView({
         <View style={styles.column}>
           {proposal.reply ? (
             <>
-              <Text style={[styles.meta, styles.author]}>u9g</Text>
+              <Text style={[styles.meta, styles.author]}>{login}</Text>
               {editing ? (
                 <EditableReply suggested={proposal.reply} draft={draft} onChange={setDraft} quote={quote} />
               ) : (

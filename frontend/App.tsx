@@ -1,12 +1,14 @@
-import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
+import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { byComment, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
+import { type Project, useServer } from './server';
+import { Login } from './surfaces';
 import {
   ApproveProposalRequestSchema,
   DismissProposalRequestSchema,
@@ -34,8 +36,6 @@ function timeAgo(date: Date): string {
   return relativeTime.format(Math.trunc(seconds / size), unit);
 }
 
-const server = 'http://localhost:8080';
-
 const SIDEBAR_WIDTH_KEY = 'gem.sidebarWidth';
 const SIDEBAR_DEFAULT_WIDTH = 375;
 const SIDEBAR_MIN_WIDTH = 208;
@@ -44,14 +44,6 @@ const MAIN_MIN_WIDTH = 640;
 
 function clampSidebarWidth(width: number): number {
   return Math.round(Math.max(SIDEBAR_MIN_WIDTH, Math.min(width, window.innerWidth - MAIN_MIN_WIDTH)));
-}
-
-function post(path: string, body: JsonValue): Promise<JsonValue> {
-  return fetch(`${server}${path}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  }).then((res) => res.json());
 }
 
 function sameRepository(a: Repository | undefined, b: Repository | undefined): boolean {
@@ -80,7 +72,9 @@ function pending(cluster: PullRequestCluster): number {
 }
 
 export default function App() {
+  const { status, addProject, post } = useServer();
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
+  const [login, setLogin] = useState('');
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
@@ -93,17 +87,22 @@ export default function App() {
   const load = useCallback(
     () =>
       post('/prs', toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))).then(
-        (json) => setClusters(fromJson(ListOpenPullRequestsResponseSchema, json).clusters),
+        (json) => {
+          const response = fromJson(ListOpenPullRequestsResponseSchema, json);
+          setClusters(response.clusters);
+          setLogin(response.login);
+        },
       ),
-    [],
+    [post],
   );
 
   // Proposals arrive whenever their agents finish, not only when the page loads.
   useEffect(() => {
+    if (status !== 'online') return;
     load();
     const timer = setInterval(load, 30_000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [status, load]);
 
   function approve(id: string, reply: string, followUp: string) {
     setBusy(id);
@@ -131,6 +130,10 @@ export default function App() {
   const selected = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl) ?? visible[0];
   const proposals = (selected?.pullRequests ?? []).flatMap((pr) => pr.proposals);
 
+  if (status === 'no-project') {
+    return <AddProject onAdd={addProject} />;
+  }
+
   return (
     <View style={styles.container}>
       <View style={[styles.sidebar, { width: sidebarWidth }]}>
@@ -140,11 +143,10 @@ export default function App() {
           onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
         />
         <View style={styles.filters}>
-          {['org: livekit, livekit-examples', 'author: u9g'].map((filter) => (
-            <Text key={filter} style={styles.filter}>
-              {filter}
-            </Text>
-          ))}
+          <Pressable accessibilityLabel="Change LiveKit project" onPress={() => addProject(undefined)}>
+            <Text style={styles.filter}>server: {status}</Text>
+          </Pressable>
+          <Text style={styles.filter}>author: {login}</Text>
           <Select.Root
             value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
             onValueChange={(option) =>
@@ -196,31 +198,61 @@ export default function App() {
           ))}
         </ScrollView>
       </View>
-      <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
-        {selected && (
-          <View style={styles.column}>
-            <View style={styles.titleBlock}>
-              <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
-              <Text style={styles.meta}>
-                {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
-              </Text>
+      <Login value={login}>
+        <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
+          {selected && (
+            <View style={styles.column}>
+              <View style={styles.titleBlock}>
+                <Text style={[styles.title, ready(selected) && styles.ready]}>{selected.name}</Text>
+                <Text style={styles.meta}>
+                  {selected.updatedAt && timeAgo(timestampDate(selected.updatedAt))}
+                </Text>
+              </View>
+              <View style={styles.pullRequests}>
+                <PullRequestList pullRequests={selected.pullRequests} />
+              </View>
+              {byComment(proposals).map((group) => (
+                <ProposalGroup
+                  key={group[0].id}
+                  proposals={group}
+                  busy={busy}
+                  onApprove={approve}
+                  onDismiss={dismiss}
+                />
+              ))}
             </View>
-            <View style={styles.pullRequests}>
-              <PullRequestList pullRequests={selected.pullRequests} />
-            </View>
-            {byComment(proposals).map((group) => (
-              <ProposalGroup
-                key={group[0].id}
-                proposals={group}
-                busy={busy}
-                onApprove={approve}
-                onDismiss={dismiss}
-              />
-            ))}
-          </View>
-        )}
-      </ScrollView>
+          )}
+        </ScrollView>
+      </Login>
       <StatusBar style="auto" />
+    </View>
+  );
+}
+
+// The LiveKit project the gem server is configured with: its LIVEKIT_URL, LIVEKIT_API_KEY and
+// LIVEKIT_API_SECRET.
+function AddProject({ onAdd }: { onAdd: (project: Project) => void }) {
+  const [project, setProject] = useState<Project>({ url: '', apiKey: '', apiSecret: '' });
+  const field = (key: keyof Project, placeholder: string) => (
+    <TextInput
+      style={styles.projectInput}
+      placeholder={placeholder}
+      placeholderTextColor="#6B6A70"
+      secureTextEntry={key === 'apiSecret'}
+      autoCapitalize="none"
+      value={project[key]}
+      onChangeText={(value) => setProject({ ...project, [key]: value })}
+    />
+  );
+  return (
+    <View style={[styles.container, styles.project]}>
+      <Text style={styles.projectText}>Add the LiveKit project your gem server uses</Text>
+      {field('url', 'LIVEKIT_URL')}
+      {field('apiKey', 'LIVEKIT_API_KEY')}
+      {field('apiSecret', 'LIVEKIT_API_SECRET')}
+      <Pressable style={styles.projectButton} onPress={() => onAdd(project)}>
+        <Text style={styles.projectText}>Connect</Text>
+      </Pressable>
     </View>
   );
 }
@@ -332,6 +364,31 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     padding: 10,
+  },
+  project: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  projectInput: {
+    width: 320,
+    color: '#D0CFD4',
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  projectButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  projectText: {
+    color: '#D0CFD4',
+    fontSize: 14,
   },
   filter: {
     color: '#D0CFD4',

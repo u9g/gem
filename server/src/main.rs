@@ -1,4 +1,10 @@
-use std::{cmp::Reverse, collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    cmp::Reverse,
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -8,12 +14,7 @@ use axum::{
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use tokio::{
-    process::Command,
-    signal::unix::{SignalKind, signal},
-    sync::RwLock,
-};
-use tower_http::cors::CorsLayer;
+use tokio::{process::Command, sync::RwLock};
 
 use conversations::Conversations;
 use names::Names;
@@ -26,6 +27,7 @@ use proto::{
 mod conversations;
 mod names;
 mod proposals;
+mod room;
 mod t3;
 
 mod proto {
@@ -35,14 +37,21 @@ mod proto {
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
-const REPOS: &[&str] = &[
-    "repo", "list", "u9g", "--limit", "1000", "--json", "name,url",
-];
+// Without an owner, gh lists the authenticated user's repositories.
+const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
 
-// Paginated by `gh api graphql --paginate`, which fills in $endCursor.
+static LOGIN: OnceLock<String> = OnceLock::new();
+
+// The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.
+pub fn login() -> &'static str {
+    LOGIN.get().unwrap()
+}
+
+// Paginated by `gh api graphql --paginate`, which fills in $endCursor. $q is the user's open PRs,
+// narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`.
 const PRS_QUERY: &str = r#"
-query($endCursor: String) {
-  search(query: "is:pr is:open author:u9g org:livekit org:livekit-examples", type: ISSUE, first: 100, after: $endCursor) {
+query($endCursor: String, $q: String!) {
+  search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -100,6 +109,9 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
+    // LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_SEARCH can live in .env in the
+    // working directory, next to the server's other state. The real environment wins.
+    let _ = dotenvy::dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|command| command == "propose") {
         match proposals::propose(&args[1..]).await {
@@ -111,6 +123,13 @@ async fn main() {
         }
         return;
     }
+
+    let login = gh(&["api", "user", "--jq", ".login"])
+        .await
+        .expect("gh is not authenticated");
+    LOGIN
+        .set(String::from_utf8(login).unwrap().trim().to_string())
+        .unwrap();
 
     let repos: Cache<Value> = cached(|| gh_json(REPOS));
     let names = Names::load().await;
@@ -143,14 +162,9 @@ async fn main() {
                 proposals::dismiss(&request.id).await;
                 Json(DismissProposalResponse {})
             }),
-        )
-        .layer(CorsLayer::permissive());
+        );
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await
-        .unwrap();
+    room::serve(app).await;
 }
 
 async fn healthz() -> Json<Value> {
@@ -209,6 +223,12 @@ async fn open_pull_requests(
         "--paginate",
         "-f",
         &format!("query={PRS_QUERY}"),
+        "-f",
+        &format!(
+            "q=is:pr is:open author:{} {}",
+            login(),
+            std::env::var("GEM_SEARCH").unwrap_or_default()
+        ),
         "--jq",
         PRS_JQ,
     ])
@@ -220,7 +240,10 @@ async fn open_pull_requests(
     let clusters = cluster(&prs);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
-    Some(ListOpenPullRequestsResponse { clusters })
+    Some(ListOpenPullRequestsResponse {
+        clusters,
+        login: login().to_string(),
+    })
 }
 
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
@@ -309,9 +332,4 @@ async fn gh(args: &[&str]) -> Option<Vec<u8>> {
 
 async fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
     serde_json::from_slice(&gh(args).await?).ok()
-}
-
-// Kubernetes sends SIGTERM before killing the pod; in-flight requests must drain.
-async fn shutdown() {
-    signal(SignalKind::terminate()).unwrap().recv().await;
 }
