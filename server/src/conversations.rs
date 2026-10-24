@@ -403,8 +403,18 @@ async fn fix(pr: &Target, failure: &CheckFailure) {
         "Checks failed on {head}, the head commit of {login}'s pull request {url} (\"{title}\"):
 
 {checks}
-Read why each one failed: `gh run view <run> --log-failed -R {full_name}` prints a GitHub Actions \
-run's failed steps. Then work out what {login} should do about it and propose it.
+Find the root cause of each failure before you choose an answer:
+- Read why it failed: `gh run view <run> --log-failed -R {full_name}` prints a GitHub Actions \
+run's failed steps.
+- Check whether this pull request caused it: compare the failing test or step with what \
+`gh pr diff {number} -R {full_name}` changes.
+- Check whether it fails without this pull request: `gh run list -R {full_name} --workflow \
+<workflow> -L 50` lists the workflow's recent runs on the base branch and other pull requests. \
+Read the failed ones to see whether they fail the same test in the same way.
+- Check whether the base branch already fixed it: in a clone of {full_name}, read \
+`git log <merge base>..origin/<base branch>` for commits that touch the failing test or the code \
+it runs.
+Then work out what {login} should do about it and propose it.
 
 A proposal answers the checks you pass --excerpt <check> <file> for, with the log lines that show \
 why that check failed (the error itself, at most 10, no setup or timestamps) saved to the file: \
@@ -415,12 +425,14 @@ another. A proposal can:
 `gh pr checkout {number}` in it, edit, and save `git diff` to a file. Run the failing check's \
 command locally when you can, to show the fix works. Never commit or push.
 - rerun the failed jobs, with --rerun: when the failure is flaky or comes from outside the pull \
-request, such as a network error or a broken runner, and running it again is likely to pass. \
-Only GitHub Actions runs can be rerun.
+request, such as a network error, a broken runner or a test that fails the same way on the base \
+branch, and running it again is likely to pass. Only GitHub Actions runs can be rerun.
 - hand the work to another agent, with --follow-up: when the right fix is too big to review as \
-one patch on this pull request, such as matching changes in other repositories, write a prompt \
-for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
-~/code), the branches or pull requests to build on, what to change, and how to verify it.
+one patch on this pull request, such as matching changes in other repositories, or when the base \
+branch already fixed it and the pull request needs a rebase onto it. Write a prompt for a T3 Code \
+agent to a markdown file. It must stand alone: the repositories (checked out under ~/code), the \
+branches or pull requests to build on, what to change and why (such as the commit that fixed it), \
+and how to verify it.
 
 Record each proposal with:
 
