@@ -24,7 +24,13 @@ export const Checks: StoryObj = {
   render: () => (
     <View style={{ minHeight: '100%', padding: 24, gap: 28, backgroundColor: t3.background }}>
       {bySubject(checkProposals).map((group) => (
-        <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
+        <ProposalGroup
+          key={group[0].id}
+          proposals={group}
+          onApprove={() => {}}
+          onDismiss={() => {}}
+          onInvestigate={() => {}}
+        />
       ))}
     </View>
   ),

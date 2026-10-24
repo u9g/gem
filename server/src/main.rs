@@ -19,12 +19,15 @@ use tokio::{process::Command, sync::RwLock};
 use conversations::Conversations;
 use names::Names;
 use proto::{
-    ApproveProposalRequest, ApproveProposalResponse, DismissProposalRequest,
-    DismissProposalResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse,
+    ApproveProposalRequest, ApproveProposalResponse, CloseInvestigationRequest,
+    CloseInvestigationResponse, DismissProposalRequest, DismissProposalResponse,
+    InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
+    ListOpenPullRequestsResponse, MessageInvestigationRequest, MessageInvestigationResponse,
     PullRequest, PullRequestCluster, Repository, RestartClusterRequest, RestartClusterResponse,
 };
 
 mod conversations;
+mod investigations;
 mod names;
 mod proposals;
 mod room;
@@ -163,7 +166,7 @@ async fn main() {
                     proposals::approve(&request.id, &request.reply, &request.follow_up).await;
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.
-                if let (Some(url), Some(response)) = (closed, &mut *prs.write().await) {
+                if let (Ok(Some(url)), Some(response)) = (closed, &mut *prs.write().await) {
                     for cluster in &mut response.clusters {
                         cluster.pull_requests.retain(|pr| pr.url != url);
                     }
@@ -173,6 +176,35 @@ async fn main() {
             })
         })
         .route(
+            "/investigations/start",
+            post(|Json(request): Json<InvestigateRequest>| async move {
+                investigations::start(&request.proposal_id)
+                    .await
+                    .map(|()| Json(InvestigateResponse {}))
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
+            }),
+        )
+        .route(
+            "/investigations/message",
+            post(
+                |Json(request): Json<MessageInvestigationRequest>| async move {
+                    investigations::message(&request.id, &request.message)
+                        .await
+                        .map(|()| Json(MessageInvestigationResponse {}))
+                        .map_err(|error| (StatusCode::BAD_REQUEST, error))
+                },
+            ),
+        )
+        .route(
+            "/investigations/close",
+            post(
+                |Json(request): Json<CloseInvestigationRequest>| async move {
+                    investigations::close(&request.id).await;
+                    Json(CloseInvestigationResponse {})
+                },
+            ),
+        )
+        .route(
             "/proposals/dismiss",
             post(|Json(request): Json<DismissProposalRequest>| async move {
                 proposals::dismiss(&request.id).await;
@@ -180,6 +212,7 @@ async fn main() {
             }),
         );
 
+    investigations::watch();
     room::serve(app).await;
 }
 
@@ -226,6 +259,7 @@ async fn serve_prs(
     let Json(mut response) = serve(cache).await?;
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
+    investigations::fill(&mut response).await;
     Ok(Json(response))
 }
 
@@ -257,6 +291,7 @@ async fn open_pull_requests(
         clusters,
         login: login().to_string(),
         search,
+        investigations: Vec::new(),
     })
 }
 
