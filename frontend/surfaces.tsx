@@ -217,23 +217,28 @@ export function EditableReply({
           />
         </View>
       </View>
-      {hasYours && (
-        <View style={styles.versions}>
-          <View style={styles.segmented}>
-            {(['suggested', 'yours'] as const).map((version) => (
-              <Pressable
-                key={version}
-                onPress={() => onChange({ ...draft, showing: version })}
-                style={[styles.segment, draft.showing === version && styles.segmentOn]}
-              >
-                <Text style={[styles.segmentText, draft.showing === version && { color: t3.foreground }]}>
-                  {version === 'suggested' ? 'Suggested' : 'Yours'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-      )}
+      {hasYours && <Versions draft={draft} onChange={onChange} />}
+    </View>
+  );
+}
+
+// Switches between the agent's suggestion and u9g's rewrite of it.
+function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: ReplyDraft) => void }) {
+  return (
+    <View style={styles.versions}>
+      <View style={styles.segmented}>
+        {(['suggested', 'yours'] as const).map((version) => (
+          <Pressable
+            key={version}
+            onPress={() => onChange({ ...draft, showing: version })}
+            style={[styles.segment, draft.showing === version && styles.segmentOn]}
+          >
+            <Text style={[styles.segmentText, draft.showing === version && { color: t3.foreground }]}>
+              {version === 'suggested' ? 'Suggested' : 'Yours'}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
     </View>
   );
 }
