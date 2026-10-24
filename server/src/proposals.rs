@@ -335,6 +335,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         Some(file) => read(file).await?,
         None => String::new(),
     };
+    let summary_html = render(pr, summary).await?;
     let reply_html = render(pr, &reply).await?;
     let follow_up = match flags.get("follow-up") {
         Some(file) => read(file).await?,
@@ -380,6 +381,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         close_pull_request,
         check_failure,
         rerun,
+        summary_html,
     };
     tokio::fs::create_dir_all(&dir)
         .await

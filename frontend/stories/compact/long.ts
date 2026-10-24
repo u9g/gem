@@ -18,6 +18,7 @@ export const long: Proposal[] = [
   create(ProposalSchema, {
     id: 'long-reply',
     summary: 'Reply that awaiting retries misses the last frame and offer a StreamDropped event instead',
+    summaryHtml: "<p dir=\"auto\">Reply that awaiting retries misses the last frame and offer a StreamDropped event instead</p>",
     pullRequestUrl: pr.url,
     comment,
     threadId: 'thread-9',
@@ -27,6 +28,7 @@ export const long: Proposal[] = [
   create(ProposalSchema, {
     id: 'long-patch',
     summary: 'Wait for pending TTS retries before closing the room, reply, and resolve',
+    summaryHtml: "<p dir=\"auto\">Wait for pending TTS retries before closing the room, reply, and resolve</p>",
     pullRequestUrl: pr.url,
     comment,
     threadId: 'thread-9',
@@ -38,6 +40,7 @@ export const long: Proposal[] = [
   create(ProposalSchema, {
     id: 'long-follow-up',
     summary: 'Hand the StreamDropped event to a follow-up agent, reply that it follows, and resolve',
+    summaryHtml: "<p dir=\"auto\">Hand the StreamDropped event to a follow-up agent, reply that it follows, and resolve</p>",
     pullRequestUrl: pr.url,
     comment,
     threadId: 'thread-9',
