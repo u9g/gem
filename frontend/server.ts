@@ -22,7 +22,9 @@ export type Project = { url: string; apiKey: string; apiSecret: string };
 // label it while another profile is connected.
 export type Profile = Project & { id: string; name: string; room: string; login?: string; search?: string };
 
-export type ServerStatus = 'no-profile' | 'connecting' | 'offline' | 'online';
+// Unreachable when the project refuses to connect, e.g. for a wrong URL, API key or secret;
+// offline when the room is reached but the server is not in it.
+export type ServerStatus = 'no-profile' | 'connecting' | 'unreachable' | 'offline' | 'online';
 
 // A LiveKit access token that can only exchange data in the profile's room.
 function mintToken(profile: Profile): Promise<string> {
@@ -94,7 +96,7 @@ export function useServer() {
     mintToken(connection)
       .then((jwt) => room.connect(connection.url, jwt))
       // A project that refuses the token can still be edited or switched away from.
-      .catch(() => setStatus('offline'));
+      .catch(() => setStatus('unreachable'));
     return () => {
       room.removeAllListeners();
       room.disconnect();
