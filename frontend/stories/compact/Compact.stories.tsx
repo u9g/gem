@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
-import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink, MessageCircle } from 'lucide-react';
+import { CircleAlert, ExternalLink, MessageCircle } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -14,9 +14,9 @@ import {
   ResolvesTag,
   ToolRequestBanner,
 } from '../../surfaces';
-import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3 } from '../../t3';
+import { Button, Icon, proposalIcon, stepSentence, t3 } from '../../t3';
 import { proposals } from '../fixtures';
-import { long, replyHtml } from './long';
+import { long } from './long';
 
 const groups = [long, ...byComment(proposals)];
 
@@ -78,7 +78,7 @@ function Reply({ proposal, max }: { proposal: Proposal; max: number }) {
       ) : (
         <Bubble side="right">
           <Clamp max={max}>
-            <Html html={replyHtml[proposal.id] ?? proposal.reply} onPress={() => setEditing(true)} />
+            <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />
           </Clamp>
         </Bubble>
       )}
@@ -155,18 +155,6 @@ function Page({ children }: { children: ReactNode }) {
   );
 }
 
-// ---------- current ----------
-
-function Current() {
-  return (
-    <Page>
-      {groups.map((group) => (
-        <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
-      ))}
-    </Page>
-  );
-}
-
 // ---------- A: clamped ----------
 
 // Today's layout with long parts cut: comments and replies to about eight lines, diffs to about
@@ -227,80 +215,9 @@ function ThreadAnswerGroup({ group }: { group: Proposal[] }) {
   );
 }
 
-// ---------- C: digest ----------
-
-// One band per conversation with three columns cut to about five lines: their comment, u9g's
-// reply, and the change, with the actions in the band's header. Arrows step through alternatives.
-function DigestGroup({ group }: { group: Proposal[] }) {
-  const [picked, setPicked] = useState(0);
-  const proposal = group[picked];
-  const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
-  return (
-    <View style={styles.band}>
-      <View style={styles.bandHeader}>
-        <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
-        <Text numberOfLines={1} style={[styles.summary, { flex: 1 }]}>
-          {proposal.summary}
-        </Text>
-        {group.length > 1 && (
-          <View style={styles.stepper}>
-            <Pressable onPress={() => setPicked((picked + group.length - 1) % group.length)}>
-              <Icon icon={ChevronLeft} size={14} />
-            </Pressable>
-            <Text style={styles.meta}>
-              {picked + 1} of {group.length}
-            </Text>
-            <Pressable onPress={() => setPicked((picked + 1) % group.length)}>
-              <Icon icon={ChevronRight} size={14} />
-            </Pressable>
-          </View>
-        )}
-        <Actions proposal={proposal} />
-      </View>
-      <View style={styles.bandColumns}>
-        <View style={styles.third}>
-          <Comment proposal={proposal} max={110} />
-        </View>
-        <View style={styles.third}>
-          {proposal.reply ? (
-            <>
-              <Text style={[styles.meta, { textAlign: 'right', paddingRight: 14 }]}>u9g</Text>
-              <Reply key={proposal.id} proposal={proposal} max={110} />
-            </>
-          ) : (
-            <Text style={styles.meta}>No reply</Text>
-          )}
-        </View>
-        <View style={styles.third}>
-          {proposal.patch ? (
-            <>
-              <Text style={styles.meta}>
-                {stepSentence(proposal)}
-                {'  '}
-                <DiffStat
-                  added={files.reduce((n, f) => n + f.added, 0)}
-                  removed={files.reduce((n, f) => n + f.removed, 0)}
-                />
-              </Text>
-              <Clamp max={130}>
-                <DiffSurface diff={proposal.patch.diff} />
-              </Clamp>
-            </>
-          ) : proposal.requestedTool ? (
-            <ToolRequestBanner proposal={proposal} />
-          ) : (
-            <Text style={styles.meta}>No code change</Text>
-          )}
-        </View>
-      </View>
-    </View>
-  );
-}
-
 const meta: Meta = { title: 'Compact proposals', parameters: { layout: 'fullscreen' } };
 export default meta;
 
-export const Today: StoryObj = { name: 'Today', render: () => <Current /> };
 export const AClamped: StoryObj = {
   name: 'A · Clamped',
   render: () => (
@@ -321,12 +238,13 @@ export const BThreadAnswer: StoryObj = {
     </Page>
   ),
 };
+// The app's design.
 export const CDigest: StoryObj = {
   name: 'C · Digest',
   render: () => (
     <Page>
       {groups.map((group) => (
-        <DigestGroup key={group[0].id} group={group} />
+        <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
       ))}
     </Page>
   ),
@@ -455,32 +373,5 @@ const styles = StyleSheet.create({
   tabText: {
     color: t3.muted,
     fontSize: 12,
-  },
-  band: {
-    gap: 10,
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: t3.border,
-    backgroundColor: 'rgba(255, 255, 255, 0.02)',
-  },
-  bandHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  stepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-  },
-  bandColumns: {
-    flexDirection: 'row',
-    gap: 16,
-    alignItems: 'flex-start',
-  },
-  third: {
-    flex: 1,
-    gap: 4,
   },
 });

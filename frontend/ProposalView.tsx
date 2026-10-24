@@ -1,10 +1,21 @@
-import { CircleAlert, ExternalLink, MessageCircle, MessageSquareQuote } from 'lucide-react';
-import { Fragment, useState } from 'react';
+import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Proposal } from './gen/gem_pb';
-import { DiffSurface, EditableReply, type ReplyDraft, ResolvesTag, Theirs, ToolRequestBanner } from './surfaces';
-import { Button, Icon, proposalIcon, t3, visibleMarkdown } from './t3';
+import {
+  Bubble,
+  Clamp,
+  DiffSurface,
+  EditableReply,
+  Html,
+  Quote,
+  type ReplyDraft,
+  ResolvesTag,
+  Theirs,
+  ToolRequestBanner,
+} from './surfaces';
+import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, visibleMarkdown } from './t3';
 
 // Proposals answering the same comment are alternatives: approving one clears the rest.
 export function byComment(list: Proposal[]): Proposal[][] {
@@ -16,8 +27,9 @@ export function byComment(list: Proposal[]): Proposal[][] {
   return [...groups.values()];
 }
 
-// One conversation waiting on u9g, laid out like a code review: the thread and each proposed
-// answer on the left, its change on the right. Alternatives stack, split by "or".
+// One conversation waiting on u9g as a band: the proposal's summary and actions on top, then
+// three columns cut to a few lines each: their thread, u9g's reply, and the change. Arrows step
+// through alternatives.
 export function ProposalGroup({
   proposals,
   busy,
@@ -31,146 +43,203 @@ export function ProposalGroup({
   onApprove: (id: string, reply: string) => void;
   onDismiss: (id: string) => void;
 }) {
-  const first = proposals[0];
-  const [, repo, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(first.pullRequestUrl) ?? [];
+  const [picked, setPicked] = useState(0);
+  // Approving or dismissing an alternative removes it from the list.
+  const index = Math.min(picked, proposals.length - 1);
+  const proposal = proposals[index];
   return (
-    <View style={styles.conversation}>
-      <Text style={styles.where}>
-        {repo}#{number} · {first.threadId ? 'review thread' : 'conversation'}
-      </Text>
-      {proposals.map((proposal, i) => (
-        <Fragment key={proposal.id}>
-          {i > 0 && (
-            <View style={styles.orRow}>
-              <View style={styles.orLine} />
-              <Text style={styles.orText}>or</Text>
-              <View style={styles.orLine} />
-            </View>
-          )}
-          <ProposalView
-            proposal={proposal}
-            thread={i === 0}
-            busy={busy === proposal.id}
-            disabled={busy !== undefined}
-            onApprove={(reply) => onApprove(proposal.id, reply)}
-            onDismiss={() => onDismiss(proposal.id)}
-          />
-        </Fragment>
-      ))}
-    </View>
+    <ProposalView
+      key={proposal.id}
+      proposal={proposal}
+      stepper={
+        proposals.length > 1 && (
+          <View style={styles.stepper}>
+            <Pressable
+              accessibilityLabel="Previous alternative"
+              onPress={() => setPicked((index + proposals.length - 1) % proposals.length)}
+            >
+              <Icon icon={ChevronLeft} size={14} />
+            </Pressable>
+            <Text style={styles.meta}>
+              {index + 1} of {proposals.length}
+            </Text>
+            <Pressable accessibilityLabel="Next alternative" onPress={() => setPicked((index + 1) % proposals.length)}>
+              <Icon icon={ChevronRight} size={14} />
+            </Pressable>
+          </View>
+        )
+      }
+      busy={busy === proposal.id}
+      disabled={busy !== undefined}
+      onApprove={(reply) => onApprove(proposal.id, reply)}
+      onDismiss={() => onDismiss(proposal.id)}
+    />
   );
 }
 
 function ProposalView({
   proposal,
-  thread,
+  stepper,
   busy,
   disabled,
   onApprove,
   onDismiss,
 }: {
   proposal: Proposal;
-  // Shows the conversation above the answer; alternatives after the first share it.
-  thread: boolean;
+  stepper: ReactNode;
   busy: boolean;
   disabled: boolean;
   onApprove: (reply: string) => void;
   onDismiss: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   const comment = proposal.comment!;
-  const failed = failedStep(proposal);
-  const error = <Text style={styles.error}>{proposal.error}</Text>;
+  const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
+  const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
+  const quote = proposal.threadId
+    ? undefined
+    : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
   return (
-    <View style={styles.split}>
-      <View style={styles.left}>
-        {thread && (
-          <View style={{ gap: 10 }}>
-            {proposal.earlierComments.map((earlier) => (
-              <Theirs key={earlier.id} comment={earlier} />
-            ))}
-            <Theirs
-              comment={comment}
-              trailing={
-                <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
-                  <Icon icon={ExternalLink} size={12} />
-                </Pressable>
-              }
-            />
-          </View>
+    <View style={[styles.band, proposal.error !== '' && styles.bandError]}>
+      <View style={styles.header}>
+        <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
+        <Text numberOfLines={1} style={styles.summary}>
+          {proposal.summary}
+        </Text>
+        {stepper}
+        <Button label="Dismiss" disabled={disabled} onPress={onDismiss} />
+        {!proposal.requestedTool && (
+          <Button
+            label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
+            variant="default"
+            disabled={disabled}
+            onPress={() => onApprove(draft.showing === 'yours' ? draft.yours : '')}
+          />
         )}
-        <View style={styles.summaryRow}>
-          <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
-          <Text style={styles.summary}>{proposal.summary}</Text>
+      </View>
+      {proposal.error !== '' && (
+        <View style={styles.errorRow}>
+          <Icon icon={CircleAlert} size={12} color={t3.deletion} />
+          <Text style={styles.error}>{proposal.error}</Text>
         </View>
-        {proposal.reply !== '' && (
-          <View style={{ gap: 6 }}>
-            <EditableReply
-              suggested={proposal.reply}
-              draft={draft}
-              onChange={setDraft}
-              quote={
-                proposal.threadId ? undefined : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim()
-              }
-            />
-            {proposal.resolveThread && (
-              <View style={styles.tagRow}>
-                <ResolvesTag />
-              </View>
-            )}
-          </View>
-        )}
-        {proposal.reply === '' && proposal.resolveThread && <ResolvesTag />}
-        {(failed === 'reply' || failed === 'resolve') && error}
-        <View style={styles.buttons}>
-          <Button label="Dismiss" disabled={disabled} onPress={onDismiss} />
-          {!proposal.requestedTool && (
-            <Button
-              label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
-              variant="default"
-              disabled={disabled}
-              onPress={() => onApprove(draft.showing === 'yours' ? draft.yours : '')}
-            />
+      )}
+      <View style={styles.columns}>
+        <View style={styles.column}>
+          <Text style={styles.where}>
+            {repository}#{number} · {proposal.threadId ? 'review thread' : 'conversation'}
+          </Text>
+          {proposal.earlierComments.map((earlier) => (
+            <Theirs key={earlier.id} comment={earlier} max={110} />
+          ))}
+          <Theirs
+            comment={comment}
+            max={110}
+            trailing={
+              <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
+                <Icon icon={ExternalLink} size={12} />
+              </Pressable>
+            }
+          />
+        </View>
+        <View style={styles.column}>
+          {proposal.reply ? (
+            <>
+              <Text style={[styles.meta, styles.author]}>u9g</Text>
+              {editing ? (
+                <EditableReply suggested={proposal.reply} draft={draft} onChange={setDraft} quote={quote} />
+              ) : (
+                <Bubble side="right">
+                  {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
+                  <Clamp max={110}>
+                    <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />
+                  </Clamp>
+                </Bubble>
+              )}
+            </>
+          ) : (
+            <Text style={styles.meta}>No reply</Text>
+          )}
+          {proposal.resolveThread && (
+            <View style={styles.rightRow}>
+              <ResolvesTag />
+            </View>
           )}
         </View>
-      </View>
-      <View style={styles.right}>
-        {proposal.patch ? (
-          <>
-            <Text style={styles.meta}>{proposal.patch.commitMessage}</Text>
-            <DiffSurface
-              diff={proposal.patch.diff}
-              header={failed === 'patch' ? <Icon icon={CircleAlert} size={12} color={t3.deletion} /> : undefined}
-            />
-            {failed === 'patch' && error}
-          </>
-        ) : proposal.requestedTool ? (
-          <ToolRequestBanner proposal={proposal} />
-        ) : (
-          <View style={styles.noChange}>
-            <Icon icon={proposal.threadId ? MessageCircle : MessageSquareQuote} />
-            <Text style={styles.meta}>No code change: approving only replies</Text>
-          </View>
-        )}
+        <View style={styles.column}>
+          {proposal.patch ? (
+            <>
+              <Text style={styles.meta}>
+                {proposal.patch.commitMessage}
+                {'  '}
+                <DiffStat
+                  added={files.reduce((n, f) => n + f.added, 0)}
+                  removed={files.reduce((n, f) => n + f.removed, 0)}
+                />
+              </Text>
+              <Clamp max={130}>
+                <DiffSurface diff={proposal.patch.diff} />
+              </Clamp>
+            </>
+          ) : proposal.requestedTool ? (
+            <ToolRequestBanner proposal={proposal} />
+          ) : (
+            <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
+          )}
+        </View>
       </View>
     </View>
   );
 }
 
-// The step approving runs first is the one that failed: steps that succeed are cleared.
-function failedStep(proposal: Proposal): 'patch' | 'reply' | 'resolve' | undefined {
-  if (!proposal.error) return undefined;
-  if (proposal.patch) return 'patch';
-  if (proposal.reply) return 'reply';
-  if (proposal.resolveThread) return 'resolve';
-}
-
 const styles = StyleSheet.create({
-  conversation: {
-    gap: 14,
-    paddingBottom: 28,
-    borderBottomWidth: 1,
-    borderBottomColor: t3.border,
+  band: {
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: t3.border,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  bandError: {
+    borderColor: 'rgba(242, 109, 109, 0.28)',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  summary: {
+    flex: 1,
+    color: t3.foreground,
+    fontSize: 14,
+    lineHeight: 22,
+  },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  errorRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  error: {
+    flex: 1,
+    color: t3.deletion,
+    fontFamily: t3.mono,
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  columns: {
+    flexDirection: 'row',
+    gap: 16,
+    alignItems: 'flex-start',
+  },
+  column: {
+    flex: 1,
+    gap: 6,
   },
   where: {
     color: t3.faint,
@@ -179,70 +248,16 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  orRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  orLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: t3.border,
-  },
-  orText: {
-    color: t3.faint,
-    fontSize: 11,
-  },
-  split: {
-    flexDirection: 'row',
-    gap: 24,
-    alignItems: 'flex-start',
-  },
-  left: {
-    flex: 4,
-    gap: 12,
-  },
-  right: {
-    flex: 5,
-    gap: 8,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  summary: {
-    flex: 1,
-    color: t3.foreground,
-    fontSize: 14,
-    lineHeight: 22,
-  },
-  tagRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-  },
-  buttons: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 6,
-  },
-  noChange: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: t3.input,
-  },
   meta: {
     color: t3.muted,
     fontSize: 12,
   },
-  error: {
-    color: t3.deletion,
-    fontFamily: t3.mono,
-    fontSize: 11,
-    lineHeight: 16,
+  author: {
+    textAlign: 'right',
+    paddingRight: 14,
+  },
+  rightRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
   },
 });
