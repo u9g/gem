@@ -6,6 +6,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { type PullRequest, ProposalSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { byComment, ProposalGroup } from '../../ProposalView';
+import { PullRequestList } from '../../PullRequestList';
 import { Icon, t3 } from '../../t3';
 import { proposals } from '../fixtures';
 
@@ -107,8 +108,7 @@ function Chips() {
 
 // ---------- B: list ----------
 
-// A bordered list like T3 Code's changed-files panel: one row per PR with its checks, repo#number,
-// title, review state and waiting proposals.
+// The app's design: a bordered list with one row per PR.
 function List() {
   return (
     <Page
@@ -116,23 +116,7 @@ function List() {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <View style={styles.list}>
-            {cluster.map((pr, i) => (
-              <Pressable key={pr.url} style={[styles.listRow, i > 0 && styles.listRowBorder]}>
-                <ChecksIcon pr={pr} />
-                <Text style={styles.listRef}>{ref(pr)}</Text>
-                <Text numberOfLines={1} style={styles.listTitle}>
-                  {pr.title}
-                </Text>
-                <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
-                  {pr.approved ? 'Approved' : 'Review required'}
-                </Text>
-                <View style={styles.countSlot}>
-                  <Count n={pr.proposals.length} />
-                </View>
-              </Pressable>
-            ))}
-          </View>
+          <PullRequestList pullRequests={cluster} />
         </View>
       }
     />
@@ -245,42 +229,6 @@ const styles = StyleSheet.create({
     fontFamily: t3.mono,
     fontSize: 12,
     marginRight: 2,
-  },
-  list: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: t3.border,
-    backgroundColor: 'rgba(255, 255, 255, 0.025)',
-  },
-  listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    height: 36,
-    paddingHorizontal: 6,
-  },
-  listRowBorder: {
-    borderTopWidth: 1,
-    borderTopColor: t3.border,
-  },
-  listRef: {
-    width: 120,
-    color: t3.muted,
-    fontFamily: t3.mono,
-    fontSize: 12,
-  },
-  listTitle: {
-    flex: 1,
-    color: t3.foreground,
-    fontSize: 13,
-  },
-  review: {
-    color: t3.muted,
-    fontSize: 12,
-  },
-  countSlot: {
-    width: 24,
-    alignItems: 'flex-end',
   },
   tabs: {
     flexDirection: 'row',
