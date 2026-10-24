@@ -126,6 +126,18 @@ async fn main() {
         }
         return;
     }
+    // Servers from before GEM_ROOM was required joined the room gem.
+    if std::env::var_os("GEM_ROOM").is_none() {
+        let env = std::fs::read_to_string(".env").unwrap_or_default();
+        let separator = if env.is_empty() || env.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        std::fs::write(".env", format!("{env}{separator}GEM_ROOM=gem\n"))
+            .expect("cannot write .env");
+        let _ = dotenvy::dotenv();
+    }
 
     let login = gh(&["api", "user", "--jq", ".login"])
         .await
