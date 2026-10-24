@@ -7,7 +7,7 @@ import { ProposalGroup } from './ProposalView';
 import { FailedChecks, Html } from './surfaces';
 import { Button, t3 } from './t3';
 
-// An investigation's latest reply, what it proposes, and a box to message its agent. Its
+// An investigation's or follow-up's latest reply, what it proposes, and a box to message its agent. Its
 // proposals are independent, so each shows on its own.
 export function InvestigationView({
   investigation,
@@ -65,7 +65,7 @@ export function InvestigationView({
           multiline
           value={message}
           onChangeText={setMessage}
-          placeholder="Message the investigation…"
+          placeholder="Message the agent…"
           placeholderTextColor={t3.faint}
           style={styles.input}
         />

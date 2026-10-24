@@ -304,7 +304,7 @@ export default function App() {
               <ScrollView>
                 {investigations.length > 0 && (
                   <View style={styles.phoneSection}>
-                    <SectionTitle>Investigations</SectionTitle>
+                    <SectionTitle>Agents</SectionTitle>
                   </View>
                 )}
                 {investigations.map((i) => (
@@ -351,7 +351,7 @@ export default function App() {
         />
         {filters}
         <ScrollView contentContainerStyle={styles.rows}>
-          {investigations.length > 0 && <SectionTitle>Investigations</SectionTitle>}
+          {investigations.length > 0 && <SectionTitle>Agents</SectionTitle>}
           {investigations.map((i) => (
             <InvestigationRow
               key={i.id}

@@ -103,7 +103,7 @@ function InvestigationMark({ investigation }: { investigation: Investigation }) 
   return <View style={[styles.dot, investigation.proposals.length > 0 && styles.dotProposals]} />;
 }
 
-// One line per investigation, like a cluster's.
+// One line per investigation or follow-up, like a cluster's.
 export function InvestigationRow({
   investigation,
   selected,
@@ -146,7 +146,7 @@ export function PhoneInvestigationRow({ investigation, onPress }: { investigatio
   );
 }
 
-// Above the investigations and the clusters, when there are investigations.
+// Above the agents and the clusters, when there are agents.
 export function SectionTitle({ children }: { children: string }) {
   return <Text style={styles.section}>{children}</Text>;
 }
