@@ -26,7 +26,7 @@
     "vite": "^8.3.5"
   },
   "scripts": {
-    "generate": "mkdir -p gen && protoc -I ../protocol --plugin=protoc-gen-es=node_modules/.bin/protoc-gen-es --es_out=gen --es_opt=target=ts ../protocol/gem.proto",
+    "generate": "node generate.mjs",
     "prestart": "npm run generate",
     "start": "expo start --web",
     "prebuild": "npm run generate",
