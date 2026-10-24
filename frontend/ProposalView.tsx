@@ -87,11 +87,10 @@ function ProposalView({
         {thread && (
           <View style={{ gap: 10 }}>
             {proposal.earlierComments.map((earlier) => (
-              <Theirs key={earlier.id} author={earlier.author} body={earlier.body} />
+              <Theirs key={earlier.id} comment={earlier} />
             ))}
             <Theirs
-              author={comment.author}
-              body={comment.body}
+              comment={comment}
               trailing={
                 <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
                   <Icon icon={ExternalLink} size={12} />

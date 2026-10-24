@@ -2,8 +2,10 @@ import { CheckCheck, FileCode, Hammer } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import type { Proposal } from './gen/gem_pb';
-import { DiffStat, diffFiles, Icon, t3, visibleMarkdown } from './t3';
+import 'github-markdown-css/github-markdown-dark.css';
+
+import type { Comment, Proposal } from './gen/gem_pb';
+import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // T3 Code's surfaces for what a proposal does, rebuilt in React Native.
 
@@ -107,23 +109,40 @@ export function Quote({ children, lines }: { children: string; lines?: number })
 }
 
 // A comment in the conversation, as a message from its author: u9g's on the right like the reply,
-// everyone else's on the left.
-export function Theirs({ author, body, trailing }: { author: string; body: string; trailing?: ReactNode }) {
-  const side = author === 'u9g' ? 'right' : 'left';
+// everyone else's on the left. The body is GitHub's own rendering, styled with GitHub's stylesheet.
+export function Theirs({ comment, trailing }: { comment: Comment; trailing?: ReactNode }) {
+  const side = comment.author === 'u9g' ? 'right' : 'left';
   return (
     <View style={{ gap: 4 }}>
       <View style={[styles.theirsHeader, side === 'right' && styles.theirsHeaderRight]}>
-        <Text style={styles.meta}>{author}</Text>
+        <Text style={styles.meta}>{comment.author}</Text>
         {trailing}
       </View>
       <Bubble side={side}>
-        <Text style={styles.theirs}>
-          {visibleMarkdown(body).replace(/[*#]/g, '').replace(/\n\s*\n/g, '\n')}
-        </Text>
+        <div
+          className="markdown-body"
+          style={markdownBody}
+          dangerouslySetInnerHTML={{ __html: comment.bodyHtml }}
+          // Links leave the app for a new tab.
+          onClick={(event) => {
+            const link = (event.target as Element).closest('a');
+            if (!link) return;
+            event.preventDefault();
+            window.open(link.href, '_blank');
+          }}
+        />
       </Bubble>
     </View>
   );
 }
+
+const markdownBody = {
+  backgroundColor: 'transparent',
+  color: t3.foreground,
+  fontSize: 13,
+  lineHeight: 1.55,
+  minWidth: 0,
+};
 
 // A reply as both versions: the agent's suggestion and u9g's rewrite of it.
 export type ReplyDraft = { yours: string; showing: 'suggested' | 'yours' };
