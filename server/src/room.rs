@@ -2,7 +2,10 @@ use std::{env, error::Error, time::Duration};
 
 use axum::{Router, body::Body, http::Request};
 use livekit::prelude::{Room, RoomEvent, RoomOptions, RpcError};
-use livekit_api::access_token::{AccessToken, VideoGrants};
+use livekit_api::{
+    access_token::{AccessToken, VideoGrants},
+    services::room::RoomClient,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::signal::unix::{Signal, SignalKind, signal};
@@ -12,30 +15,45 @@ use tower::ServiceExt;
 const ROOM: &str = "gem";
 // The frontend sends every request to this participant.
 const IDENTITY: &str = "server";
-const REJOIN_DELAY: Duration = Duration::from_secs(5);
+// How long a frontend waits for the server to join after the frontend does.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+enum Left {
+    Empty,
+    Terminated,
+}
 
 // The router's requests, carried over a room in the user's own LiveKit project instead of a port:
 // nothing listens on the network. LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET name the
 // project. Returns on SIGTERM.
+//
+// Every connected participant costs the project's connection minutes, so the server is in the
+// room only while a frontend is.
 pub async fn serve(app: Router) {
     let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
+    let rooms = RoomClient::new(&url).expect("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set");
     let mut terminate = signal(SignalKind::terminate()).unwrap();
     loop {
-        match join(&url, &app, &mut terminate).await {
-            Ok(()) => return,
-            Err(error) => eprintln!("room: {error}"),
+        // A room that does not exist yet has no frontend in it.
+        let occupied = rooms.list_participants(ROOM).await.is_ok_and(|p| !p.is_empty());
+        if occupied {
+            match join(&url, &app, &mut terminate).await {
+                Ok(Left::Terminated) => return,
+                Ok(Left::Empty) => {}
+                Err(error) => eprintln!("room: {error}"),
+            }
         }
         tokio::select! {
-            () = tokio::time::sleep(REJOIN_DELAY) => {}
+            () = tokio::time::sleep(POLL_INTERVAL) => {}
             _ = terminate.recv() => return,
         }
     }
 }
 
-// Leaves the room on SIGTERM, so the frontend sees the server go offline at once instead of after
-// LiveKit's participant timeout. Errors when the room is lost; the SDK reconnects through shorter
-// outages itself.
-async fn join(url: &str, app: &Router, terminate: &mut Signal) -> Result<(), Box<dyn Error>> {
+// Leaves the room once no frontend is in it, and on SIGTERM, so the frontend sees the server go
+// offline at once instead of after LiveKit's participant timeout. Errors when the room is lost;
+// the SDK reconnects through shorter outages itself.
+async fn join(url: &str, app: &Router, terminate: &mut Signal) -> Result<Left, Box<dyn Error>> {
     let token = AccessToken::new()?
         .with_identity(IDENTITY)
         .with_grants(VideoGrants {
@@ -53,21 +71,27 @@ async fn join(url: &str, app: &Router, terminate: &mut Signal) -> Result<(), Box
         .register_rpc_method("http".to_string(), move |data| {
             Box::pin(handle(app.clone(), data.payload))
         });
-    loop {
+    // The last frontend can leave between the poll and the join.
+    let mut left = room.remote_participants().is_empty().then_some(Left::Empty);
+    while left.is_none() {
         tokio::select! {
             event = events.recv() => match event {
                 Some(RoomEvent::Disconnected { reason }) => {
                     return Err(format!("disconnected: {reason:?}").into());
                 }
+                Some(RoomEvent::ParticipantDisconnected(_))
+                    if room.remote_participants().is_empty() =>
+                {
+                    left = Some(Left::Empty);
+                }
                 Some(_) => {}
                 None => return Err("room closed".into()),
             },
-            _ = terminate.recv() => {
-                room.close().await?;
-                return Ok(());
-            }
+            _ = terminate.recv() => left = Some(Left::Terminated),
         }
     }
+    room.close().await?;
+    Ok(left.unwrap())
 }
 
 #[derive(Deserialize)]
