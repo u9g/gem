@@ -8,6 +8,7 @@ import {
   Hammer,
   MessageCircle,
   MessageSquareQuote,
+  RotateCcw,
   SquarePen,
 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
@@ -61,6 +62,7 @@ export function stepSentence(proposal: Proposal): string {
   }
   if (proposal.reply) phrases.push(proposal.threadId ? 'reply in thread' : 'quote reply');
   if (proposal.resolveThread) phrases.push('resolve');
+  if (proposal.rerun) phrases.push('rerun failed jobs');
   if (proposal.closePullRequest) phrases.push('close the pull request');
   if (proposal.requestedTool) phrases.push('needs a new tool');
   const sentence =
@@ -238,6 +240,7 @@ export function proposalIcon(proposal: Proposal) {
   if (proposal.requestedTool) return Hammer;
   if (proposal.patch) return SquarePen;
   if (proposal.followUp) return Bot;
+  if (proposal.rerun) return RotateCcw;
   return MessageCircle;
 }
 

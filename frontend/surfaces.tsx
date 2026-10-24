@@ -1,10 +1,10 @@
-import { Bot, CheckCheck, FileCode, GitPullRequestClosed, Hammer } from 'lucide-react';
+import { Bot, CheckCheck, CircleX, ExternalLink, FileCode, GitPullRequestClosed, Hammer, RotateCcw } from 'lucide-react';
 import { createContext, type ReactNode, useContext, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
 
-import type { Comment, Proposal } from './gen/gem_pb';
+import type { CheckFailure, Comment, Proposal } from './gen/gem_pb';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // T3 Code's surfaces for what a proposal does, rebuilt in React Native.
@@ -137,6 +137,39 @@ export function Theirs({ comment, trailing, max }: { comment: Comment; trailing?
 
 // Cuts its content to `max` pixels, fading out the last lines, with Show more under it when
 // anything was cut.
+// Each failed check with the log lines that show why it failed, opening its logs.
+export function FailedChecks({ failure }: { failure: CheckFailure }) {
+  return (
+    <View style={{ gap: 8 }}>
+      {failure.checks.map((check) => (
+        <View key={check.id} style={styles.check}>
+          <View style={styles.checkHeader}>
+            <Icon icon={CircleX} size={12} color={t3.deletion} />
+            <Text numberOfLines={1} style={styles.checkName}>
+              {check.name} <Text style={styles.meta}>· {check.conclusion.toLowerCase().replace('_', ' ')}</Text>
+            </Text>
+            <Pressable accessibilityLabel="Open logs" onPress={() => Linking.openURL(check.url)}>
+              <Icon icon={ExternalLink} size={12} />
+            </Pressable>
+          </View>
+          {check.excerpt !== '' && <Text style={styles.excerpt}>{check.excerpt.trimEnd()}</Text>}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+export function RerunCard({ failure }: { failure: CheckFailure }) {
+  return (
+    <View style={styles.rerun}>
+      <Icon icon={RotateCcw} size={14} />
+      <Text style={styles.checkName}>
+        Reruns {failure.checks.map((c) => c.name).join(' and ')} on the same commit. No code changes.
+      </Text>
+    </View>
+  );
+}
+
 export function Clamp({ max, children }: { max: number; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [height, setHeight] = useState(0);
@@ -442,6 +475,44 @@ const styles = StyleSheet.create({
   segmentText: {
     color: t3.muted,
     fontSize: 11,
+  },
+  check: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: t3.input,
+    overflow: 'hidden',
+  },
+  checkHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  excerpt: {
+    color: t3.muted,
+    fontFamily: t3.mono,
+    fontSize: 11,
+    lineHeight: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.25)',
+  },
+  rerun: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: t3.input,
+  },
+  checkName: {
+    flex: 1,
+    color: t3.foreground,
+    fontSize: 13,
+    lineHeight: 20,
   },
   theirsHeader: {
     flexDirection: 'row',

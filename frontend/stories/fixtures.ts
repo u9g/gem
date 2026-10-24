@@ -142,3 +142,77 @@ export const proposals: Proposal[] = [
 
 export type Item = { pr: PullRequest; proposal: Proposal };
 export const items: Item[] = proposals.map((proposal) => ({ pr, proposal }));
+
+const failure = {
+  id: 'c883a61,check-ruff,check-tests',
+  headOid: 'c883a61f0b2a4e6d9c1e8f7a5b3d2c1e0f9a8b7c',
+};
+
+const ruff = {
+  id: 'check-ruff',
+  name: 'ruff',
+  conclusion: 'FAILURE',
+  url: 'https://github.com/livekit/agents/actions/runs/1/job/1',
+  workflowRunId: 1n,
+  excerpt:
+    'livekit/agents/voice/tts_retry.py:2:8: F401 [*] `time` imported but unused\nFound 1 error.\n[*] 1 fixable with the `--fix` option.\n',
+};
+
+const tests = {
+  id: 'check-tests',
+  name: 'tests (3.12)',
+  conclusion: 'TIMED_OUT',
+  url: 'https://github.com/livekit/agents/actions/runs/2/job/2',
+  workflowRunId: 2n,
+  excerpt:
+    'tests/test_room_io.py::test_close_flushes_audio\nError: The job running on runner GitHub Actions 14 has exceeded the maximum execution time of 30 minutes.\n',
+};
+
+const lintDiff = `diff --git a/livekit-agents/livekit/agents/voice/tts_retry.py b/livekit-agents/livekit/agents/voice/tts_retry.py
+index c883a61..d41f0e2 100644
+--- a/livekit-agents/livekit/agents/voice/tts_retry.py
++++ b/livekit-agents/livekit/agents/voice/tts_retry.py
+@@ -1,6 +1,5 @@
+ import asyncio
+-import time
+ 
+ from ..log import logger
+ from ..types import APIConnectOptions
+`;
+
+const flushDiff = `diff --git a/livekit-agents/livekit/agents/voice/room_io/room_io.py b/livekit-agents/livekit/agents/voice/room_io/room_io.py
+index 5a1c2e0..9b7d4f3 100644
+--- a/livekit-agents/livekit/agents/voice/room_io/room_io.py
++++ b/livekit-agents/livekit/agents/voice/room_io/room_io.py
+@@ -212,7 +212,7 @@ class RoomIO:
+     async def _on_session_close(self, ev: CloseEvent) -> None:
+-        await self._audio_output.wait_for_playout()
++        await asyncio.wait_for(self._audio_output.wait_for_playout(), timeout=5)
+         await self._room.disconnect()
+`;
+
+// Answers to checks that failed on the head commit, rather than to a comment. Each answers only
+// some of the failed checks: the lint failure gets a fix, the timed-out tests get two alternatives.
+export const checkProposals: Proposal[] = [
+  create(ProposalSchema, {
+    id: 'checks-patch',
+    summary: 'Drop the unused import ruff flags',
+    pullRequestUrl: pr.url,
+    checkFailure: { ...failure, checks: [ruff] },
+    patch: { diff: lintDiff, commitMessage: 'chore(voice): drop unused import' },
+  }),
+  create(ProposalSchema, {
+    id: 'checks-flush',
+    summary: 'Stop waiting forever for playout on close, which hangs the test',
+    pullRequestUrl: pr.url,
+    checkFailure: { ...failure, checks: [tests] },
+    patch: { diff: flushDiff, commitMessage: 'fix(voice): bound the playout wait on close' },
+  }),
+  create(ProposalSchema, {
+    id: 'checks-rerun',
+    summary: 'Rerun the tests: the runner lost its network',
+    pullRequestUrl: pr.url,
+    checkFailure: { ...failure, checks: [tests] },
+    rerun: true,
+  }),
+];

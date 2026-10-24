@@ -8,14 +8,19 @@ use pbjson_types::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
-use crate::{SearchedPullRequest, gh, login, proposals, proto::Comment, t3};
+use crate::{
+    SearchedPullRequest, gh, login, proposals,
+    proto::{CheckFailure, Comment},
+    t3,
+};
 
 // Relative to the server's working directory, like the cluster names.
 const HANDLED_FILE: &str = "handled-comments.json";
 const CONCURRENT_AGENTS: usize = 4;
 
-// Fetched only for PRs whose updatedAt moved, which any new comment or review thread does: the
-// whole query costs about one rate-limit point per PR, against two for the search of all PRs.
+// Fetched only for PRs whose updatedAt or failing checks moved, which any new comment, review
+// thread or failure does, and again while a failure waits on checks that still run: the whole
+// query costs about one rate-limit point per PR, against two for the search of all PRs.
 const CONVERSATIONS_QUERY: &str = r#"
 query($ids: [ID!]!) {
   nodes(ids: $ids) {
@@ -25,45 +30,130 @@ query($ids: [ID!]!) {
         nodes { id isResolved comments(last: 1) { nodes { id body url authorAssociation author { login __typename } } } }
       }
       comments(last: 1) { nodes { id body url authorAssociation author { login __typename } } }
+      commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
+        __typename
+        ... on CheckRun { id name status conclusion detailsUrl checkSuite { workflowRun { databaseId } } }
+        ... on StatusContext { id context state targetUrl }
+      } } } } } }
     }
   }
 }
 "#;
 
 // An unresolved review thread's latest reply, or the PR's latest top-level comment, from a bot or
-// a member of the PR's organization. It waits on the user unless it is the user's own.
-const CONVERSATIONS_JQ: &str = r#".data.nodes[] | {
+// a member of the PR's organization. It waits on the user unless it is the user's own. The head
+// commit's failed checks wait on the user once none of its checks still run.
+const CONVERSATIONS_JQ: &str = r#".data.nodes[]
+| .commits.nodes[0].commit.oid as $head
+| [.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | if .__typename == "CheckRun" then
+    {id, name, conclusion: (.conclusion // ""), url: (.detailsUrl // ""), workflow_run_id: (.checkSuite.workflowRun.databaseId // 0), done: (.status == "COMPLETED")}
+  else
+    {id, name: .context, conclusion: .state, url: (.targetUrl // ""), workflow_run_id: 0, done: (.state != "PENDING" and .state != "EXPECTED")}
+  end] as $checks
+| [$checks[] | select(.conclusion | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR")) | del(.done)] as $failed
+| {
   url,
-  waiting: [
+  settling: (($failed | length) > 0 and any($checks[]; .done | not)),
+  waiting: ([
     (.reviewThreads.nodes[] | select(.isResolved | not) | {thread_id: .id, comment: .comments.nodes[0]}),
     (.comments.nodes[] | {thread_id: null, comment: .})
     | select(.comment.author.__typename == "Bot" or .comment.authorAssociation == "MEMBER" or .comment.authorAssociation == "OWNER")
     | .comment |= {id, body, url, author: (.author.login // "ghost")}
-  ]
+  ] + [
+    select(($failed | length) > 0 and all($checks[]; .done))
+    | {check_failure: {id: ([$head] + ([$failed[].id] | sort) | join(",")), head_oid: $head, checks: $failed}}
+  ])
 }"#;
 
 #[derive(Deserialize)]
 struct Fetched {
     url: String,
+    // A check failed while others still run.
+    settling: bool,
     waiting: Vec<Conversation>,
 }
 
 #[derive(Deserialize, Clone)]
-struct Conversation {
-    thread_id: Option<String>,
-    comment: Comment,
+#[serde(untagged)]
+enum Conversation {
+    // In the PR's top-level comments when `thread_id` is None.
+    Comment {
+        thread_id: Option<String>,
+        comment: Comment,
+    },
+    Checks {
+        check_failure: CheckFailure,
+    },
+}
+
+impl Conversation {
+    // What its proposals answer: they show only while this is still waiting on the user.
+    fn id(&self) -> &str {
+        match self {
+            Conversation::Comment { comment, .. } => &comment.id,
+            Conversation::Checks { check_failure } => &check_failure.id,
+        }
+    }
+}
+
+// The failed checks of the PR with node ID `pr`, while `id` is still their ID.
+pub async fn check_failure(pr: &str, id: &str) -> Option<CheckFailure> {
+    fetch(&[pr])
+        .await
+        .into_iter()
+        .flat_map(|fetched| fetched.waiting)
+        .find_map(|conversation| match conversation {
+            Conversation::Checks { check_failure } if check_failure.id == id => Some(check_failure),
+            _ => None,
+        })
+}
+
+// The conversations waiting on the user on each PR, by GraphQL node ID.
+async fn fetch(ids: &[&str]) -> Vec<Fetched> {
+    let mut fetched = Vec::new();
+    for chunk in ids.chunks(100) {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".to_string(),
+            "-f".to_string(),
+            format!("query={CONVERSATIONS_QUERY}"),
+            "--jq".to_string(),
+            CONVERSATIONS_JQ.to_string(),
+        ];
+        for id in chunk {
+            args.extend(["-f".to_string(), format!("ids[]={id}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let Some(stdout) = gh(&args).await else {
+            continue;
+        };
+        for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {
+            let Ok(result) = result else { break };
+            fetched.push(result);
+        }
+    }
+    fetched
 }
 
 #[derive(Clone)]
 pub struct Conversations(Arc<Inner>);
 
+// A PR's conversations as last fetched.
+struct Known {
+    // The PR's when the conversations were fetched.
+    updated_at: Timestamp,
+    checks_failing: bool,
+    settling: bool,
+    waiting: Vec<Conversation>,
+}
+
 struct Inner {
-    // By PR URL: the PR's updatedAt when its conversations were fetched, and the waiting ones.
-    prs: RwLock<HashMap<String, (Timestamp, Vec<Conversation>)>>,
-    // Comments an agent was queued for.
+    // By PR URL.
+    prs: RwLock<HashMap<String, Known>>,
+    // Conversations an agent was queued for.
     handled: Mutex<HashSet<String>>,
-    // Comments an agent was started for: the persisted part of `handled`. Never cleared, so a
-    // restart answers comments that were only queued, and not the others.
+    // Conversations an agent was started for: the persisted part of `handled`. Never cleared, so a
+    // restart answers conversations that were only queued, and not the others.
     started: Mutex<HashSet<String>>,
     agents: Semaphore,
 }
@@ -82,11 +172,11 @@ impl Conversations {
         }))
     }
 
-    // IDs of the latest comment of every conversation waiting on the user.
+    // IDs of every conversation waiting on the user.
     pub async fn waiting(&self) -> HashSet<String> {
         let prs = self.0.prs.read().await;
         prs.values()
-            .flat_map(|(_, waiting)| waiting.iter().map(|c| c.comment.id.clone()))
+            .flat_map(|known| known.waiting.iter().map(|c| c.id().to_string()))
             .collect()
     }
 
@@ -94,39 +184,38 @@ impl Conversations {
         let changed: Vec<&SearchedPullRequest> = {
             let known = self.0.prs.read().await;
             prs.iter()
-                .filter(|pr| known.get(&pr.url).map(|(at, _)| at) != Some(&pr.updated_at))
+                .filter(|pr| {
+                    known.get(&pr.url).is_none_or(|k| {
+                        k.updated_at != pr.updated_at
+                            || k.checks_failing != pr.checks_failing
+                            || k.settling
+                    })
+                })
                 .collect()
         };
+        let ids: Vec<&str> = changed.iter().map(|pr| pr.id.as_str()).collect();
         let mut fetched = HashMap::new();
-        for chunk in changed.chunks(100) {
-            let mut args = vec![
-                "api".to_string(),
-                "graphql".to_string(),
-                "-f".to_string(),
-                format!("query={CONVERSATIONS_QUERY}"),
-                "--jq".to_string(),
-                CONVERSATIONS_JQ.to_string(),
-            ];
-            for pr in chunk {
-                args.extend(["-f".to_string(), format!("ids[]={}", pr.id)]);
-            }
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let Some(stdout) = gh(&args).await else {
-                continue;
-            };
-            for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {
-                let Ok(mut result) = result else { break };
-                result.waiting.retain(|c| c.comment.author != login());
-                fetched.insert(result.url, result.waiting);
-            }
+        for mut result in fetch(&ids).await {
+            result.waiting.retain(|c| {
+                !matches!(c, Conversation::Comment { comment, .. } if comment.author == login())
+            });
+            fetched.insert(result.url.clone(), result);
         }
 
         {
             let mut known = self.0.prs.write().await;
             known.retain(|url, _| prs.iter().any(|pr| &pr.url == url));
             for pr in &changed {
-                if let Some(waiting) = fetched.remove(&pr.url) {
-                    known.insert(pr.url.clone(), (pr.updated_at.clone(), waiting));
+                if let Some(result) = fetched.remove(&pr.url) {
+                    known.insert(
+                        pr.url.clone(),
+                        Known {
+                            updated_at: pr.updated_at.clone(),
+                            checks_failing: pr.checks_failing,
+                            settling: result.settling,
+                            waiting: result.waiting,
+                        },
+                    );
                 }
             }
         }
@@ -147,11 +236,11 @@ impl Conversations {
         let mut handled = self.0.handled.lock().await;
         handled.retain(|id| !stale.contains(id));
         for pr in prs {
-            let Some((_, waiting)) = known.get(&pr.url) else {
+            let Some(Known { waiting, .. }) = known.get(&pr.url) else {
                 continue;
             };
             for conversation in waiting {
-                if !handled.insert(conversation.comment.id.clone()) {
+                if !handled.insert(conversation.id().to_string()) {
                     continue;
                 }
                 let this = self.clone();
@@ -161,11 +250,16 @@ impl Conversations {
                     let _permit = this.0.agents.acquire().await.unwrap();
                     {
                         let mut started = this.0.started.lock().await;
-                        started.insert(conversation.comment.id.clone());
+                        started.insert(conversation.id().to_string());
                         let json = serde_json::to_vec_pretty(&*started).unwrap();
                         let _ = tokio::fs::write(HANDLED_FILE, json).await;
                     }
-                    answer(&pr, &conversation).await;
+                    match &conversation {
+                        Conversation::Comment { thread_id, comment } => {
+                            answer(&pr, thread_id, comment).await
+                        }
+                        Conversation::Checks { check_failure } => fix(&pr, check_failure).await,
+                    }
                 });
             }
         }
@@ -191,8 +285,7 @@ impl Target {
     }
 }
 
-async fn answer(pr: &Target, conversation: &Conversation) {
-    let comment = &conversation.comment;
+async fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) {
     let exe = env::current_exe().unwrap();
     let dir = env::current_dir().unwrap().join(proposals::DIR);
     let mut propose = format!(
@@ -202,7 +295,7 @@ async fn answer(pr: &Target, conversation: &Conversation) {
         pr.url,
         comment.id
     );
-    let (where_, reply_kind, resolve) = match &conversation.thread_id {
+    let (where_, reply_kind, resolve) = match thread_id {
         Some(thread) => {
             propose += &format!(" --thread {thread}");
             (
@@ -276,6 +369,86 @@ settle this thread. Then reply with one line saying what you proposed.",
             "Answer {} on {}#{}",
             comment.author, pr.full_name, pr.number
         ),
+        &prompt,
+    )
+    .await;
+}
+
+async fn fix(pr: &Target, failure: &CheckFailure) {
+    let exe = env::current_exe().unwrap();
+    let dir = env::current_dir().unwrap().join(proposals::DIR);
+    let propose = format!(
+        "{} propose --dir {} --pr {} --check-failure {}",
+        exe.display(),
+        dir.display(),
+        pr.url,
+        failure.id
+    );
+    let checks: String = failure
+        .checks
+        .iter()
+        .map(|check| {
+            let run = match check.workflow_run_id {
+                0 => String::new(),
+                id => format!(", GitHub Actions run {id}"),
+            };
+            format!(
+                "- {} (check {}, {}{run}): {}\n",
+                check.name, check.id, check.conclusion, check.url
+            )
+        })
+        .collect();
+
+    let prompt = format!(
+        "Checks failed on {head}, the head commit of {login}'s pull request {url} (\"{title}\"):
+
+{checks}
+Read why each one failed: `gh run view <run> --log-failed -R {full_name}` prints a GitHub Actions \
+run's failed steps. Then work out what {login} should do about it and propose it.
+
+A proposal answers the checks you pass --excerpt <check> <file> for, with the log lines that show \
+why that check failed (the error itself, at most 10, no setup or timestamps) saved to the file: \
+{login} reads your answer next to them. Answer checks together when they fail for the same \
+reason, and separately when they need different answers, such as a fix for one and a rerun for \
+another. A proposal can:
+- fix the code, with --patch and --message: clone {full_name} into a temporary directory, run \
+`gh pr checkout {number}` in it, edit, and save `git diff` to a file. Run the failing check's \
+command locally when you can, to show the fix works. Never commit or push.
+- rerun the failed jobs, with --rerun: when the failure is flaky or comes from outside the pull \
+request, such as a network error or a broken runner, and running it again is likely to pass. \
+Only GitHub Actions runs can be rerun.
+- hand the work to another agent, with --follow-up: when the right fix is too big to review as \
+one patch on this pull request, such as matching changes in other repositories, write a prompt \
+for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
+~/code), the branches or pull requests to build on, what to change, and how to verify it.
+
+Record each proposal with:
+
+{propose} --summary \"<one line saying what approving does>\" --excerpt <check> <file>... [--patch <diff file> --message \"<commit message>\"] [--follow-up <markdown file>] [--rerun]
+
+Run the command once per answer, and once per alternative when more than one answer is \
+reasonable. It checks the \
+proposal and exits non-zero with the reason when something is wrong: fix it and run it again. If \
+the failure needs nothing from {login}, propose nothing.
+
+If answering well needs something these steps cannot do, describe the missing tool in a markdown \
+file (what it would do and why this failure needs it) and record it with:
+
+{propose} --summary \"<tool name: one line>\" --excerpt <check> <file>... --request-tool <markdown file>
+
+Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals later.
+
+When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
+settle this thread. Then reply with one line saying what you proposed.",
+        head = failure.head_oid,
+        login = login(),
+        url = pr.url,
+        title = pr.title,
+        full_name = pr.full_name,
+        number = pr.number,
+    );
+    t3::ask(
+        &format!("Fix checks on {}#{}", pr.full_name, pr.number),
         &prompt,
     )
     .await;

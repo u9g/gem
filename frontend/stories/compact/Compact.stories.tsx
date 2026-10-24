@@ -4,7 +4,7 @@ import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Proposal } from '../../gen/gem_pb';
-import { byComment, ProposalGroup } from '../../ProposalView';
+import { bySubject, ProposalGroup } from '../../ProposalView';
 import {
   Bubble,
   DiffSurface,
@@ -19,7 +19,7 @@ import { Button, Icon, proposalIcon, stepSentence, t3 } from '../../t3';
 import { proposals } from '../fixtures';
 import { long } from './long';
 
-const groups = [long, ...byComment(proposals)];
+const groups = [long, ...bySubject(proposals)];
 
 // ---------- shared ----------
 

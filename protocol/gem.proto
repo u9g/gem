@@ -50,9 +50,10 @@ message Repository {
   string name = 2;
 }
 
-// An answer an agent proposes to a conversation on a pull request, run as the
-// user once approved. Approving runs the steps that are set in this order:
-// follow_up, patch, reply, resolve_thread, close_pull_request. A step that succeeded is cleared, so approving again
+// An answer an agent proposes to a conversation on a pull request, or to its
+// failing checks, run as the user once approved. Approving runs the steps that
+// are set in this order: follow_up, patch, reply, resolve_thread, rerun,
+// close_pull_request. A step that succeeded is cleared, so approving again
 // after a failure resumes at the step that failed.
 message Proposal {
   string id = 1;
@@ -89,6 +90,41 @@ message Proposal {
   string follow_up_html = 14;
   // Closes the pull request without merging it.
   bool close_pull_request = 15;
+  // Set instead of `comment` when the proposal answers failing checks.
+  CheckFailure check_failure = 16;
+  // Reruns the failed jobs of the GitHub Actions runs in `check_failure`.
+  bool rerun = 17;
+}
+
+// The checks that failed on a pull request's head commit, once all of its
+// checks finished.
+message CheckFailure {
+  // The head commit and the failing checks' node IDs. A proposal is shown only
+  // while this is still the pull request's failure, so a push or a rerun that
+  // fails again makes a new one.
+  string id = 1;
+  string head_oid = 2;
+  // The failed checks the proposal answers, which may be only some of them.
+  // Proposals that answer a check in common are alternatives: approving one
+  // clears the others.
+  repeated FailedCheck checks = 3;
+}
+
+// A check run or commit status that failed.
+message FailedCheck {
+  // GraphQL node ID.
+  string id = 1;
+  string name = 2;
+  // FAILURE, TIMED_OUT or STARTUP_FAILURE for a check run; FAILURE or ERROR
+  // for a commit status.
+  string conclusion = 3;
+  string url = 4;
+  // The GitHub Actions workflow run it belongs to. 0 for checks outside GitHub
+  // Actions, which cannot be rerun.
+  uint64 workflow_run_id = 5;
+  // The lines of its log that show why it failed, as picked by the agent that
+  // proposed the answer. Empty when the agent picked none.
+  string excerpt = 6;
 }
 
 message Comment {
