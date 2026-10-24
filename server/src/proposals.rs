@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tokio::{io::AsyncWriteExt, process::Command};
 
 use crate::proto::{Comment, Patch, Proposal, PullRequestCluster};
-use crate::t3;
+use crate::{conversations, t3};
 
 // One `<id>.json` file per proposal, relative to the server's working directory. Agents write
 // them with `server propose`, which checks them first.
@@ -18,7 +18,17 @@ pub const DIR: &str = "proposals";
 
 // The conversation a proposal answers. Proposals answering the same one are alternatives.
 fn subject(proposal: &Proposal) -> Option<&str> {
-    proposal.comment.as_ref().map(|c| c.id.as_str())
+    (proposal.comment.as_ref().map(|c| c.id.as_str()))
+        .or(proposal.check_failure.as_ref().map(|f| f.id.as_str()))
+}
+
+// Its comment, or each failed check it answers. Proposals that share one are alternatives:
+// approving one clears the others.
+fn answers(proposal: &Proposal) -> Vec<&str> {
+    match &proposal.check_failure {
+        Some(failure) => failure.checks.iter().map(|c| c.id.as_str()).collect(),
+        None => subject(proposal).into_iter().collect(),
+    }
 }
 
 pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>) {
@@ -54,10 +64,10 @@ pub async fn approve(id: &str, reply: &str, follow_up: &str) {
         }
     }
     match run(&path, &mut proposal).await {
-        // The other proposals answered the same conversation.
         Ok(()) => {
+            let answered = answers(&proposal);
             for (path, other) in &proposals {
-                if subject(other) == subject(&proposal) {
+                if answers(other).iter().any(|a| answered.contains(a)) {
                     let _ = tokio::fs::remove_file(path).await;
                 }
             }
@@ -150,6 +160,32 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         proposal.resolve_thread = false;
         save(path, proposal).await;
     }
+    if proposal.rerun {
+        let mut runs: Vec<u64> = (proposal.check_failure.iter())
+            .flat_map(|f| f.checks.iter().map(|c| c.workflow_run_id))
+            .filter(|&id| id != 0)
+            .collect();
+        runs.sort();
+        runs.dedup();
+        let repository = repository(&proposal.pull_request_url);
+        for run in runs {
+            command(
+                "gh",
+                &[
+                    "run",
+                    "rerun",
+                    &run.to_string(),
+                    "--failed",
+                    "-R",
+                    &repository,
+                ],
+                None,
+            )
+            .await?;
+        }
+        proposal.rerun = false;
+        save(path, proposal).await;
+    }
     if proposal.close_pull_request {
         command("gh", &["pr", "close", &proposal.pull_request_url], None).await?;
         proposal.close_pull_request = false;
@@ -158,18 +194,31 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
     Ok(())
 }
 
-// `server propose --dir <dir> --pr <url> --comment <id> [--thread <id>] --summary <text>
-// [--patch <diff file> --message <text>] [--reply <markdown file>] [--resolve-thread]
-// [--follow-up <markdown file>] [--close-pull-request]
-// [--request-tool <markdown file>]`
+// `server propose --dir <dir> --pr <url> (--comment <id> [--thread <id>] | --check-failure <id>)
+// --summary <text> [--patch <diff file> --message <text>] [--reply <markdown file>]
+// [--resolve-thread] [--follow-up <markdown file>] [--rerun] [--close-pull-request]
+// [--excerpt <check id> <file>]... [--request-tool <markdown file>]`
 pub async fn propose(args: &[String]) -> Result<String, String> {
     let mut flags: HashMap<&str, &str> = HashMap::new();
     let mut resolve_thread = false;
+    let mut rerun = false;
     let mut close_pull_request = false;
+    let mut excerpts = Vec::new();
     let mut args = args.iter();
     while let Some(flag) = args.next() {
         if flag == "--resolve-thread" {
             resolve_thread = true;
+            continue;
+        }
+        if flag == "--excerpt" {
+            let (Some(check), Some(file)) = (args.next(), args.next()) else {
+                return Err("--excerpt needs a check ID and a file".into());
+            };
+            excerpts.push((check, file));
+            continue;
+        }
+        if flag == "--rerun" {
+            rerun = true;
             continue;
         }
         if flag == "--close-pull-request" {
@@ -193,10 +242,41 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     let summary = required("summary")?;
     let thread_id = flags.get("thread").copied().unwrap_or_default();
 
-    let comment = fetch_comment(required("comment")?).await?;
-    if comment.pull_request != pr {
-        return Err(format!("comment is on {}, not {pr}", comment.pull_request));
-    }
+    let (comment, check_failure) = match (flags.get("comment"), flags.get("check-failure")) {
+        (Some(id), None) => {
+            let comment = fetch_comment(id).await?;
+            if comment.pull_request != pr {
+                return Err(format!("comment is on {}, not {pr}", comment.pull_request));
+            }
+            (Some(comment.comment), None)
+        }
+        (None, Some(id)) => {
+            let node = command(
+                "gh",
+                &["pr", "view", pr, "--json", "id", "--jq", ".id"],
+                None,
+            )
+            .await?;
+            let mut failure =
+                conversations::check_failure(String::from_utf8_lossy(&node).trim(), id)
+                    .await
+                    .ok_or(format!("{id} is not the failed checks on {pr}"))?;
+            for (check, file) in &excerpts {
+                let check = (failure.checks.iter_mut())
+                    .find(|c| c.id == **check)
+                    .ok_or(format!("{check} is not one of the failed checks"))?;
+                check.excerpt = read(file).await?;
+            }
+            failure
+                .checks
+                .retain(|c| excerpts.iter().any(|(check, _)| c.id == **check));
+            if failure.checks.is_empty() {
+                return Err("--check-failure needs --excerpt for each check it answers".into());
+            }
+            (None, Some(failure))
+        }
+        _ => return Err("propose for either --comment or --check-failure".into()),
+    };
     let mut earlier_comments = Vec::new();
     if !thread_id.is_empty() {
         let value: serde_json::Value = serde_json::from_slice(
@@ -215,7 +295,10 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
             return Err(format!("thread is on {on}, not {pr}"));
         }
         for c in node["comments"]["nodes"].as_array().into_iter().flatten() {
-            if c["id"] == comment.comment.id.as_str() {
+            if comment
+                .as_ref()
+                .is_some_and(|comment| c["id"] == comment.id.as_str())
+            {
                 break;
             }
             earlier_comments.push(Comment {
@@ -229,6 +312,10 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     }
     if resolve_thread && thread_id.is_empty() {
         return Err("--resolve-thread needs --thread".into());
+    }
+    let reruns = (check_failure.iter()).any(|f| f.checks.iter().any(|c| c.workflow_run_id != 0));
+    if rerun && !reruns {
+        return Err("--rerun needs --check-failure with a GitHub Actions run".into());
     }
 
     let patch = match flags.get("patch") {
@@ -262,10 +349,11 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         || !reply.trim().is_empty()
         || resolve_thread
         || !follow_up.trim().is_empty()
+        || rerun
         || close_pull_request;
     if steps == !requested_tool.trim().is_empty() {
         return Err(
-            "propose either steps (--patch, --reply, --resolve-thread, --follow-up, --close-pull-request) or --request-tool"
+            "propose either steps (--patch, --reply, --resolve-thread, --follow-up, --rerun, --close-pull-request) or --request-tool"
                 .into(),
         );
     }
@@ -278,7 +366,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         id: format!("{nanos:x}"),
         summary: summary.to_string(),
         pull_request_url: pr.to_string(),
-        comment: Some(comment.comment),
+        comment,
         thread_id: thread_id.to_string(),
         patch,
         reply,
@@ -290,6 +378,8 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         follow_up,
         follow_up_html,
         close_pull_request,
+        check_failure,
+        rerun,
     };
     tokio::fs::create_dir_all(&dir)
         .await
@@ -478,17 +568,22 @@ async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Resu
     result
 }
 
+// `owner/name` of the pull request at `pr`.
+fn repository(pr: &str) -> String {
+    let parts: Vec<&str> = pr
+        .trim_start_matches("https://github.com/")
+        .split('/')
+        .take(2)
+        .collect();
+    parts.join("/")
+}
+
 // Markdown as GitHub renders it in a comment on the pull request at `pr`.
 async fn render(pr: &str, markdown: &str) -> Result<String, String> {
     if markdown.is_empty() {
         return Ok(String::new());
     }
-    let repository: Vec<&str> = pr
-        .trim_start_matches("https://github.com/")
-        .split('/')
-        .take(2)
-        .collect();
-    let context = format!("context={}", repository.join("/"));
+    let context = format!("context={}", repository(pr));
     let html = command(
         "gh",
         &[

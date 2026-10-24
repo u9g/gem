@@ -9,22 +9,26 @@ import {
   ClosesTag,
   DiffSurface,
   EditableReply,
+  FailedChecks,
   FollowUpCard,
   Html,
   Login,
   Quote,
   type ReplyDraft,
+  RerunCard,
   ResolvesTag,
   Theirs,
   ToolRequestBanner,
 } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, usePhone, visibleMarkdown } from './t3';
 
-// Proposals answering the same conversation are alternatives: approving one clears the rest.
+// Proposals answering the same conversation, or the same failed checks, are alternatives: approving
+// one clears the rest.
 export function bySubject(list: Proposal[]): Proposal[][] {
   const groups = new Map<string, Proposal[]>();
   for (const proposal of list) {
-    const id = proposal.comment?.id ?? proposal.id;
+    const checks = proposal.checkFailure?.checks.map((c) => c.id).sort().join(',');
+    const id = proposal.comment?.id ?? checks ?? proposal.id;
     groups.set(id, [...(groups.get(id) ?? []), proposal]);
   }
   return [...groups.values()];
@@ -101,12 +105,13 @@ function ProposalView({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   const [followUp, setFollowUp] = useState<ReplyDraft>({ yours: proposal.followUp, showing: 'suggested' });
-  const comment = proposal.comment!;
   const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
   const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
-  const quote = proposal.threadId
-    ? undefined
-    : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
+  const comment = proposal.comment;
+  const quote =
+    proposal.threadId || !comment
+      ? undefined
+      : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
   const actions = (
     <>
       <Button label="Dismiss" large={phone} disabled={disabled} onPress={onDismiss} />
@@ -145,46 +150,51 @@ function ProposalView({
       <View style={[styles.columns, phone && styles.stacked]}>
         <View style={[styles.column, phone && styles.columnStacked]}>
           <Text style={styles.where}>
-            {repository}#{number} · {proposal.threadId ? 'review thread' : 'conversation'}
+            {repository}#{number} · {comment ? (proposal.threadId ? 'review thread' : 'conversation') : 'checks'}
           </Text>
           {proposal.earlierComments.map((earlier) => (
             <Theirs key={earlier.id} comment={earlier} max={110} />
           ))}
-          <Theirs
-            comment={comment}
-            max={110}
-            trailing={
-              <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
-                <Icon icon={ExternalLink} size={12} />
-              </Pressable>
-            }
-          />
-        </View>
-        <View style={[styles.column, phone && styles.columnStacked]}>
-          {proposal.reply ? (
-            <>
-              <Text style={[styles.meta, styles.author]}>{login}</Text>
-              {editing ? (
-                <EditableReply suggested={proposal.reply} draft={draft} onChange={setDraft} quote={quote} />
-              ) : (
-                <Bubble side="right">
-                  {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
-                  <Clamp max={110}>
-                    <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />
-                  </Clamp>
-                </Bubble>
-              )}
-            </>
-          ) : (
-            <Text style={styles.meta}>No reply</Text>
+          {comment && (
+            <Theirs
+              comment={comment}
+              max={110}
+              trailing={
+                <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
+                  <Icon icon={ExternalLink} size={12} />
+                </Pressable>
+              }
+            />
           )}
-          {(proposal.resolveThread || proposal.closePullRequest) && (
-            <View style={styles.rightRow}>
-              {proposal.resolveThread && <ResolvesTag />}
-              {proposal.closePullRequest && <ClosesTag />}
-            </View>
-          )}
+          {proposal.checkFailure && <FailedChecks failure={proposal.checkFailure} />}
         </View>
+        {comment && (
+          <View style={[styles.column, phone && styles.columnStacked]}>
+            {proposal.reply ? (
+              <>
+                <Text style={[styles.meta, styles.author]}>{login}</Text>
+                {editing ? (
+                  <EditableReply suggested={proposal.reply} draft={draft} onChange={setDraft} quote={quote} />
+                ) : (
+                  <Bubble side="right">
+                    {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
+                    <Clamp max={110}>
+                      <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />
+                    </Clamp>
+                  </Bubble>
+                )}
+              </>
+            ) : (
+              <Text style={styles.meta}>No reply</Text>
+            )}
+            {(proposal.resolveThread || proposal.closePullRequest) && (
+              <View style={styles.rightRow}>
+                {proposal.resolveThread && <ResolvesTag />}
+                {proposal.closePullRequest && <ClosesTag />}
+              </View>
+            )}
+          </View>
+        )}
         <View style={[styles.column, phone && styles.columnStacked]}>
           {proposal.followUp !== '' && (
             <FollowUpCard
@@ -210,6 +220,8 @@ function ProposalView({
             </>
           ) : proposal.requestedTool ? (
             <ToolRequestBanner proposal={proposal} />
+          ) : proposal.rerun && proposal.checkFailure ? (
+            <RerunCard failure={proposal.checkFailure} />
           ) : (
             !proposal.followUp && (
               <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
