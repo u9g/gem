@@ -35,17 +35,26 @@ function savedProject(): Project | undefined {
 }
 
 // The gem server, reached through the project's room. It is offline while the room has no
-// participant with its identity.
+// participant with its identity. Every connected participant costs the project's connection
+// minutes, and the server stays in the room only while a frontend does, so a hidden page leaves.
 export function useServer() {
   const [project, setProject] = useState(savedProject);
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
+  const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
+
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', update);
+    return () => document.removeEventListener('visibilitychange', update);
+  }, []);
 
   useEffect(() => {
     if (!project) {
       setStatus('no-project');
       return;
     }
+    if (!visible) return;
     const update = () =>
       setStatus(
         room.state !== ConnectionState.Connected
@@ -64,8 +73,9 @@ export function useServer() {
     return () => {
       room.removeAllListeners();
       room.disconnect();
+      setStatus('connecting');
     };
-  }, [room, project]);
+  }, [room, project, visible]);
 
   const addProject = useCallback((added: Project | undefined) => {
     if (added) localStorage.setItem(PROJECT_KEY, JSON.stringify(added));
