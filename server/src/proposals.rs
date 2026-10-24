@@ -41,6 +41,9 @@ pub async fn approve(id: &str, reply: &str) {
     };
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
+        if let Ok(html) = render(&proposal.pull_request_url, reply).await {
+            proposal.reply_html = html;
+        }
     }
     match run(&path, &mut proposal).await {
         // The other proposals answered the same comment.
@@ -226,6 +229,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         Some(file) => read(file).await?,
         None => String::new(),
     };
+    let reply_html = render(pr, &reply).await?;
     let requested_tool = match flags.get("request-tool") {
         Some(file) => read(file).await?,
         None => String::new(),
@@ -253,6 +257,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         error: String::new(),
         requested_tool,
         earlier_comments,
+        reply_html,
     };
     tokio::fs::create_dir_all(&dir)
         .await
@@ -439,6 +444,28 @@ async fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Resu
     )
     .await;
     result
+}
+
+// Markdown as GitHub renders it in a comment on the pull request at `pr`.
+async fn render(pr: &str, markdown: &str) -> Result<String, String> {
+    if markdown.is_empty() {
+        return Ok(String::new());
+    }
+    let repository: Vec<&str> = pr
+        .trim_start_matches("https://github.com/")
+        .split('/')
+        .take(2)
+        .collect();
+    let context = format!("context={}", repository.join("/"));
+    let html = command(
+        "gh",
+        &[
+            "api", "markdown", "-f", "mode=gfm", "-f", &context, "-F", "text=@-",
+        ],
+        Some(markdown),
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&html).into_owned())
 }
 
 async fn graphql(query: &str, variables: &[(&str, &str)]) -> Result<Vec<u8>, String> {
