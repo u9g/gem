@@ -44,6 +44,7 @@ export function ProposalGroup({
   busy,
   onApprove,
   onDismiss,
+  onInvestigate,
 }: {
   proposals: Proposal[];
   // The proposal being approved or dismissed, if any.
@@ -52,6 +53,8 @@ export function ProposalGroup({
   // and '' otherwise.
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
+  // Approves a rerun and starts an investigation of the checks it reruns.
+  onInvestigate?: (id: string) => void;
 }) {
   const [picked, setPicked] = useState(0);
   // Approving or dismissing an alternative removes it from the list.
@@ -83,6 +86,7 @@ export function ProposalGroup({
       disabled={busy !== undefined}
       onApprove={(reply, followUp) => onApprove(proposal.id, reply, followUp)}
       onDismiss={() => onDismiss(proposal.id)}
+      onInvestigate={onInvestigate && (() => onInvestigate(proposal.id))}
     />
   );
 }
@@ -94,6 +98,7 @@ function ProposalView({
   disabled,
   onApprove,
   onDismiss,
+  onInvestigate,
 }: {
   proposal: Proposal;
   stepper: ReactNode;
@@ -101,6 +106,7 @@ function ProposalView({
   disabled: boolean;
   onApprove: (reply: string, followUp: string) => void;
   onDismiss: () => void;
+  onInvestigate?: () => void;
 }) {
   const login = useContext(Login);
   const phone = usePhone();
@@ -114,9 +120,13 @@ function ProposalView({
     proposal.threadId || !comment
       ? undefined
       : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
+  const investigate = onInvestigate && proposal.rerun && !proposal.patch && !proposal.followUp && (
+    <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
+  );
   const actions = (
     <>
       <Button label="Dismiss" large={phone} disabled={disabled} onPress={onDismiss} />
+      {!phone && investigate}
       {!proposal.requestedTool && (
         <Button
           label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
@@ -152,7 +162,14 @@ function ProposalView({
       <View style={[styles.columns, phone && styles.stacked]}>
         <View style={[styles.column, phone && styles.columnStacked]}>
           <Text style={styles.where}>
-            {repository}#{number} · {comment ? (proposal.threadId ? 'review thread' : 'conversation') : 'checks'}
+            {repository}#{number} ·{' '}
+            {comment
+              ? proposal.threadId
+                ? 'review thread'
+                : 'conversation'
+              : proposal.checkFailure
+                ? 'checks'
+                : 'investigation'}
           </Text>
           {proposal.earlierComments.map((earlier) => (
             <Theirs key={earlier.id} comment={earlier} max={110} />
@@ -232,6 +249,7 @@ function ProposalView({
         </View>
       </View>
       {phone && <View style={styles.phoneActions}>{actions}</View>}
+      {phone && investigate && <View style={styles.phoneActions}>{investigate}</View>}
     </View>
   );
 }

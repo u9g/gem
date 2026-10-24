@@ -1,8 +1,8 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { PullRequest, PullRequestCluster } from './gen/gem_pb';
+import type { Investigation, PullRequest, PullRequestCluster } from './gen/gem_pb';
 import { ChecksIcon } from './PullRequestList';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -97,7 +97,71 @@ export function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestClus
   );
 }
 
+// A spinner while the agent runs; otherwise a blue dot when it proposes something.
+function InvestigationMark({ investigation }: { investigation: Investigation }) {
+  if (investigation.working) return <ActivityIndicator size={10} color="#8FA8F5" />;
+  return <View style={[styles.dot, investigation.proposals.length > 0 && styles.dotProposals]} />;
+}
+
+// One line per investigation, like a cluster's.
+export function InvestigationRow({
+  investigation,
+  selected,
+  onPress,
+}: {
+  investigation: Investigation;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const count = investigation.proposals.length;
+  return (
+    <Pressable
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      style={[styles.row, (selected || hovered) && styles.rowActive]}
+    >
+      <InvestigationMark investigation={investigation} />
+      <Text numberOfLines={1} style={styles.rowName}>
+        {investigation.title}
+      </Text>
+      {count > 0 && <Text style={styles.count}>{count}</Text>}
+      {investigation.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(investigation.startedAt))}</Text>}
+    </Pressable>
+  );
+}
+
+export function PhoneInvestigationRow({ investigation, onPress }: { investigation: Investigation; onPress: () => void }) {
+  const count = investigation.proposals.length;
+  return (
+    <Pressable onPress={onPress} style={styles.phoneRow}>
+      <InvestigationMark investigation={investigation} />
+      <Text numberOfLines={1} style={[styles.phoneRowName, { flex: 1 }]}>
+        {investigation.title}
+      </Text>
+      {count > 0 && <Text style={styles.count}>{count}</Text>}
+      {investigation.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(investigation.startedAt))}</Text>}
+    </Pressable>
+  );
+}
+
+// Above the investigations and the clusters, when there are investigations.
+export function SectionTitle({ children }: { children: string }) {
+  return <Text style={styles.section}>{children}</Text>;
+}
+
 const styles = StyleSheet.create({
+  section: {
+    color: 'rgba(208, 207, 212, 0.45)',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    paddingHorizontal: 8,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
   phoneRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -138,6 +202,9 @@ const styles = StyleSheet.create({
   },
   dotFailing: {
     backgroundColor: '#F87171',
+  },
+  dotProposals: {
+    backgroundColor: '#3767E8',
   },
   rowName: {
     flex: 1,

@@ -16,18 +16,48 @@ use crate::{conversations, t3};
 // them with `server propose`, which checks them first.
 pub const DIR: &str = "proposals";
 
-// The conversation a proposal answers. Proposals answering the same one are alternatives.
+// The conversation or investigation a proposal answers.
 fn subject(proposal: &Proposal) -> Option<&str> {
     (proposal.comment.as_ref().map(|c| c.id.as_str()))
         .or(proposal.check_failure.as_ref().map(|f| f.id.as_str()))
+        .or(Some(proposal.investigation_id.as_str()).filter(|id| !id.is_empty()))
 }
 
-// Its comment, or each failed check it answers. Proposals that share one are alternatives:
-// approving one clears the others.
+// Its comment, or each failed check it answers, or itself when an investigation proposed it.
+// Proposals that share one are alternatives: approving one clears the others.
 fn answers(proposal: &Proposal) -> Vec<&str> {
     match &proposal.check_failure {
         Some(failure) => failure.checks.iter().map(|c| c.id.as_str()).collect(),
+        None if !proposal.investigation_id.is_empty() => vec![proposal.id.as_str()],
         None => subject(proposal).into_iter().collect(),
+    }
+}
+
+pub async fn find(id: &str) -> Option<Proposal> {
+    (load(Path::new(DIR)).await.into_iter())
+        .map(|(_, proposal)| proposal)
+        .find(|proposal| proposal.id == id)
+}
+
+// The proposals of each investigation, by its ID.
+pub async fn of_investigations() -> HashMap<String, Vec<Proposal>> {
+    let mut by_investigation: HashMap<String, Vec<Proposal>> = HashMap::new();
+    for (_, proposal) in load(Path::new(DIR)).await {
+        if !proposal.investigation_id.is_empty() {
+            by_investigation
+                .entry(proposal.investigation_id.clone())
+                .or_default()
+                .push(proposal);
+        }
+    }
+    by_investigation
+}
+
+pub async fn remove_of_investigation(id: &str) {
+    for (path, proposal) in load(Path::new(DIR)).await {
+        if proposal.investigation_id == id {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 }
 
@@ -113,10 +143,10 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     stale
 }
 
-// Deletes every proposal on the PRs at `urls`.
+// Deletes every proposal on the PRs at `urls`, except investigations'.
 pub async fn remove_on(urls: &[String]) {
     for (path, proposal) in load(Path::new(DIR)).await {
-        if urls.contains(&proposal.pull_request_url) {
+        if urls.contains(&proposal.pull_request_url) && proposal.investigation_id.is_empty() {
             let _ = tokio::fs::remove_file(path).await;
         }
     }
@@ -212,7 +242,8 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
     Ok(())
 }
 
-// `server propose --dir <dir> --pr <url> (--comment <id> [--thread <id>] | --check-failure <id>)
+// `server propose --dir <dir> --pr <url> (--comment <id> [--thread <id>] | --check-failure <id> |
+// --investigation <id>)
 // --summary <text> [--patch <diff file> --message <text>] [--reply <markdown file>]
 // [--resolve-thread] [--follow-up <markdown file>] [--rerun] [--close-pull-request]
 // [--excerpt <check id> <file>]... [--request-tool <markdown file>]`
@@ -260,7 +291,13 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
     let summary = required("summary")?;
     let thread_id = flags.get("thread").copied().unwrap_or_default();
 
+    let investigation_id = flags.get("investigation").copied().unwrap_or_default();
+    let subjects = ["comment", "check-failure", "investigation"];
+    if subjects.iter().filter(|s| flags.contains_key(*s)).count() != 1 {
+        return Err("propose for one of --comment, --check-failure or --investigation".into());
+    }
     let (comment, check_failure) = match (flags.get("comment"), flags.get("check-failure")) {
+        (None, None) => (None, None),
         (Some(id), None) => {
             let comment = fetch_comment(id).await?;
             if comment.pull_request != pr {
@@ -293,7 +330,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
             }
             (None, Some(failure))
         }
-        _ => return Err("propose for either --comment or --check-failure".into()),
+        _ => unreachable!(),
     };
     let mut earlier_comments = Vec::new();
     if !thread_id.is_empty() {
@@ -400,6 +437,7 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         check_failure,
         rerun,
         summary_html,
+        investigation_id: investigation_id.to_string(),
     };
     tokio::fs::create_dir_all(&dir)
         .await
@@ -599,7 +637,7 @@ fn repository(pr: &str) -> String {
 }
 
 // Markdown as GitHub renders it in a comment on the pull request at `pr`.
-async fn render(pr: &str, markdown: &str) -> Result<String, String> {
+pub async fn render(pr: &str, markdown: &str) -> Result<String, String> {
     if markdown.is_empty() {
         return Ok(String::new());
     }

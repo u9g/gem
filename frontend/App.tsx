@@ -6,7 +6,16 @@ import { ChevronLeft } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ClusterRow, PhoneClusterRow, ready, units } from './ClusterRow';
+import {
+  ClusterRow,
+  InvestigationRow,
+  PhoneClusterRow,
+  PhoneInvestigationRow,
+  ready,
+  SectionTitle,
+  units,
+} from './ClusterRow';
+import { InvestigationView } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
@@ -15,9 +24,13 @@ import { Login } from './surfaces';
 import { Button, usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
+  CloseInvestigationRequestSchema,
   DismissProposalRequestSchema,
+  InvestigateRequestSchema,
+  type Investigation,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
+  MessageInvestigationRequestSchema,
   RestartClusterRequestSchema,
   type PullRequestCluster,
   type Repository,
@@ -57,11 +70,15 @@ export default function App() {
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
+  const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [login, setLogin] = useState('');
   const [selectedUrl, setSelectedUrl] = useState<string>();
+  // Shown in place of any cluster while set.
+  const [selectedInvestigation, setSelectedInvestigation] = useState<string>();
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
-  // Proposal being approved or dismissed, or the oldest PR's URL of the cluster being restarted.
+  // Proposal being approved, dismissed or investigated, the oldest PR's URL of the cluster being
+  // restarted, or the investigation being closed.
   const [busy, setBusy] = useState<string>();
   const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
@@ -74,6 +91,7 @@ export default function App() {
         (json) => {
           const response = fromJson(ListOpenPullRequestsResponseSchema, json);
           setClusters(response.clusters);
+          setInvestigations(response.investigations);
           setLogin(response.login);
           reported(response.login, response.search);
         },
@@ -85,8 +103,10 @@ export default function App() {
   const profileId = profile?.id;
   useEffect(() => {
     setClusters([]);
+    setInvestigations([]);
     setLogin('');
     setSelectedUrl(undefined);
+    setSelectedInvestigation(undefined);
     setRepoFilter(undefined);
   }, [profileId]);
 
@@ -98,9 +118,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, [status, load]);
 
-  // On a phone an open cluster is a history entry, so the browser's back returns to the list.
+  // On a phone an open cluster or investigation is a history entry, so the browser's back returns
+  // to the list.
   useEffect(() => {
-    const close = () => setSelectedUrl(undefined);
+    const close = () => {
+      setSelectedUrl(undefined);
+      setSelectedInvestigation(undefined);
+    };
     addEventListener('popstate', close);
     return () => removeEventListener('popstate', close);
   }, []);
@@ -126,6 +150,44 @@ export default function App() {
       .then(load)
       .finally(() => setBusy(undefined));
   }
+
+  function investigate(proposalId: string) {
+    setBusy(proposalId);
+    post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId })))
+      .then(load)
+      .finally(() => setBusy(undefined));
+  }
+
+  function messageInvestigation(id: string, message: string) {
+    return post(
+      '/investigations/message',
+      toJson(MessageInvestigationRequestSchema, create(MessageInvestigationRequestSchema, { id, message })),
+    ).then(load);
+  }
+
+  function closeInvestigation(id: string) {
+    setBusy(id);
+    post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id })))
+      .then(() => {
+        if (phone) history.back();
+        setSelectedInvestigation(undefined);
+        return load();
+      })
+      .finally(() => setBusy(undefined));
+  }
+
+  const investigation = investigations.find((i) => i.id === selectedInvestigation);
+  const investigationView = investigation && (
+    <InvestigationView
+      investigation={investigation}
+      ago={timeAgo}
+      busy={busy}
+      onApprove={approve}
+      onDismiss={dismiss}
+      onMessage={(message) => messageInvestigation(investigation.id, message)}
+      onClose={() => closeInvestigation(investigation.id)}
+    />
+  );
 
   const repositories = clusters
     .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => (pr.repository ? [pr.repository] : [])))
@@ -216,14 +278,23 @@ export default function App() {
     return (
       <Login value={login}>
         <View style={styles.phone}>
-          {opened ? (
+          {investigationView || opened ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={() => history.back()}>
                 <ChevronLeft size={20} color="#8FA8F5" />
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
-                <ClusterView cluster={opened} busy={busy} onApprove={approve} onDismiss={dismiss} onRestart={restart} />
+                {investigationView || (
+                  <ClusterView
+                    cluster={opened!}
+                    busy={busy}
+                    onApprove={approve}
+                    onDismiss={dismiss}
+                    onRestart={restart}
+                    onInvestigate={investigate}
+                  />
+                )}
               </ScrollView>
             </>
           ) : (
@@ -231,6 +302,26 @@ export default function App() {
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
               <ScrollView>
+                {investigations.length > 0 && (
+                  <View style={styles.phoneSection}>
+                    <SectionTitle>Investigations</SectionTitle>
+                  </View>
+                )}
+                {investigations.map((i) => (
+                  <PhoneInvestigationRow
+                    key={i.id}
+                    investigation={i}
+                    onPress={() => {
+                      history.pushState(null, '');
+                      setSelectedInvestigation(i.id);
+                    }}
+                  />
+                ))}
+                {investigations.length > 0 && (
+                  <View style={styles.phoneSection}>
+                    <SectionTitle>Clusters</SectionTitle>
+                  </View>
+                )}
                 {visible.map((cluster) => (
                   <PhoneClusterRow
                     key={cluster.pullRequests[0].url}
@@ -260,21 +351,42 @@ export default function App() {
         />
         {filters}
         <ScrollView contentContainerStyle={styles.rows}>
+          {investigations.length > 0 && <SectionTitle>Investigations</SectionTitle>}
+          {investigations.map((i) => (
+            <InvestigationRow
+              key={i.id}
+              investigation={i}
+              selected={i === investigation}
+              onPress={() => setSelectedInvestigation(i.id)}
+            />
+          ))}
+          {investigations.length > 0 && <SectionTitle>Clusters</SectionTitle>}
           {visible.map((cluster) => (
             <ClusterRow
               key={cluster.pullRequests[0].url}
               cluster={cluster}
-              selected={cluster === selected}
-              onPress={() => setSelectedUrl(cluster.pullRequests[0].url)}
+              selected={!investigation && cluster === selected}
+              onPress={() => {
+                setSelectedInvestigation(undefined);
+                setSelectedUrl(cluster.pullRequests[0].url);
+              }}
             />
           ))}
         </ScrollView>
       </View>
       <Login value={login}>
         <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
-          {selected && (
-            <ClusterView cluster={selected} busy={busy} onApprove={approve} onDismiss={dismiss} onRestart={restart} />
-          )}
+          {investigationView ||
+            (selected && (
+              <ClusterView
+                cluster={selected}
+                busy={busy}
+                onApprove={approve}
+                onDismiss={dismiss}
+                onRestart={restart}
+                onInvestigate={investigate}
+              />
+            ))}
         </ScrollView>
       </Login>
       <StatusBar style="auto" />
@@ -289,12 +401,14 @@ function ClusterView({
   onApprove,
   onDismiss,
   onRestart,
+  onInvestigate,
 }: {
   cluster: PullRequestCluster;
   busy?: string;
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
+  onInvestigate: (id: string) => void;
 }) {
   return (
     <View style={styles.column}>
@@ -321,6 +435,7 @@ function ClusterView({
           busy={busy}
           onApprove={onApprove}
           onDismiss={onDismiss}
+          onInvestigate={onInvestigate}
         />
       ))}
     </View>
@@ -385,6 +500,9 @@ const styles = StyleSheet.create({
   },
   phoneContent: {
     padding: 12,
+  },
+  phoneSection: {
+    paddingHorizontal: 8,
   },
   container: {
     flex: 1,

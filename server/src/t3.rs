@@ -63,11 +63,59 @@ pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
         .map_err(|_| format!("t3: {}", String::from_utf8_lossy(&output).trim()))
 }
 
+// Whether the thread's agent is running, or about to run on the latest message, and its latest
+// reply, empty before its first.
+pub async fn show(thread_id: &str) -> Option<(bool, String)> {
+    #[derive(Deserialize)]
+    struct Shown {
+        thread: Thread,
+        messages: Vec<Message>,
+    }
+    #[derive(Deserialize)]
+    struct Thread {
+        status: String,
+        #[serde(rename = "activeRunId")]
+        active_run_id: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Message {
+        role: String,
+        text: String,
+    }
+    let output = t3(
+        &["thread", "show", "--json", "--messages", "20", thread_id],
+        "",
+    )
+    .await?;
+    let shown: Shown = serde_json::from_slice(&output).ok()?;
+    let stopped = matches!(
+        shown.thread.status.as_str(),
+        "failed" | "cancelled" | "interrupted"
+    );
+    let unanswered = shown.messages.last().is_some_and(|m| m.role == "user");
+    let working = shown.thread.active_run_id.is_some() || (unanswered && !stopped);
+    let reply = (shown.messages.into_iter().rev())
+        .find(|message| message.role == "assistant")
+        .map(|message| message.text)
+        .unwrap_or_default();
+    Some((working, reply))
+}
+
+// A busy thread gets the message as its next turn.
+pub async fn send(thread_id: &str, message: &str) -> Result<(), String> {
+    t3(&["thread", "send", "--json", thread_id, "-"], message)
+        .await
+        .map(drop)
+        .ok_or("t3: could not run the CLI".into())
+}
+
 // T3 Code installs its CLI here and keeps it pointing at the running app; on Windows it is a
 // batch file. Batch files cannot take arguments with newlines, so `stdin` carries any message.
 async fn t3(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
     let name = if cfg!(windows) { "t3.cmd" } else { "t3" };
-    let cli = PathBuf::from(env::var("HOME").ok()?).join(".t3/bin").join(name);
+    let cli = PathBuf::from(env::var("HOME").ok()?)
+        .join(".t3/bin")
+        .join(name);
     let mut child = Command::new(cli)
         .args(args)
         .stdin(Stdio::piped())

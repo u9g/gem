@@ -1,6 +1,13 @@
 import { create } from '@bufbuild/protobuf';
 
-import { type Proposal, ProposalSchema, type PullRequest, PullRequestSchema } from '../gen/gem_pb';
+import {
+  type Investigation,
+  InvestigationSchema,
+  type Proposal,
+  ProposalSchema,
+  type PullRequest,
+  PullRequestSchema,
+} from '../gen/gem_pb';
 
 // Made-up conversations shaped like real ones: this repository is public.
 
@@ -224,5 +231,48 @@ export const checkProposals: Proposal[] = [
     pullRequestUrl: pr.url,
     checkFailure: { ...failure, checks: [tests] },
     rerun: true,
+  }),
+];
+
+const now = BigInt(Math.floor(Date.now() / 1000));
+
+// One investigation still on its first prompt, and one that found the root cause and proposes a
+// pull request on the base branch.
+export const investigations: Investigation[] = [
+  create(InvestigationSchema, {
+    id: 'investigation-working',
+    title: 'Investigate tests (3.12) on agents#4821',
+    pullRequestUrl: pr.url,
+    checkFailure: { ...failure, checks: [tests] },
+    rerunSummary: 'Rerun the tests: the runner lost its network',
+    threadId: 'thread-working',
+    startedAt: { seconds: now - 240n },
+    working: true,
+  }),
+  create(InvestigationSchema, {
+    id: 'investigation-answered',
+    title: 'Investigate ruff on agents#4821',
+    pullRequestUrl: pr.url,
+    checkFailure: { ...failure, checks: [ruff] },
+    rerunSummary: 'Rerun ruff: it passes on main',
+    threadId: 'thread-answered',
+    startedAt: { seconds: now - 7200n },
+    reply:
+      'Not flaky. `ruff` on the runner resolves to 0.6, which `uv.lock` does not pin, and 0.6 added F401 for re-exports. It fails the same way on every run since Oct 2.',
+    replyHtml:
+      '<p dir="auto">Not flaky. <code class="notranslate">ruff</code> on the runner resolves to 0.6, which <code class="notranslate">uv.lock</code> does not pin, and 0.6 added F401 for re-exports. It fails the same way on <a href="https://github.com/livekit/agents/actions">every run since Oct 2</a>.</p>',
+    proposals: [
+      create(ProposalSchema, {
+        id: 'investigation-follow-up',
+        summary: 'Open a PR on main pinning ruff to 0.5',
+        summaryHtml: '<p dir="auto">Open a PR on main pinning ruff to 0.5</p>',
+        pullRequestUrl: pr.url,
+        investigationId: 'investigation-answered',
+        followUp:
+          'In ~/code/agents, branch off origin/main, pin `ruff==0.5.7` in the dev dependencies, run `uv lock` and `uv run ruff check .`, then open a PR.',
+        followUpHtml:
+          '<p dir="auto">In ~/code/agents, branch off origin/main, pin <code class="notranslate">ruff==0.5.7</code> in the dev dependencies, run <code class="notranslate">uv lock</code> and <code class="notranslate">uv run ruff check .</code>, then open a PR.</p>',
+      }),
+    ],
   }),
 ];

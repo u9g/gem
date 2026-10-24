@@ -16,6 +16,32 @@ message ListOpenPullRequestsResponse {
   // The search qualifiers narrowing their PRs, from GEM_SEARCH, e.g.
   // `org:livekit`. Empty when every open PR of theirs is listed.
   string search = 3;
+  // Open investigations, most recently started first.
+  repeated Investigation investigations = 4;
+}
+
+// A T3 Code agent finding the root cause of failed checks that were rerun as flaky. It outlives
+// the pull request it started from, until the user closes it.
+message Investigation {
+  string id = 1;
+  string title = 2;
+  // The pull request whose checks failed.
+  string pull_request_url = 3;
+  // The failed checks, with the excerpts the rerun proposal showed.
+  CheckFailure check_failure = 4;
+  // Why the rerun proposal called the failure flaky.
+  string rerun_summary = 5;
+  // The T3 Code thread doing the work.
+  string thread_id = 6;
+  google.protobuf.Timestamp started_at = 7;
+  // The agent is running, on its first prompt or on a message the user sent.
+  bool working = 8;
+  // The agent's latest reply, in markdown. Empty until its first reply.
+  string reply = 9;
+  // `reply` as GitHub renders it.
+  string reply_html = 10;
+  // What the agent proposes doing about it.
+  repeated Proposal proposals = 11;
 }
 
 // Pull requests connected by links, directly or through other PRs in the
@@ -99,6 +125,10 @@ message Proposal {
   bool rerun = 17;
   // `summary` as GitHub renders it.
   string summary_html = 18;
+  // Set instead of `comment` and `check_failure` when an investigation proposes it. It shows
+  // under the investigation while the investigation is open, whatever happens to its pull
+  // request. Approving it clears no other proposal.
+  string investigation_id = 19;
 }
 
 // The checks that failed on a pull request's head commit, once all of its
@@ -183,3 +213,25 @@ message RestartClusterRequest {
 }
 
 message RestartClusterResponse {}
+
+// Approves a rerun proposal, then starts an investigation of the checks it reruns.
+message InvestigateRequest {
+  string proposal_id = 1;
+}
+
+message InvestigateResponse {}
+
+// Sends the user's message to an investigation's agent, as its next turn.
+message MessageInvestigationRequest {
+  string id = 1;
+  string message = 2;
+}
+
+message MessageInvestigationResponse {}
+
+// Removes an investigation and its proposals from gem. Its T3 Code thread stays.
+message CloseInvestigationRequest {
+  string id = 1;
+}
+
+message CloseInvestigationResponse {}
