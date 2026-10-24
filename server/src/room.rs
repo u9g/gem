@@ -8,7 +8,6 @@ use livekit_api::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::signal::unix::{Signal, SignalKind, signal};
 use tower::ServiceExt;
 
 // The room the frontend joins in the same project.
@@ -17,6 +16,19 @@ const ROOM: &str = "gem";
 const IDENTITY: &str = "server";
 // How long a frontend waits for the server to join after the frontend does.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+// SIGTERM, or Ctrl+C on Windows, which has no SIGTERM.
+#[cfg(unix)]
+type Terminate = tokio::signal::unix::Signal;
+#[cfg(windows)]
+type Terminate = tokio::signal::windows::CtrlC;
+
+fn terminate() -> Terminate {
+    #[cfg(unix)]
+    return tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    #[cfg(windows)]
+    return tokio::signal::windows::ctrl_c().unwrap();
+}
 
 enum Left {
     Empty,
@@ -32,7 +44,7 @@ enum Left {
 pub async fn serve(app: Router) {
     let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
     let rooms = RoomClient::new(&url).expect("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set");
-    let mut terminate = signal(SignalKind::terminate()).unwrap();
+    let mut terminate = terminate();
     loop {
         // A room that does not exist yet has no frontend in it.
         let occupied = rooms.list_participants(ROOM).await.is_ok_and(|p| !p.is_empty());
@@ -53,7 +65,7 @@ pub async fn serve(app: Router) {
 // Leaves the room once no frontend is in it, and on SIGTERM, so the frontend sees the server go
 // offline at once instead of after LiveKit's participant timeout. Errors when the room is lost;
 // the SDK reconnects through shorter outages itself.
-async fn join(url: &str, app: &Router, terminate: &mut Signal) -> Result<Left, Box<dyn Error>> {
+async fn join(url: &str, app: &Router, terminate: &mut Terminate) -> Result<Left, Box<dyn Error>> {
     let token = AccessToken::new()?
         .with_identity(IDENTITY)
         .with_grants(VideoGrants {
