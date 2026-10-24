@@ -1,5 +1,5 @@
 import { Bot, CheckCheck, CircleX, ExternalLink, FileCode, GitPullRequestClosed, Hammer, RotateCcw } from 'lucide-react';
-import { createContext, type ReactNode, useContext, useState } from 'react';
+import { createContext, type CSSProperties, type ReactNode, useContext, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
@@ -193,11 +193,21 @@ const fade = { maskImage: 'linear-gradient(to bottom, black 60%, transparent)' }
 
 // GitHub's rendering of a body, styled with GitHub's stylesheet. Links leave the app for a new
 // tab; a click anywhere else calls onPress.
-export function Html({ html, onPress }: { html: string; onPress?: () => void }) {
+export function Html({
+  html,
+  onPress,
+  className,
+  style,
+}: {
+  html: string;
+  onPress?: () => void;
+  className?: string;
+  style?: CSSProperties;
+}) {
   return (
     <div
-      className="markdown-body"
-      style={markdownBody}
+      className={className ? `markdown-body ${className}` : 'markdown-body'}
+      style={{ ...markdownBody, ...style }}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={(event) => {
         const link = (event.target as Element).closest('a');
