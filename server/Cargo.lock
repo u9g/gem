@@ -699,6 +699,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-changes"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.5",
+ "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "gem-cluster"
+version = "0.1.0"
+
+[[package]]
 name = "gem-db"
 version = "0.1.0"
 dependencies = [
@@ -2531,6 +2544,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dotenvy",
+ "gem-changes",
+ "gem-cluster",
  "gem-db",
  "gem-github",
  "gem-http",
@@ -2540,8 +2555,6 @@ dependencies = [
  "gem-room",
  "gem-t3",
  "pbjson-types",
- "reqwest 0.13.5",
- "rustls",
  "serde",
  "serde_json",
  "tokio",

@@ -7,7 +7,7 @@ use gem_db::Db;
 use gem_rebases::{Host, Progress, Rebases, Refs};
 
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster, Rebase};
-use crate::{Cache, gh, investigations, t3};
+use crate::{Cache, gh, t3};
 
 static REBASES: OnceLock<Rebases<Server>> = OnceLock::new();
 
@@ -69,7 +69,7 @@ pub fn init(db: Db, prs: Cache<ListOpenPullRequestsResponse>) -> Result<(), Stri
 }
 
 pub async fn start(url: &str) -> Result<(), String> {
-    let (repository, number) = investigations::short(url);
+    let (repository, number) = gem_github::short(url);
     let rebases = REBASES.get().ok_or("rebases are not ready")?;
     rebases.start(url, &format!("{repository}#{number}")).await
 }

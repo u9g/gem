@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use changes::Changes;
 use conversations::Conversations;
+use gem_changes::Changes;
 use names::Names;
 use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseInvestigationRequest,
@@ -29,7 +29,6 @@ use proto::{
     RestartClusterResponse,
 };
 
-mod changes;
 mod conversations;
 mod investigations;
 mod mcp;
@@ -38,7 +37,7 @@ mod proposals;
 mod rebases;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{gh, gh_json, login};
+use gem_github::{Head, gh, gh_json, login};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -477,7 +476,7 @@ async fn open_pull_requests(
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
-    changes.watch(&prs).await;
+    changes.watch(watched(&prs)).await;
     let clusters = cluster(&prs, &behind(&prs).await);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
@@ -489,9 +488,26 @@ async fn open_pull_requests(
     })
 }
 
+// What `changes` asks GitHub about each PR. Its own response changes with pushes, its title,
+// comments, reviews and closing; its head commit's check runs and statuses with its checks; and its
+// base branch with `behind`.
+fn watched(prs: &[SearchedPullRequest]) -> Vec<String> {
+    (prs.iter())
+        .flat_map(|pr| {
+            let repo = format!("repos/{}/{}", pr.repository.owner, pr.repository.name);
+            [
+                format!("{repo}/pulls/{}", pr.number),
+                format!("{repo}/commits/{}/check-runs?per_page=100", pr.head_oid),
+                format!("{repo}/commits/{}/status", pr.head_oid),
+                format!("{repo}/git/ref/heads/{}", pr.base),
+            ]
+        })
+        .collect()
+}
+
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
-// branch in the same repository) or one mentions the other. A cluster is a connected component
-// of links, so PRs join through any chain of links, not only direct ones.
+// branch in the same repository) or one mentions the other. A cluster is every PR linked through
+// any chain of links, not only direct ones.
 fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullRequestCluster> {
     let by_url: HashMap<&str, usize> = prs
         .iter()
@@ -504,32 +520,22 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
         .filter_map(|(i, pr)| Some(((&pr.repository, pr.head.as_deref()?), i)))
         .collect();
 
-    let mut parent: Vec<usize> = (0..prs.len()).collect();
-    for (i, pr) in prs.iter().enumerate() {
+    let links = prs.iter().enumerate().flat_map(|(i, pr)| {
         let stacked_on = by_head.get(&(&pr.repository, pr.base.as_str()));
         let mentioned_by = pr
             .mentioned_by
             .iter()
             .filter_map(|url| by_url.get(url.as_str()));
-        for &j in stacked_on.into_iter().chain(mentioned_by) {
-            let (a, b) = (root(&mut parent, i), root(&mut parent, j));
-            parent[a] = b;
-        }
-    }
-
-    let mut clusters: Vec<Vec<&SearchedPullRequest>> = Vec::new();
-    let mut cluster_of_root: HashMap<usize, usize> = HashMap::new();
-    for (i, pr) in prs.iter().enumerate() {
-        let r = root(&mut parent, i);
-        let c = *cluster_of_root.entry(r).or_insert_with(|| {
-            clusters.push(Vec::new());
-            clusters.len() - 1
-        });
-        clusters[c].push(pr);
-    }
+        stacked_on
+            .into_iter()
+            .chain(mentioned_by)
+            .map(move |&j| (i, j))
+    });
+    let clusters = gem_cluster::components(prs.len(), links);
 
     let mut clusters: Vec<PullRequestCluster> = clusters
         .into_iter()
+        .map(|group| group.into_iter().map(|i| &prs[i]).collect::<Vec<_>>())
         .map(|mut members| {
             members.sort_by_key(|pr| (pr.created_at.seconds, pr.created_at.nanos));
             PullRequestCluster {
@@ -564,40 +570,19 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
     clusters
 }
 
-// The URLs of the PRs whose head commit lacks commits on their base branch, in one request. A
-// field's arguments cannot come from another field, so search cannot compare them itself.
+// The URLs of the PRs whose head commit lacks commits on their base branch.
 async fn behind(prs: &[SearchedPullRequest]) -> HashSet<&str> {
-    let fields: String = (prs.iter().enumerate())
-        .map(|(i, pr)| {
-            format!(
-                "pr{i}: repository(owner: {}, name: {}) {{ ref(qualifiedName: {}) {{ compare(headRef: {}) {{ behindBy }} }} }}\n",
-                json!(pr.repository.owner),
-                json!(pr.repository.name),
-                json!(pr.base),
-                json!(pr.head_oid),
-            )
+    let heads: Vec<Head> = (prs.iter())
+        .map(|pr| Head {
+            owner: &pr.repository.owner,
+            name: &pr.repository.name,
+            base: &pr.base,
+            oid: &pr.head_oid,
         })
         .collect();
-    if fields.is_empty() {
-        return HashSet::new();
-    }
-    let Some(data) =
-        gh_json::<Value>(&["api", "graphql", "-f", &format!("query={{\n{fields}}}")]).await
-    else {
-        return HashSet::new();
-    };
+    let behind = gem_github::behind(&heads).await;
     (prs.iter().enumerate())
-        .filter(|(i, _)| {
-            data["data"][format!("pr{i}")]["ref"]["compare"]["behindBy"].as_u64() > Some(0)
-        })
+        .filter(|(i, _)| behind.contains(i))
         .map(|(_, pr)| pr.url.as_str())
         .collect()
-}
-
-fn root(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
-    }
-    i
 }
