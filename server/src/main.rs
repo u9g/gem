@@ -249,7 +249,8 @@ async fn run_server() {
         let _ = dotenvy::dotenv();
     }
 
-    gem_github::sign_in().await.unwrap_or_else(|error| panic!("{error}"));
+    // Before anything uses it, so a server without gh signed in panics now, not on a request.
+    login();
 
     // Nothing watches the repositories for changes.
     let repos: Cache<Value> = cached(|| gh_json(REPOS), Changes::default());
