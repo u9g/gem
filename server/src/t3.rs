@@ -21,12 +21,14 @@ struct ShownThread {
     settled: bool,
 }
 
-// Threads start in the T3 Code project containing the working directory. The prompt must tell
-// the agent to settle its own thread: T3 Code does not settle threads when they finish.
+// Threads start in T3 Code's scratch space: the server's working directory is in no T3 Code
+// project. The prompt must tell the agent to settle its own thread: T3 Code does not settle
+// threads when they finish.
 pub async fn ask(title: &str, prompt: &str) -> Option<String> {
+    let scratch = scratch().ok()?;
     let output = t3(
         &[
-            "thread", "start", ".", "--title", title, "--wait", "--json", "-",
+            "thread", "start", &scratch, "--title", title, "--wait", "--json", "-",
         ],
         prompt,
     )
@@ -47,8 +49,13 @@ pub async fn ask(title: &str, prompt: &str) -> Option<String> {
 // Starts an agent on `prompt` without waiting for it, in T3 Code's scratch space for threads
 // outside any project. Returns the thread's id.
 pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
-    let scratch = PathBuf::from(env::var("HOME").map_err(|e| e.to_string())?).join(".t3/scratch");
-    start_in(&scratch.to_string_lossy(), title, prompt).await
+    start_in(&scratch()?, title, prompt).await
+}
+
+// T3 Code's scratch space for threads outside any project.
+fn scratch() -> Result<String, String> {
+    let home = env::var("HOME").map_err(|e| e.to_string())?;
+    Ok(PathBuf::from(home).join(".t3/scratch").to_string_lossy().into_owned())
 }
 
 // Starts an agent on `prompt` without waiting for it, in the T3 Code project containing

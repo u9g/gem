@@ -520,8 +520,9 @@ settle this thread. Then reply with one line saying what you proposed.",
         number = pr.number,
     );
     let title = format!("Fix checks on {}#{}", pr.full_name, pr.number);
-    let Ok(thread_id) = t3::start_in(".", &title, &prompt).await else {
-        return;
+    let thread_id = match t3::start(&title, &prompt).await {
+        Ok(thread_id) => thread_id,
+        Err(e) => return eprintln!("{title}: {e}"),
     };
     if let Some((_, agent)) = agents.lock().await.get_mut(&failure.id) {
         agent.thread_url = t3::url(&thread_id).unwrap_or_default();
