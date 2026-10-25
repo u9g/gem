@@ -384,7 +384,11 @@ async fn run_server() {
         );
 
     investigations::watch();
-    gem_room::serve(move |request| gem_http::respond(app.clone(), request), snapshot).await;
+    gem_room::serve(
+        move |request| gem_http::respond(app.clone(), request),
+        snapshot,
+    )
+    .await;
 }
 
 async fn healthz() -> Json<Value> {
