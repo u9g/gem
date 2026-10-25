@@ -165,9 +165,13 @@ function DiffFile({
           </View>
         )}
       </View>
-      <ScrollView horizontal contentContainerStyle={styles.diffLines}>
-        <View style={styles.diffLines}>{lines}</View>
-      </ScrollView>
+      {editing && hunks ? (
+        lines
+      ) : (
+        <ScrollView horizontal contentContainerStyle={styles.diffLines}>
+          <View style={styles.diffLines}>{lines}</View>
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -519,13 +523,17 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     whiteSpace: 'pre',
   } as object,
-  // A textarea exactly as big as its code, so the surface scrolls it like the diff's lines.
+  // As tall as its code, and scrolls its own long lines: iOS scrolls a selection drag only within the
+  // field it's in, never the field's scrolling ancestors.
   codeInput: {
+    flex: 1,
+    minWidth: 0,
     color: t3.foreground,
     padding: 0,
     outlineStyle: 'solid',
     outlineWidth: 0,
     fieldSizing: 'content',
+    overflowX: 'auto',
     resize: 'none',
   } as object,
   edited: {
