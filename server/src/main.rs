@@ -171,8 +171,8 @@ const OP_FIELDS: &[&str] = &[
 
 // Sets OP_FIELDS from the 1Password item GEM_OP_ITEM names, as op://<vault>/<item>, so the
 // LiveKit login stays out of .env. A variable already set, by .env or the real environment, wins.
-// The launcher reads the item once; the servers it starts and the builds it hands off to inherit
-// the variables, so they ask 1Password, and the phone, nothing.
+// The launcher reads the item once; every server it starts inherits the variables, so servers ask
+// 1Password, and the phone, nothing.
 fn load_op_item() -> Result<(), String> {
     #[derive(Deserialize)]
     struct Item {
