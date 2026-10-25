@@ -2,7 +2,7 @@ use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
     future::Future,
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -12,9 +12,9 @@ use axum::{
     routing::{get, post},
 };
 use pbjson_types::Timestamp;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::{process::Command, sync::RwLock};
+use tokio::sync::RwLock;
 
 use changes::Changes;
 use conversations::Conversations;
@@ -32,30 +32,20 @@ use proto::{
 mod changes;
 mod conversations;
 mod investigations;
-mod launcher;
 mod mcp;
 mod names;
 mod proposals;
 mod rebases;
-mod room;
-mod t3;
 
-mod proto {
-    include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));
-    include!(concat!(env!("OUT_DIR"), "/gem.v1.serde.rs"));
-}
+// The server's own layers, each a crate in crates/ that depends on nothing of the server's.
+use gem_github::{gh, gh_json, login};
+use gem_proto as proto;
+use gem_t3 as t3;
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
 // Without an owner, gh lists the authenticated user's repositories.
 const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
-
-static LOGIN: OnceLock<String> = OnceLock::new();
-
-// The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.
-pub fn login() -> &'static str {
-    LOGIN.get().unwrap()
-}
 
 // Paginated by `gh api graphql --paginate`, which fills in $endCursor. $q is the user's open PRs,
 // narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`.
@@ -161,7 +151,7 @@ fn main() {
                 eprintln!("launcher: {error}; asking again in {OP_RETRY_DELAY:?}");
                 std::thread::sleep(OP_RETRY_DELAY);
             }
-            launcher::run()
+            gem_launcher::run()
         }
     }
 }
@@ -259,12 +249,7 @@ async fn run_server() {
         let _ = dotenvy::dotenv();
     }
 
-    let login = gh(&["api", "user", "--jq", ".login"])
-        .await
-        .expect("gh is not authenticated");
-    LOGIN
-        .set(String::from_utf8(login).unwrap().trim().to_string())
-        .unwrap();
+    gem_github::sign_in().await.unwrap_or_else(|error| panic!("{error}"));
 
     // Nothing watches the repositories for changes.
     let repos: Cache<Value> = cached(|| gh_json(REPOS), Changes::default());
@@ -398,7 +383,7 @@ async fn run_server() {
         );
 
     investigations::watch();
-    room::serve(app, snapshot).await;
+    gem_room::serve(app, snapshot).await;
 }
 
 async fn healthz() -> Json<Value> {
@@ -610,14 +595,4 @@ fn root(parent: &mut [usize], mut i: usize) -> usize {
         i = parent[i];
     }
     i
-}
-
-// Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
-pub async fn gh(args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("gh").args(args).output().await.ok()?;
-    output.status.success().then_some(output.stdout)
-}
-
-async fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
-    serde_json::from_slice(&gh(args).await?).ok()
 }
