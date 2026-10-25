@@ -145,6 +145,7 @@ struct Known {
     checks_failing: bool,
     settling: bool,
     waiting: Vec<Conversation>,
+    target: Target,
 }
 
 struct Inner {
@@ -249,6 +250,7 @@ impl Conversations {
                             checks_failing: pr.checks_failing,
                             settling: result.settling,
                             waiting: result.waiting,
+                            target: Target::new(pr),
                         },
                     );
                 }
@@ -267,14 +269,16 @@ impl Conversations {
             let _ = tokio::fs::write(HANDLED_FILE, json).await;
         }
 
+        self.0.handled.lock().await.retain(|id| !stale.contains(id));
+        self.answer_waiting().await;
+    }
+
+    // Queues an agent for each waiting conversation that no agent was queued for.
+    async fn answer_waiting(&self) {
         let known = self.0.prs.read().await;
         let mut handled = self.0.handled.lock().await;
-        handled.retain(|id| !stale.contains(id));
-        for pr in prs {
-            let Some(Known { waiting, .. }) = known.get(&pr.url) else {
-                continue;
-            };
-            for conversation in waiting {
+        for pr in known.values() {
+            for conversation in &pr.waiting {
                 if !handled.insert(conversation.id().to_string()) {
                     continue;
                 }
@@ -284,10 +288,10 @@ impl Conversations {
                         thread_url: String::new(),
                     };
                     (self.0.check_agents.lock().await)
-                        .insert(check_failure.id.clone(), (pr.url.clone(), agent));
+                        .insert(check_failure.id.clone(), (pr.target.url.clone(), agent));
                 }
                 let this = self.clone();
-                let pr = Target::new(pr);
+                let pr = pr.target.clone();
                 let conversation = conversation.clone();
                 tokio::spawn(async move {
                     let _permit = this.0.agents.acquire().await.unwrap();
@@ -313,6 +317,7 @@ impl Conversations {
 }
 
 // What an agent needs to know about the PR it answers on.
+#[derive(Clone)]
 struct Target {
     url: String,
     full_name: String,
