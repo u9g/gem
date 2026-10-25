@@ -138,10 +138,13 @@ export default function App() {
       );
   }
 
-  function approve(id: string, reply: string, followUp: string) {
+  function approve(id: string, reply: string, followUp: string, diff: string) {
     track(
       id,
-      post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp }))),
+      post(
+        '/proposals/approve',
+        toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp, diff })),
+      ),
     );
   }
 

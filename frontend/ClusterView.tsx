@@ -33,7 +33,7 @@ export function ClusterView({
 }: {
   cluster: PullRequestCluster;
   busy?: ReadonlySet<string>;
-  onApprove: (id: string, reply: string, followUp: string) => void;
+  onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
   onRebase: (url: string) => void;

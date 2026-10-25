@@ -368,8 +368,13 @@ async fn run_server() {
         .route("/proposals/approve", {
             let prs = prs.clone();
             post(|Json(request): Json<ApproveProposalRequest>| async move {
-                let closed =
-                    proposals::approve(&request.id, &request.reply, &request.follow_up).await;
+                let closed = proposals::approve(
+                    &request.id,
+                    &request.reply,
+                    &request.follow_up,
+                    &request.diff,
+                )
+                .await;
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.
                 if let (Ok(Some(url)), Some(response)) = (closed, &mut *prs.write().await) {
