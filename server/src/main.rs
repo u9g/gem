@@ -137,6 +137,7 @@ fn main() {
     let runtime = || tokio::runtime::Runtime::new().unwrap();
     match args.first().map(String::as_str) {
         Some("serve") => {
+            init_logging();
             load_op_item().unwrap_or_else(|error| panic!("{error}"));
             runtime().block_on(run_server())
         }
@@ -375,6 +376,16 @@ async fn run_server() {
                     &request.diff,
                 )
                 .await;
+                match &closed {
+                    Ok(closed) => tracing::info!(
+                        proposal = %request.id,
+                        closed_pull_request = ?closed,
+                        "proposal approved"
+                    ),
+                    Err(error) => {
+                        tracing::warn!(proposal = %request.id, %error, "proposal approve failed")
+                    }
+                }
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.
                 if let (Ok(Some(url)), Some(response)) = (closed, &mut *prs.write().await) {
@@ -419,6 +430,7 @@ async fn run_server() {
             "/proposals/dismiss",
             post(|Json(request): Json<DismissProposalRequest>| async move {
                 proposals::dismiss(&request.id).await;
+                tracing::info!(proposal = %request.id, "proposal dismissed");
                 Json(DismissProposalResponse {})
             }),
         );
@@ -429,6 +441,21 @@ async fn run_server() {
         snapshot,
     )
     .await;
+}
+
+// One line of JSON per event on stderr, which the launcher appends to server.log. RUST_LOG
+// overrides the filter; LiveKit's own info events are left out by default, as they are one per
+// signal message.
+fn init_logging() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new("info,livekit=warn,livekit_api=warn,libwebrtc=warn")
+    });
+    tracing_subscriber::fmt()
+        .json()
+        .with_current_span(true)
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 async fn healthz() -> Json<Value> {

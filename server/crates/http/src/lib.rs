@@ -11,7 +11,19 @@ use tower::ServiceExt;
 
 // The router's answer to `request`. A request that is not one fails with 400.
 pub async fn respond(app: Router, request: String) -> Result<String, (u32, String)> {
-    let response = app.oneshot(parse(&request)?).await.unwrap();
+    let request = parse(&request).inspect_err(|(code, message)| {
+        tracing::warn!(code, message, "unparseable request");
+    })?;
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status().as_u16();
+    // `/prs` is asked for after every action and on every reconnect.
+    if path == "/prs" {
+        tracing::debug!(%method, path, status, "request");
+    } else {
+        tracing::info!(%method, path, status, "request");
+    }
     body(response).await
 }
 

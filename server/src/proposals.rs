@@ -1,10 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
+use tracing::Instrument;
 
 use crate::proto::{Comment, Patch, Proposal, PullRequestCluster};
 use crate::{conversations, investigations};
@@ -75,7 +77,24 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>
 }
 
 // Returns the PR's URL when approving closed it.
+// Everything logged while approving carries the proposal's ID and its PR.
 pub async fn approve(
+    id: &str,
+    reply: &str,
+    follow_up: &str,
+    diff: &str,
+) -> Result<Option<String>, String> {
+    let span = tracing::info_span!(
+        "approve",
+        proposal = id,
+        pull_request = tracing::field::Empty
+    );
+    approve_proposal(id, reply, follow_up, diff)
+        .instrument(span)
+        .await
+}
+
+async fn approve_proposal(
     id: &str,
     reply: &str,
     follow_up: &str,
@@ -85,6 +104,7 @@ pub async fn approve(
     let Some((path, mut proposal)) = proposals.iter().find(|(_, p)| p.id == id).cloned() else {
         return Err(format!("no proposal {id}"));
     };
+    tracing::Span::current().record("pull_request", proposal.pull_request_url.as_str());
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
@@ -166,22 +186,45 @@ pub async fn dismiss(id: &str) {
     }
 }
 
+// Logs a step of an approve starting and how it ended. A step that succeeded is saved as done
+// before the next starts, so the log shows how far a failed approve got.
+async fn step<T>(
+    name: &'static str,
+    work: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tracing::info!(step = name, "step started");
+    let started = Instant::now();
+    let result = work.await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(_) => tracing::info!(step = name, elapsed_ms, "step done"),
+        Err(error) => tracing::warn!(step = name, elapsed_ms, %error, "step failed"),
+    }
+    result
+}
+
 async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
     if !proposal.follow_up.is_empty() {
-        investigations::follow_up(
-            &proposal.summary,
-            &proposal.pull_request_url,
-            &proposal.follow_up,
+        step(
+            "follow_up",
+            investigations::follow_up(
+                &proposal.summary,
+                &proposal.pull_request_url,
+                &proposal.follow_up,
+            ),
         )
         .await?;
         proposal.follow_up.clear();
         save(path, proposal).await;
     }
     if let Some(patch) = &proposal.patch {
-        apply_patch(
-            &proposal.pull_request_url,
-            &patch.diff,
-            Some(&patch.commit_message),
+        step(
+            "patch",
+            apply_patch(
+                &proposal.pull_request_url,
+                &patch.diff,
+                Some(&patch.commit_message),
+            ),
         )
         .await?;
         proposal.patch = None;
@@ -194,16 +237,22 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
                 .map(|line| format!("> {line}\n"))
                 .collect();
             let body = format!("{quoted}\n{}", proposal.reply);
-            command(
-                "gh",
-                &["pr", "comment", &proposal.pull_request_url, "--body", &body],
-                None,
+            step(
+                "comment",
+                command(
+                    "gh",
+                    &["pr", "comment", &proposal.pull_request_url, "--body", &body],
+                    None,
+                ),
             )
             .await?;
         } else {
-            graphql(
-                "mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }",
-                &[("thread", &proposal.thread_id), ("body", &proposal.reply)],
+            step(
+                "reply",
+                graphql(
+                    "mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }",
+                    &[("thread", &proposal.thread_id), ("body", &proposal.reply)],
+                ),
             )
             .await?;
         }
@@ -211,9 +260,12 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         save(path, proposal).await;
     }
     if proposal.resolve_thread {
-        graphql(
-            "mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { id } } }",
-            &[("thread", &proposal.thread_id)],
+        step(
+            "resolve_thread",
+            graphql(
+                "mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { id } } }",
+                &[("thread", &proposal.thread_id)],
+            ),
         )
         .await?;
         proposal.resolve_thread = false;
@@ -228,25 +280,33 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         runs.dedup();
         let repository = repository(&proposal.pull_request_url);
         for run in runs {
-            command(
-                "gh",
-                &[
-                    "run",
-                    "rerun",
-                    &run.to_string(),
-                    "--failed",
-                    "-R",
-                    &repository,
-                ],
-                None,
+            step(
+                "rerun",
+                command(
+                    "gh",
+                    &[
+                        "run",
+                        "rerun",
+                        &run.to_string(),
+                        "--failed",
+                        "-R",
+                        &repository,
+                    ],
+                    None,
+                ),
             )
+            .instrument(tracing::info_span!("workflow_run", id = run))
             .await?;
         }
         proposal.rerun = false;
         save(path, proposal).await;
     }
     if proposal.close_pull_request {
-        command("gh", &["pr", "close", &proposal.pull_request_url], None).await?;
+        step(
+            "close",
+            command("gh", &["pr", "close", &proposal.pull_request_url], None),
+        )
+        .await?;
         proposal.close_pull_request = false;
         save(path, proposal).await;
     }

@@ -7,3 +7,4 @@ edition = "2024"
 livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"] }
 livekit-api = { version = "0.9.1", default-features = false, features = ["access-token", "services", "rustls-tls-native-roots"] }
 tokio = { version = "1.54.1", features = ["signal", "sync", "time"] }
+tracing = "0.1.44"
