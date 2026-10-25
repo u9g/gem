@@ -22,7 +22,7 @@ const diff = `diff --git a/livekit-agents/livekit/agents/voice/tts_retry.py b/li
 index 3d723da..c883a61 100644
 --- a/livekit-agents/livekit/agents/voice/tts_retry.py
 +++ b/livekit-agents/livekit/agents/voice/tts_retry.py
-@@ -41,10 +41,11 @@ async def synthesize_with_retry(tts, text, *, conn_options):
+@@ -41,7 +41,8 @@ async def synthesize_with_retry(tts, text, *, conn_options):
      try:
          return await tts.synthesize(text, conn_options=conn_options)
      except APIConnectionError:
