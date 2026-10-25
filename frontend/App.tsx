@@ -2,12 +2,11 @@ import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { Board } from './Board';
 import {
-  ClusterRow,
-  InvestigationRow,
   Legend,
   PhoneClusterRow,
   PhoneInvestigationRow,
@@ -39,16 +38,6 @@ import {
   type Repository,
 } from './gen/gem_pb';
 
-const SIDEBAR_WIDTH_KEY = 'gem.sidebarWidth';
-const SIDEBAR_DEFAULT_WIDTH = 375;
-const SIDEBAR_MIN_WIDTH = 208;
-// The main column keeps at least this much of the window.
-const MAIN_MIN_WIDTH = 640;
-
-function clampSidebarWidth(width: number): number {
-  return Math.round(Math.max(SIDEBAR_MIN_WIDTH, Math.min(width, window.innerWidth - MAIN_MIN_WIDTH)));
-}
-
 function sameRepository(a: Repository | undefined, b: Repository | undefined): boolean {
   return a?.owner === b?.owner && a?.name === b?.name;
 }
@@ -77,9 +66,6 @@ export default function App() {
   // PRs whose rebase is starting, and investigations being closed.
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
-  const [sidebarWidth, setSidebarWidth] = useState(() =>
-    clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || SIDEBAR_DEFAULT_WIDTH),
-  );
 
   const show = useCallback(
     (json: JsonValue) => {
@@ -113,16 +99,17 @@ export default function App() {
     if (snapshot) show(snapshot);
   }, [snapshot, show]);
 
+  const closeDrawer = useCallback(() => {
+    setSelectedUrl(undefined);
+    setSelectedInvestigation(undefined);
+  }, []);
+
   // On a phone an open cluster or investigation is a history entry, so the browser's back returns
   // to the list.
   useEffect(() => {
-    const close = () => {
-      setSelectedUrl(undefined);
-      setSelectedInvestigation(undefined);
-    };
-    addEventListener('popstate', close);
-    return () => removeEventListener('popstate', close);
-  }, []);
+    addEventListener('popstate', closeDrawer);
+    return () => removeEventListener('popstate', closeDrawer);
+  }, [closeDrawer]);
 
   // Marks `key` busy until the request and the reload after it settle.
   function track(key: string, request: Promise<unknown>) {
@@ -231,9 +218,8 @@ export default function App() {
   const visible = repoFilter
     ? clusters.filter((cluster) => cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
     : clusters;
-  // A cluster is identified by its oldest PR, which stays put as the cluster grows. Until one is
-  // picked, the most recently updated one is shown.
-  const selected = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl) ?? visible[0];
+  // A cluster is identified by its oldest PR, which stays put as the cluster grows.
+  const opened = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
 
   const filters = (
     <View style={styles.filters}>
@@ -310,7 +296,6 @@ export default function App() {
   // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
   // it, with the box to ask about it under the scrolling content.
   if (phone) {
-    const opened = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
     const listed = sections
       .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
@@ -390,43 +375,24 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.sidebar, { width: sidebarWidth }]}>
-        <ResizeHandle
-          width={sidebarWidth}
-          onResize={(width) => setSidebarWidth(clampSidebarWidth(width))}
-          onEnd={() => localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth))}
-        />
-        {filters}
-        <ScrollView contentContainerStyle={styles.rows}>
-          {investigations.length > 0 && <SectionTitle>Agents</SectionTitle>}
-          {investigations.map((i) => (
-            <InvestigationRow
-              key={i.id}
-              investigation={i}
-              selected={i === investigation}
-              onPress={() => setSelectedInvestigation(i.id)}
-            />
-          ))}
-          {investigations.length > 0 && <SectionTitle>Clusters</SectionTitle>}
-          {visible.map((cluster) => (
-            <ClusterRow
-              key={cluster.pullRequests[0].url}
-              cluster={cluster}
-              selected={!investigation && cluster === selected}
-              onPress={() => {
-                setSelectedInvestigation(undefined);
-                setSelectedUrl(cluster.pullRequests[0].url);
-              }}
-            />
-          ))}
-        </ScrollView>
-      </View>
+      <View style={styles.topBar}>{filters}</View>
       <Login value={login}>
-        <ScrollView style={styles.main} contentContainerStyle={styles.mainContent}>
+        <Board
+          clusters={visible}
+          investigations={investigations}
+          openUrl={investigation ? undefined : opened?.pullRequests[0].url}
+          openInvestigation={investigation?.id}
+          onOpenCluster={(cluster) => {
+            setSelectedInvestigation(undefined);
+            setSelectedUrl(cluster.pullRequests[0].url);
+          }}
+          onOpenInvestigation={setSelectedInvestigation}
+          onClose={closeDrawer}
+        >
           {investigationView ||
-            (selected && (
+            (opened && (
               <ClusterView
-                cluster={selected}
+                cluster={opened}
                 busy={busy}
                 onApprove={approve}
                 onDismiss={dismiss}
@@ -434,51 +400,12 @@ export default function App() {
                 onRebase={rebase}
                 onMerge={merge}
                 onInvestigate={investigate}
-                onMessage={(message) => messageCluster(selected, message)}
+                onMessage={(message) => messageCluster(opened, message)}
               />
             ))}
-        </ScrollView>
+        </Board>
       </Login>
       <StatusBar style="auto" />
-    </View>
-  );
-}
-
-// T3 Code's panel resize handle: an 8px strip over the sidebar's right edge whose 1px line shows
-// on hover and turns blue while dragging. The width is saved when the drag ends, not on every move.
-function ResizeHandle({
-  width,
-  onResize,
-  onEnd,
-}: {
-  width: number;
-  onResize: (width: number) => void;
-  onEnd: () => void;
-}) {
-  const start = useRef<{ x: number; width: number }>(undefined);
-  const [hovered, setHovered] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  return (
-    <View
-      style={styles.handle}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onPointerDown={(e) => {
-        e.preventDefault();
-        (e.currentTarget as unknown as Element).setPointerCapture(e.nativeEvent.pointerId);
-        start.current = { x: e.nativeEvent.clientX, width };
-        setDragging(true);
-      }}
-      onPointerMove={(e) => {
-        if (start.current) onResize(start.current.width + e.nativeEvent.clientX - start.current.x);
-      }}
-      onPointerUp={() => {
-        start.current = undefined;
-        setDragging(false);
-        onEnd();
-      }}
-    >
-      <View style={[styles.handleLine, hovered && styles.handleLineHover, dragging && styles.handleLineDrag]} />
     </View>
   );
 }
@@ -519,34 +446,11 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    flexDirection: 'row',
     backgroundColor: '#19212A',
   },
-  sidebar: {
-    backgroundColor: '#1D2630',
-    borderRightWidth: 1,
-    borderRightColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  handle: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    right: -4,
-    width: 8,
-    zIndex: 1,
-    alignItems: 'center',
-    cursor: 'col-resize',
-    userSelect: 'none',
-  } as object,
-  handleLine: {
-    width: 1,
-    height: '100%',
-  },
-  handleLineHover: {
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-  },
-  handleLineDrag: {
-    backgroundColor: 'rgba(55, 103, 232, 0.6)',
+  topBar: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   filters: {
     flexDirection: 'row',
@@ -589,17 +493,5 @@ const styles = StyleSheet.create({
   },
   menuItemSelected: {
     backgroundColor: '#2E3946',
-  },
-  rows: {
-    paddingHorizontal: 8,
-    paddingBottom: 8,
-  },
-  main: {
-    flex: 1,
-  },
-  mainContent: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 32,
   },
 });
