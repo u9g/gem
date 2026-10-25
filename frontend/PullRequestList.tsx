@@ -1,13 +1,23 @@
-import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Check, CircleCheck, CircleDashed, CircleX, MessageCircleQuestionMark } from 'lucide-react';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { PullRequest } from './gen/gem_pb';
-import { Icon, t3, usePhone } from './t3';
+import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
-// On a phone the review state is a check mark when approved, leaving the title room.
-export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] }) {
+// On a phone the review state is a check mark when approved, leaving the title room. A PR behind
+// its base branch can be rebased by an agent, which spins until its thread settles; a question
+// from it opens the thread.
+export function PullRequestList({
+  pullRequests,
+  busy,
+  onRebase,
+}: {
+  pullRequests: PullRequest[];
+  busy?: string;
+  onRebase?: (url: string) => void;
+}) {
   const phone = usePhone();
   // Wide enough for the longest repo#number, so they line up and never wrap.
   const refWidth = Math.max(...pullRequests.map((pr) => `${pr.repository?.name}#${pr.number}`.length)) * 7.5;
@@ -32,6 +42,24 @@ export function PullRequestList({ pullRequests }: { pullRequests: PullRequest[] 
             <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
               {pr.approved ? 'Approved' : 'Review required'}
             </Text>
+          )}
+          {pr.rebase?.question && (
+            <Pressable
+              accessibilityLabel="Open the rebase's question"
+              style={styles.question}
+              onPress={() => Linking.openURL(pr.rebase!.threadUrl)}
+            >
+              <Icon icon={MessageCircleQuestionMark} size={14} color={t3.warning} />
+              {!phone && <Text style={styles.questionText}>Question</Text>}
+            </Pressable>
+          )}
+          {pr.rebase && <ActivityIndicator size={12} color="#8FA8F5" />}
+          {onRebase && (pr.behind || pr.rebase) && (
+            <Button
+              label="Rebase"
+              disabled={pr.rebase !== undefined || busy === pr.url}
+              onPress={() => onRebase(pr.url)}
+            />
           )}
           <View style={styles.countSlot}>
             {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
@@ -79,6 +107,19 @@ const styles = StyleSheet.create({
   },
   review: {
     color: t3.muted,
+    fontSize: 12,
+  },
+  question: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    height: 24,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+  },
+  questionText: {
+    color: t3.warning,
     fontSize: 12,
   },
   countSlot: {

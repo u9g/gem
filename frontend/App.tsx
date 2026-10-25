@@ -33,6 +33,7 @@ import {
   MessageClusterRequestSchema,
   MessageClusterResponseSchema,
   MessageInvestigationRequestSchema,
+  RebasePullRequestRequestSchema,
   RestartClusterRequestSchema,
   type PullRequestCluster,
   type Repository,
@@ -80,7 +81,7 @@ export default function App() {
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Proposal being approved, dismissed or investigated, the oldest PR's URL of the cluster being
-  // restarted, or the investigation being closed.
+  // restarted, the URL of the PR whose rebase is starting, or the investigation being closed.
   const [busy, setBusy] = useState<string>();
   const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
@@ -149,6 +150,14 @@ export default function App() {
     setBusy(cluster.pullRequests[0].url);
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })))
+      .then(load)
+      .finally(() => setBusy(undefined));
+  }
+
+  // Starts an agent rebasing the PR, without opening its thread.
+  function rebase(url: string) {
+    setBusy(url);
+    post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url })))
       .then(load)
       .finally(() => setBusy(undefined));
   }
@@ -305,6 +314,7 @@ export default function App() {
                     onApprove={approve}
                     onDismiss={dismiss}
                     onRestart={restart}
+                onRebase={rebase}
                     onInvestigate={investigate}
                     onMessage={(message) => messageCluster(opened!, message)}
                   />
@@ -398,6 +408,7 @@ export default function App() {
                 onApprove={approve}
                 onDismiss={dismiss}
                 onRestart={restart}
+                onRebase={rebase}
                 onInvestigate={investigate}
                 onMessage={(message) => messageCluster(selected, message)}
               />
@@ -417,6 +428,7 @@ function ClusterView({
   onApprove,
   onDismiss,
   onRestart,
+  onRebase,
   onInvestigate,
   onMessage,
 }: {
@@ -425,6 +437,7 @@ function ClusterView({
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
+  onRebase: (url: string) => void;
   onInvestigate: (id: string) => void;
   // Starts an agent on the message, which reads the cluster through gem's MCP server. Resolves
   // once the agent started.
@@ -446,7 +459,7 @@ function ClusterView({
         />
       </View>
       <View style={styles.pullRequests}>
-        <PullRequestList pullRequests={cluster.pullRequests} />
+        <PullRequestList pullRequests={cluster.pullRequests} busy={busy} onRebase={onRebase} />
       </View>
       {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
         <ProposalGroup

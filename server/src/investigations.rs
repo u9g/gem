@@ -210,7 +210,7 @@ async fn track(
 }
 
 // The repository's name and the pull request's number in `pr`'s URL.
-fn short(pr: &str) -> (&str, &str) {
+pub fn short(pr: &str) -> (&str, &str) {
     let mut parts = pr.trim_end_matches('/').rsplit('/');
     let number = parts.next().unwrap_or_default();
     let repository = parts.nth(1).unwrap_or_default();

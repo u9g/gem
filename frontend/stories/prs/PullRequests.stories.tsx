@@ -175,6 +175,29 @@ export const AChips: StoryObj = { name: 'A · Chips', render: () => <Chips /> };
 export const BList: StoryObj = { name: 'B · List', render: () => <List /> };
 export const CTabs: StoryObj = { name: 'C · Tabs', render: () => <Tabs /> };
 
+// Behind its base, being rebased, and being rebased by an agent with a question.
+const threadUrl = 'https://app.t3.codes/environment/thread';
+const rebasing = [
+  { ...agents, behind: true },
+  { ...agentsJs, behind: true, rebase: { $typeName: 'gem.v1.Rebase' as const, threadUrl, question: false } },
+  { ...protocol, behind: true, rebase: { $typeName: 'gem.v1.Rebase' as const, threadUrl, question: true } },
+  pending,
+];
+export const DRebase: StoryObj = {
+  name: 'D · Rebase',
+  render: () => (
+    <Page
+      proposalsShown={[]}
+      header={
+        <View style={{ gap: 16 }}>
+          <Title />
+          <PullRequestList pullRequests={rebasing} onRebase={() => {}} />
+        </View>
+      }
+    />
+  ),
+};
+
 const styles = StyleSheet.create({
   page: {
     minHeight: '100%',
