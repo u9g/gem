@@ -108,11 +108,7 @@ export default function App() {
     setRepoFilter(undefined);
   }, [profileId]);
 
-  // Later changes arrive as snapshots.
-  useEffect(() => {
-    if (status === 'online') load();
-  }, [status, load]);
-
+  // The server sends a snapshot whenever this frontend or the server joins, and on every change.
   useEffect(() => {
     if (snapshot) show(snapshot);
   }, [snapshot, show]);

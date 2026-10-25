@@ -77,8 +77,8 @@ where
 
 // Leaves the room once no frontend is in it, and on SIGTERM, so the frontend sees the server go
 // offline at once instead of after LiveKit's participant timeout. Errors when the room is lost;
-// the SDK reconnects through shorter outages itself. A frontend loads the current snapshot when
-// the server joins, so only later ones are sent.
+// the SDK reconnects through shorter outages itself. Every frontend is sent the current snapshot
+// when either the server or that frontend joins, and every later one.
 async fn join<H, F>(
     url: &str,
     name: &str,
@@ -114,11 +114,15 @@ where
         });
     // The last frontend can leave between the poll and the join.
     let mut left = room.remote_participants().is_empty().then_some(Left::Empty);
-    snapshots.mark_unchanged();
+    snapshots.mark_changed();
     while left.is_none() {
         tokio::select! {
             Ok(()) = snapshots.changed() => {
                 let snapshot = snapshots.borrow_and_update().clone();
+                // Empty until the server has filled its first snapshot.
+                if snapshot.is_empty() {
+                    continue;
+                }
                 let options = StreamTextOptions::new_with_topic(SNAPSHOT_TOPIC);
                 if let Err(error) = room.local_participant().send_text(&snapshot, options).await {
                     eprintln!("room: cannot send a snapshot: {error}");
@@ -128,6 +132,7 @@ where
                 Some(RoomEvent::Disconnected { reason }) => {
                     return Err(format!("disconnected: {reason:?}").into());
                 }
+                Some(RoomEvent::ParticipantConnected(_)) => snapshots.mark_changed(),
                 Some(RoomEvent::ParticipantDisconnected(_))
                     if room.remote_participants().is_empty() =>
                 {
