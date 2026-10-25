@@ -4,7 +4,8 @@ import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ClusterRow, PhoneClusterRow } from '../../ClusterRow';
+import { Board } from '../../Board';
+import { PhoneClusterRow } from '../../ClusterRow';
 import { type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { ProfileChip, ProfileForm, ProfileSheet, ProfileTitle } from '../../Profiles';
 import { PullRequestList } from '../../PullRequestList';
@@ -103,8 +104,9 @@ function useProfiles() {
   return {
     profile,
     clusters,
-    selected: clusters.find((c) => c.pullRequests[0].url === selectedUrl) ?? clusters[0],
-    select: (c: PullRequestCluster) => setSelectedUrl(c.pullRequests[0].url),
+    selectedUrl,
+    selected: clusters.find((c) => c.pullRequests[0].url === selectedUrl),
+    select: (c?: PullRequestCluster) => setSelectedUrl(c?.pullRequests[0].url),
     switchTo: (id: string) => {
       setProfile(profiles.find((p) => p.id === id)!);
       setSelectedUrl(undefined);
@@ -112,30 +114,33 @@ function useProfiles() {
   };
 }
 
-// The desktop app: the `profile:` chip among the filters, the clusters, the picked cluster's PRs.
+// The desktop app: the `profile:` chip among the filters over the board, and the picked cluster's
+// PRs in the drawer.
 function Desktop() {
-  const { profile, clusters, selected, select, switchTo } = useProfiles();
+  const { profile, clusters, selectedUrl, selected, select, switchTo } = useProfiles();
   return (
     <Login value={profile.login!}>
       <View style={styles.container}>
-        <View style={styles.sidebar}>
-          <View style={styles.filters}>
-            <Text style={styles.filter}>server: online</Text>
-            <ProfileChip profiles={profiles} profile={profile} onSelect={switchTo} onAdd={() => {}} />
-            <Text style={styles.filter}>repos: *</Text>
-          </View>
-          <ScrollView contentContainerStyle={styles.rows}>
-            {clusters.map((c) => (
-              <ClusterRow key={c.pullRequests[0].url} cluster={c} selected={c === selected} onPress={() => select(c)} />
-            ))}
-          </ScrollView>
+        <View style={styles.filters}>
+          <Text style={styles.filter}>server: online</Text>
+          <ProfileChip profiles={profiles} profile={profile} onSelect={switchTo} onAdd={() => {}} />
+          <Text style={styles.filter}>repos: *</Text>
         </View>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.mainContent}>
-          <View style={styles.column}>
-            <Text style={styles.title}>{selected.name || selected.pullRequests[0].title}</Text>
-            <PullRequestList pullRequests={selected.pullRequests} />
-          </View>
-        </ScrollView>
+        <Board
+          clusters={clusters}
+          investigations={[]}
+          openUrl={selectedUrl}
+          onOpenCluster={select}
+          onOpenInvestigation={() => {}}
+          onClose={() => select(undefined)}
+        >
+          {selected && (
+            <View style={styles.column}>
+              <Text style={styles.title}>{selected.name || selected.pullRequests[0].title}</Text>
+              <PullRequestList pullRequests={selected.pullRequests} />
+            </View>
+          )}
+        </Board>
       </View>
     </Login>
   );
@@ -186,25 +191,9 @@ export const Change: StoryObj = {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    minHeight: '100vh',
-    flexDirection: 'row',
+    height: '100vh',
     backgroundColor: t3.background,
   } as object,
-  sidebar: {
-    width: 320,
-    backgroundColor: '#1D2630',
-    borderRightWidth: 1,
-    borderRightColor: t3.border,
-  },
-  rows: {
-    paddingHorizontal: 8,
-    paddingBottom: 8,
-  },
-  mainContent: {
-    alignItems: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 32,
-  },
   column: {
     width: '100%',
     maxWidth: 1240,
@@ -221,6 +210,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     padding: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: t3.border,
   },
   filter: {
     color: t3.foreground,

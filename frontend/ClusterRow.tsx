@@ -26,40 +26,6 @@ export function ready(cluster: PullRequestCluster): boolean {
   return cluster.pullRequests.every((pr) => pr.approved && pr.checksPassing);
 }
 
-function pending(cluster: PullRequestCluster): number {
-  return cluster.pullRequests.reduce((sum, pr) => sum + pr.proposals.length, 0);
-}
-
-// One line per cluster, like a thread in T3 Code's sidebar: a red dot when a PR's checks fail, the
-// name (green when every PR is approved and passing), how many proposals wait, and how long ago.
-export function ClusterRow({
-  cluster,
-  selected,
-  onPress,
-}: {
-  cluster: PullRequestCluster;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const count = pending(cluster);
-  return (
-    <Pressable
-      onPress={onPress}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      style={[styles.row, (selected || hovered) && styles.rowActive]}
-    >
-      <View style={[styles.dot, cluster.pullRequests.some((pr) => pr.checksFailing) && styles.dotFailing]} />
-      <Text numberOfLines={1} style={[styles.rowName, ready(cluster) && styles.ready]}>
-        {cluster.name || cluster.pullRequests[0].title}
-      </Text>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
-      {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
-    </Pressable>
-  );
-}
-
 // Where a cluster sits on a phone's list, by what it waits on: the user first, then its agents, then
 // only a merge, its checks, or a reviewer.
 export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
@@ -309,9 +275,6 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-  },
-  dotFailing: {
-    backgroundColor: '#F87171',
   },
   dotProposals: {
     backgroundColor: '#3767E8',
