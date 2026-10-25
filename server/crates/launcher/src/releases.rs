@@ -14,17 +14,30 @@ const RELEASES: &str = "releases";
 const KEPT_RELEASES: usize = 10;
 
 // Windows cannot replace a running executable but can rename one, so a launcher started from
-// cargo's output moves itself into releases/ for cargo to build over. Returns where it now is.
+// cargo's output moves itself into releases/ for cargo to build over. A rename cannot cross
+// drives, so with the target directory on another drive it moves aside within its own directory
+// instead. Returns where it now is.
 pub fn move_out_of_target(exe: &Path) -> PathBuf {
     if !cfg!(windows) || is_release(exe) {
         return exe.to_path_buf();
     }
     let release = new_release();
-    match fs::rename(exe, &release) {
-        Ok(()) => release,
-        Err(error) => {
+    let Err(error) = fs::rename(exe, &release) else {
+        return release;
+    };
+    let aside = exe.with_file_name(format!(
+        "{}-launcher{}",
+        exe.file_stem().unwrap().to_string_lossy(),
+        env::consts::EXE_SUFFIX
+    ));
+    // Left by the launcher before this one, which has exited.
+    let _ = fs::remove_file(&aside);
+    match fs::rename(exe, &aside) {
+        Ok(()) => aside,
+        Err(aside_error) => {
             log(&format!(
-                "cannot move {} into {RELEASES}/, so builds fail while the launcher runs: {error}",
+                "cannot move {} into {RELEASES}/ ({error}) or aside ({aside_error}), so builds \
+                 fail while the launcher runs",
                 exe.display()
             ));
             exe.to_path_buf()
