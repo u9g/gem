@@ -29,6 +29,7 @@ use proto::{
 };
 
 mod conversations;
+mod db;
 mod investigations;
 mod launcher;
 mod mcp;
@@ -242,6 +243,7 @@ fn load_op_item() -> Result<(), String> {
 }
 
 async fn run_server() {
+    db::open().unwrap_or_else(|error| panic!("gem.sqlite: {error}"));
     // Servers from before GEM_ROOM was required joined the room gem.
     if std::env::var_os("GEM_ROOM").is_none() {
         let env = std::fs::read_to_string(".env").unwrap_or_default();
@@ -270,6 +272,7 @@ async fn run_server() {
         let conversations = conversations.clone();
         cached(move || open_pull_requests(names.clone(), conversations.clone()))
     };
+    rebases::resume(&prs).unwrap_or_else(|error| eprintln!("{error}"));
 
     // Agents read the clusters through `server mcp`, from a snapshot kept as fresh as the cache.
     tokio::task::spawn_blocking(mcp::register);

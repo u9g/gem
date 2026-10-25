@@ -72,9 +72,13 @@ pub async fn start_in(project: &str, title: &str, prompt: &str) -> Result<String
         #[serde(rename = "threadId")]
         thread_id: String,
     }
-    serde_json::from_slice::<Started>(&output)
+    // The thread exists once the JSON is printed, so a line printed around it, e.g. a warning,
+    // must not lose it: a caller that thought it failed would start another.
+    let output = String::from_utf8_lossy(&output);
+    (output.lines().rev())
+        .find_map(|line| serde_json::from_str::<Started>(line.trim()).ok())
         .map(|started| started.thread_id)
-        .map_err(|_| format!("t3: {}", String::from_utf8_lossy(&output).trim()))
+        .ok_or_else(|| format!("t3: {}", output.trim()))
 }
 
 // Whether the thread's agent is running, or about to run on the latest message, and its latest
