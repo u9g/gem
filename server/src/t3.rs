@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, process::Stdio};
+use std::{env, path::PathBuf, process::Stdio, time::Duration};
 
 use serde::Deserialize;
 use tokio::{io::AsyncWriteExt, process::Command};
@@ -106,6 +106,16 @@ pub async fn show(thread_id: &str) -> Option<(bool, String)> {
         .map(|message| message.text)
         .unwrap_or_default();
     Some((working, reply))
+}
+
+// Returns once the thread's agent stops working: it finished, stopped, or waits on the user.
+pub async fn wait(thread_id: &str) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        if show(thread_id).await.is_some_and(|(working, _)| !working) {
+            return;
+        }
+    }
 }
 
 // Whether the thread is done, settled or stopped, and whether its agent waits on the user to

@@ -25,6 +25,7 @@ pub async fn start(url: &str, prs: Cache<ListOpenPullRequestsResponse>) -> Resul
     .await
     .ok_or(format!("gh: cannot read {url}"))?;
     let base = String::from_utf8_lossy(&base).trim().to_string();
+    let head = head(url).await.ok_or(format!("gh: cannot read {url}"))?;
     let (repository, number) = investigations::short(url);
     let prompt = format!(
         "rebase on {base}: {url}
@@ -36,9 +37,10 @@ settle this thread."
     let rebase = Rebase {
         thread_url: t3::url(&thread_id).unwrap_or_default(),
         question: false,
+        pushed: false,
     };
     REBASES.lock().await.insert(url.to_string(), rebase);
-    tokio::spawn(watch(url.to_string(), thread_id, prs));
+    tokio::spawn(watch(url.to_string(), head, thread_id, prs));
     Ok(())
 }
 
@@ -49,9 +51,14 @@ pub async fn fill(clusters: &mut [PullRequestCluster]) {
     }
 }
 
-// Search keeps listing the old head until the next refresh, so the pull request stops being
-// behind here rather than offer another rebase.
-async fn watch(url: String, thread_id: String, prs: Cache<ListOpenPullRequestsResponse>) {
+// Search keeps listing the old head, with its checks and how far behind it is, until its next
+// refresh, so a pushed rebase lasts until the pull request is listed with another head.
+async fn watch(
+    url: String,
+    head: String,
+    thread_id: String,
+    prs: Cache<ListOpenPullRequestsResponse>,
+) {
     loop {
         tokio::time::sleep(REFRESH_INTERVAL).await;
         let Some((done, question)) = t3::progress(&thread_id).await else {
@@ -64,16 +71,40 @@ async fn watch(url: String, thread_id: String, prs: Cache<ListOpenPullRequestsRe
             rebase.question = question;
         }
     }
-    REBASES.lock().await.remove(&url);
-    if let Some(response) = &mut *prs.write().await {
-        for pr in response
-            .clusters
-            .iter_mut()
-            .flat_map(|c| &mut c.pull_requests)
+    if self::head(&url).await.is_some_and(|pushed| pushed != head) {
+        if let Some(rebase) = REBASES.lock().await.get_mut(&url) {
+            rebase.question = false;
+            rebase.pushed = true;
+        }
+        while listed_head(&prs, &url)
+            .await
+            .is_some_and(|listed| listed == head)
         {
-            if pr.url == url {
-                pr.behind = false;
-            }
+            tokio::time::sleep(REFRESH_INTERVAL).await;
         }
     }
+    REBASES.lock().await.remove(&url);
+}
+
+async fn head(url: &str) -> Option<String> {
+    let head = gh(&[
+        "pr",
+        "view",
+        url,
+        "--json",
+        "headRefOid",
+        "--jq",
+        ".headRefOid",
+    ])
+    .await?;
+    Some(String::from_utf8_lossy(&head).trim().to_string())
+}
+
+// None once the pull request is no longer listed.
+async fn listed_head(prs: &Cache<ListOpenPullRequestsResponse>, url: &str) -> Option<String> {
+    let prs = prs.read().await;
+    (prs.iter().flat_map(|r| &r.clusters))
+        .flat_map(|c| &c.pull_requests)
+        .find(|pr| pr.url == url)
+        .map(|pr| pr.head_oid.clone())
 }
