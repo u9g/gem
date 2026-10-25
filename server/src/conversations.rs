@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
     SearchedPullRequest, gh, login, proposals,
-    proto::{CheckAgent, CheckFailure, Comment, PullRequestCluster},
+    proto::{Agent, CheckFailure, Comment, PullRequestCluster},
     t3,
 };
 
@@ -145,6 +145,7 @@ struct Known {
     checks_failing: bool,
     settling: bool,
     waiting: Vec<Conversation>,
+    target: Target,
 }
 
 struct Inner {
@@ -156,8 +157,8 @@ struct Inner {
     // restart answers conversations that were only queued, and not the others.
     started: Mutex<HashSet<String>>,
     agents: Semaphore,
-    // By the ID of the failed checks they answer, with their PR's URL, until they stop.
-    check_agents: Mutex<HashMap<String, (String, CheckAgent)>>,
+    // By the ID of the conversation they answer, with their PR's URL, until they stop.
+    answering: Mutex<HashMap<String, (String, Agent)>>,
 }
 
 impl Conversations {
@@ -171,19 +172,17 @@ impl Conversations {
             handled: Mutex::new(handled.clone()),
             started: Mutex::new(handled),
             agents: Semaphore::new(CONCURRENT_AGENTS),
-            check_agents: Mutex::default(),
+            answering: Mutex::default(),
         }))
     }
 
-    // A running agent wins over a queued one, on a PR with failures from more than one head.
     pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
-        let agents = self.0.check_agents.lock().await;
+        let answering = self.0.answering.lock().await;
         for pr in clusters.iter_mut().flat_map(|c| &mut c.pull_requests) {
-            pr.check_agent = (agents.values())
+            pr.agents = (answering.values())
                 .filter(|(url, _)| *url == pr.url)
-                .map(|(_, agent)| agent)
-                .min_by_key(|agent| agent.queued)
-                .cloned();
+                .map(|(_, agent)| agent.clone())
+                .collect();
         }
     }
 
@@ -195,8 +194,8 @@ impl Conversations {
             .collect()
     }
 
-    // Deletes the proposals on the PRs at `urls` and forgets that agents answered their waiting
-    // conversations, so the next refresh answers them again.
+    // Deletes the proposals on the PRs at `urls`, forgets that agents answered their waiting
+    // conversations, and queues new agents for them.
     pub async fn restart(&self, urls: &[String]) {
         proposals::remove_on(urls).await;
         let ids: HashSet<String> = {
@@ -213,6 +212,7 @@ impl Conversations {
             let _ = tokio::fs::write(HANDLED_FILE, json).await;
         }
         self.0.handled.lock().await.retain(|id| !ids.contains(id));
+        self.answer_waiting().await;
     }
 
     pub async fn refresh(&self, prs: &[SearchedPullRequest]) {
@@ -249,6 +249,7 @@ impl Conversations {
                             checks_failing: pr.checks_failing,
                             settling: result.settling,
                             waiting: result.waiting,
+                            target: Target::new(pr),
                         },
                     );
                 }
@@ -267,27 +268,30 @@ impl Conversations {
             let _ = tokio::fs::write(HANDLED_FILE, json).await;
         }
 
+        self.0.handled.lock().await.retain(|id| !stale.contains(id));
+        self.answer_waiting().await;
+    }
+
+    // Queues an agent for each waiting conversation that no agent was queued for.
+    async fn answer_waiting(&self) {
         let known = self.0.prs.read().await;
         let mut handled = self.0.handled.lock().await;
-        handled.retain(|id| !stale.contains(id));
-        for pr in prs {
-            let Some(Known { waiting, .. }) = known.get(&pr.url) else {
-                continue;
-            };
-            for conversation in waiting {
+        for pr in known.values() {
+            for conversation in &pr.waiting {
                 if !handled.insert(conversation.id().to_string()) {
                     continue;
                 }
-                if let Conversation::Checks { check_failure } = conversation {
-                    let agent = CheckAgent {
-                        queued: true,
-                        thread_url: String::new(),
-                    };
-                    (self.0.check_agents.lock().await)
-                        .insert(check_failure.id.clone(), (pr.url.clone(), agent));
-                }
+                let agent = Agent {
+                    queued: true,
+                    thread_url: String::new(),
+                    checks: matches!(conversation, Conversation::Checks { .. }),
+                };
+                (self.0.answering.lock().await).insert(
+                    conversation.id().to_string(),
+                    (pr.target.url.clone(), agent),
+                );
                 let this = self.clone();
-                let pr = Target::new(pr);
+                let pr = pr.target.clone();
                 let conversation = conversation.clone();
                 tokio::spawn(async move {
                     let _permit = this.0.agents.acquire().await.unwrap();
@@ -297,15 +301,26 @@ impl Conversations {
                         let json = serde_json::to_vec_pretty(&*started).unwrap();
                         let _ = tokio::fs::write(HANDLED_FILE, json).await;
                     }
-                    match &conversation {
-                        Conversation::Comment { thread_id, comment } => {
-                            answer(&pr, thread_id, comment).await
-                        }
-                        Conversation::Checks { check_failure } => {
-                            fix(&pr, check_failure, &this.0.check_agents).await;
-                            this.0.check_agents.lock().await.remove(&check_failure.id);
-                        }
+                    let id = conversation.id();
+                    if let Some((_, agent)) = this.0.answering.lock().await.get_mut(id) {
+                        agent.queued = false;
                     }
+                    let (title, prompt) = match &conversation {
+                        Conversation::Comment { thread_id, comment } => {
+                            answer(&pr, thread_id, comment)
+                        }
+                        Conversation::Checks { check_failure } => fix(&pr, check_failure),
+                    };
+                    match t3::start(&title, &prompt).await {
+                        Ok(thread_id) => {
+                            if let Some((_, agent)) = this.0.answering.lock().await.get_mut(id) {
+                                agent.thread_url = t3::url(&thread_id).unwrap_or_default();
+                            }
+                            t3::wait(&thread_id).await;
+                        }
+                        Err(e) => eprintln!("{title}: {e}"),
+                    }
+                    this.0.answering.lock().await.remove(id);
                 });
             }
         }
@@ -313,6 +328,7 @@ impl Conversations {
 }
 
 // What an agent needs to know about the PR it answers on.
+#[derive(Clone)]
 struct Target {
     url: String,
     full_name: String,
@@ -331,7 +347,8 @@ impl Target {
     }
 }
 
-async fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) {
+// The title and prompt of the agent answering `comment`.
+fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String, String) {
     let exe = env::current_exe().unwrap();
     let dir = env::current_dir().unwrap().join(proposals::DIR);
     let mut propose = format!(
@@ -415,24 +432,15 @@ settle this thread. Then reply with one line saying what you proposed.",
         number = pr.number,
         resolve_flag = if resolve.is_empty() { "" } else { " [--resolve-thread]" },
     );
-    t3::ask(
-        &format!(
-            "Answer {} on {}#{}",
-            comment.author, pr.full_name, pr.number
-        ),
-        &prompt,
-    )
-    .await;
+    let title = format!(
+        "Answer {} on {}#{}",
+        comment.author, pr.full_name, pr.number
+    );
+    (title, prompt)
 }
 
-async fn fix(
-    pr: &Target,
-    failure: &CheckFailure,
-    agents: &Mutex<HashMap<String, (String, CheckAgent)>>,
-) {
-    if let Some((_, agent)) = agents.lock().await.get_mut(&failure.id) {
-        agent.queued = false;
-    }
+// The title and prompt of the agent answering `failure`.
+fn fix(pr: &Target, failure: &CheckFailure) -> (String, String) {
     let exe = env::current_exe().unwrap();
     let dir = env::current_dir().unwrap().join(proposals::DIR);
     let propose = format!(
@@ -520,12 +528,5 @@ settle this thread. Then reply with one line saying what you proposed.",
         number = pr.number,
     );
     let title = format!("Fix checks on {}#{}", pr.full_name, pr.number);
-    let thread_id = match t3::start(&title, &prompt).await {
-        Ok(thread_id) => thread_id,
-        Err(e) => return eprintln!("{title}: {e}"),
-    };
-    if let Some((_, agent)) = agents.lock().await.get_mut(&failure.id) {
-        agent.thread_url = t3::url(&thread_id).unwrap_or_default();
-    }
-    t3::wait(&thread_id).await;
+    (title, prompt)
 }

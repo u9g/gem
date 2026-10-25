@@ -216,12 +216,37 @@ const steps = [
   step('Rebased, not listed yet', { checksPassing: true, checks: passed, rebase: { threadUrl, pushed: true } }),
   step('Checks running', { checks: { total: 8, done: 3, failed: 0 } }),
   step('A check failed, others run', { checksFailing: true, checks: { total: 8, done: 5, failed: 1 } }),
-  step('Agent queued', { checksFailing: true, checks: failed, checkAgent: { queued: true } }),
-  step('Agent looking', { checksFailing: true, checks: failed, checkAgent: { threadUrl } }),
+  step('Agent queued', { checksFailing: true, checks: failed, agents: [{ queued: true, checks: true }] }),
+  step('Agent looking', { checksFailing: true, checks: failed, agents: [{ threadUrl, checks: true }] }),
   step('Proposal ready', { checksFailing: true, checks: failed, proposals: [moved('failed', agents)] }),
   step('No proposal', { checksFailing: true, checks: failed }),
   step('Green', { checksPassing: true, checks: passed }),
 ];
+// Right after Restart investigation: each PR's waiting conversations have new agents at once.
+const restarted = [
+  step('Queued behind other agents', { checksPassing: true, checks: passed, agents: [{ queued: true }, { queued: true }] }),
+  step('Answering comments', { checksPassing: true, checks: passed, agents: [{ threadUrl }, { threadUrl }, { queued: true }] }),
+  step('Answering a comment and failed checks', {
+    checksFailing: true,
+    checks: failed,
+    agents: [{ threadUrl }, { threadUrl, checks: true }],
+  }),
+];
+export const FRestarted: StoryObj = {
+  name: 'F · Restarted',
+  render: () => (
+    <Page
+      proposalsShown={[]}
+      header={
+        <View style={{ gap: 16 }}>
+          <Title />
+          <PullRequestList pullRequests={restarted} />
+        </View>
+      }
+    />
+  ),
+};
+
 export const EStatus: StoryObj = {
   name: 'E · Status',
   render: () => (

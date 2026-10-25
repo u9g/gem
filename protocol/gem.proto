@@ -79,9 +79,9 @@ message PullRequest {
   Checks checks = 11;
   // Commit at the tip of the head branch.
   string head_oid = 12;
-  // Set while a T3 Code agent answers the head commit's failed checks, from when it is queued
-  // until it stops.
-  CheckAgent check_agent = 13;
+  // The T3 Code agents answering the conversations waiting on the user, each from when it is
+  // queued until it stops.
+  repeated Agent agents = 13;
 }
 
 // Check runs and commit statuses on a pull request's head commit.
@@ -94,12 +94,14 @@ message Checks {
   uint32 failed = 3;
 }
 
-// A T3 Code agent answering a pull request's failed checks with proposals.
-message CheckAgent {
+// A T3 Code agent answering a comment or failed checks on a pull request with proposals.
+message Agent {
   // The agent waits for one of the agents already running to finish.
   bool queued = 1;
   // Opens the agent's thread in T3 Code. Empty while queued.
   string thread_url = 2;
+  // It answers the head commit's failed checks, not a comment.
+  bool checks = 3;
 }
 
 // A T3 Code agent rebasing a pull request, until it settles its thread or stops.
@@ -247,8 +249,8 @@ message DismissProposalRequest {
 
 message DismissProposalResponse {}
 
-// Deletes every proposal on the cluster's pull requests, so new agents answer
-// the conversations still waiting on the user at the server's next refresh.
+// Deletes every proposal on the cluster's pull requests and queues new agents for the
+// conversations still waiting on the user. The agents show in each pull request's `agents`.
 message RestartClusterRequest {
   repeated string pull_request_urls = 1;
 }
