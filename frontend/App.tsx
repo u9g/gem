@@ -349,32 +349,32 @@ export default function App() {
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
               <ScrollView contentContainerStyle={styles.phoneList}>
-                {investigations.length > 0 && (
-                  <View style={styles.phoneSection}>
-                    <SectionTitle>Investigations</SectionTitle>
-                  </View>
-                )}
-                {investigations.map((i) => (
-                  <PhoneInvestigationRow
-                    key={i.id}
-                    investigation={i}
-                    onPress={() => {
-                      history.pushState(null, '');
-                      setSelectedInvestigation(i.id);
-                    }}
-                  />
-                ))}
-                {listed.map(({ name, clusters }, i) => (
-                  <View key={name}>
+                <View>
+                  {investigations.length > 0 && (
                     <View style={styles.phoneSection}>
-                      <SectionTitle>{name}</SectionTitle>
+                      <SectionTitle>Investigations</SectionTitle>
                     </View>
-                    {i === 0 && <Legend />}
-                    {clusters.map((cluster) => (
-                      <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => open(cluster)} />
-                    ))}
-                  </View>
-                ))}
+                  )}
+                  {investigations.map((i) => (
+                    <PhoneInvestigationRow
+                      key={i.id}
+                      investigation={i}
+                      onPress={() => {
+                        history.pushState(null, '');
+                        setSelectedInvestigation(i.id);
+                      }}
+                    />
+                  ))}
+                </View>
+                {listed.flatMap(({ name, clusters }, i) => [
+                  <View key={name} style={styles.phoneSection}>
+                    <SectionTitle>{name}</SectionTitle>
+                  </View>,
+                  ...(i === 0 ? [<Legend key="legend" />] : []),
+                  ...clusters.map((cluster) => (
+                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => open(cluster)} />
+                  )),
+                ])}
               </ScrollView>
             </>
           )}
