@@ -63,7 +63,7 @@ query($endCursor: String, $q: String!) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        id number title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
+        id number state title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
         commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 0) {
           checkRunCount checkRunCountsByState { state count }
           statusContextCount statusContextCountsByState { state count }
@@ -80,8 +80,9 @@ query($endCursor: String, $q: String!) {
 "#;
 
 // A fork's head branch can share a name with a base-repo branch (e.g. `main`), so only
-// same-repository heads can have dependents.
-const PRS_JQ: &str = r#".data.search.nodes[] | {
+// same-repository heads can have dependents. Search keeps matching `is:open` for a while after a
+// merge or close, but each node's state is current.
+const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
   id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   head_oid: .headRefOid,
