@@ -250,7 +250,8 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     gap: SEGMENT_GAP,
     paddingHorizontal: 26,
-    paddingBottom: 6,
+    paddingVertical: 6,
+    backgroundColor: t3.background,
   },
   legendText: {
     width: SEGMENT_WIDTH,

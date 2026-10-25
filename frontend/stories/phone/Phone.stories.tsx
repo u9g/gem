@@ -78,18 +78,14 @@ function Home({ clusters }: { clusters: PullRequestCluster[] }) {
     .map((name) => ({ name, clusters: clusters.filter((c) => section(c) === name) }))
     .filter((s) => s.clusters.length > 0);
   return (
-    <ScrollView style={styles.page}>
-      {listed.map(({ name, clusters }, i) => (
-        <View key={name}>
-          <View style={styles.section}>
-            <SectionTitle>{name}</SectionTitle>
-          </View>
-          {i === 0 && <Legend />}
-          {clusters.map((c) => (
-            <PhoneClusterRow key={c.pullRequests[0].url} cluster={c} onPress={() => {}} />
-          ))}
-        </View>
-      ))}
+    <ScrollView style={styles.page} stickyHeaderIndices={[1]}>
+      {listed.flatMap(({ name, clusters }, i) => [
+        <View key={name} style={styles.section}>
+          <SectionTitle>{name}</SectionTitle>
+        </View>,
+        ...(i === 0 ? [<Legend key="legend" />] : []),
+        ...clusters.map((c) => <PhoneClusterRow key={c.pullRequests[0].url} cluster={c} onPress={() => {}} />),
+      ])}
     </ScrollView>
   );
 }
