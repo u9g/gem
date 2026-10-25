@@ -699,6 +699,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-db"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+]
+
+[[package]]
+name = "gem-rebases"
+version = "0.1.0"
+dependencies = [
+ "gem-db",
+ "tokio",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2460,6 +2475,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "dotenvy",
+ "gem-db",
+ "gem-rebases",
  "livekit",
  "livekit-api",
  "pbjson",
@@ -2467,7 +2484,6 @@ dependencies = [
  "pbjson-types",
  "prost",
  "prost-build",
- "rusqlite",
  "serde",
  "serde_json",
  "tokio",
