@@ -5,6 +5,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 import 'github-markdown-css/github-markdown-dark.css';
 
 import type { CheckFailure, Comment, Proposal } from './gen/gem_pb';
+import { splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // T3 Code's surfaces for what a proposal does, rebuilt in React Native.
@@ -31,61 +32,68 @@ function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
 }
 
 // T3 Code's diff surface: code background, tinted add/delete lines, a new-line-number gutter.
-// `header` replaces the file header's stats, e.g. with an error mark.
+// `header` replaces each file header's stats, e.g. with an error mark.
 export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode }) {
   return (
     <View style={{ gap: 8 }}>
-      {parseDiff(diff).map((file) => {
-        const stat = diffFiles(diff).find((f) => f.path === file.path)!;
-        // Wide enough for the file's longest line number, so numbers never wrap.
-        const digits = String(Math.max(0, ...file.lines.map((line) => line.number ?? 0))).length;
-        const gutter = { width: digits * 7 + 14 };
-        return (
-          <View key={file.path} style={styles.diffSurface}>
-            <View style={styles.diffHeader}>
-              <Icon icon={FileCode} size={14} />
-              <Text numberOfLines={1} style={styles.diffPath}>
-                {file.path.split('/').slice(-2).join('/')}
+      {splitFiles(diff).map((file, i) => (
+        <DiffFile key={i} file={file} header={header} />
+      ))}
+    </View>
+  );
+}
+
+// One file of a patch; renders nothing for a piece without a file.
+function DiffFile({ file: piece, header }: { file: string; header?: ReactNode }) {
+  const [file] = parseDiff(piece);
+  if (!file) return null;
+  const [stat] = diffFiles(piece);
+  // Wide enough for the file's longest line number, so numbers never wrap.
+  const digits = String(Math.max(0, ...file.lines.map((line) => line.number ?? 0))).length;
+  const gutter = { width: digits * 7 + 14 };
+  return (
+    <View style={styles.diffSurface}>
+      <View style={styles.diffHeader}>
+        <Icon icon={FileCode} size={14} />
+        <Text numberOfLines={1} style={styles.diffPath}>
+          {file.path.split('/').slice(-2).join('/')}
+        </Text>
+        {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
+      </View>
+      <ScrollView horizontal contentContainerStyle={styles.diffLines}>
+        <View style={styles.diffLines}>
+          {file.lines.map((line, i) =>
+            line.kind === 'hunk' ? (
+              <Text key={i} style={styles.hunk}>
+                {'  ⋯  '}
+                {line.text}
               </Text>
-              {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
-            </View>
-            <ScrollView horizontal contentContainerStyle={styles.diffLines}>
-              <View style={styles.diffLines}>
-                {file.lines.map((line, i) =>
-                  line.kind === 'hunk' ? (
-                    <Text key={i} style={styles.hunk}>
-                      {'  ⋯  '}
-                      {line.text}
-                    </Text>
-                  ) : (
-                    <View
-                      key={i}
-                      style={[
-                        styles.diffLine,
-                        line.kind === 'add' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' },
-                        line.kind === 'del' && { backgroundColor: 'rgba(242, 109, 109, 0.12)' },
-                      ]}
-                    >
-                      <Text numberOfLines={1} style={[styles.gutter, gutter]}>
-                        {line.number ?? ''}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.diffText,
-                          line.kind === 'add' && { color: '#6EE7B7' },
-                          line.kind === 'del' && { color: '#FCA5A5' },
-                        ]}
-                      >
-                        {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} {line.text}
-                      </Text>
-                    </View>
-                  ),
-                )}
+            ) : (
+              <View
+                key={i}
+                style={[
+                  styles.diffLine,
+                  line.kind === 'add' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' },
+                  line.kind === 'del' && { backgroundColor: 'rgba(242, 109, 109, 0.12)' },
+                ]}
+              >
+                <Text numberOfLines={1} style={[styles.gutter, gutter]}>
+                  {line.number ?? ''}
+                </Text>
+                <Text
+                  style={[
+                    styles.diffText,
+                    line.kind === 'add' && { color: '#6EE7B7' },
+                    line.kind === 'del' && { color: '#FCA5A5' },
+                  ]}
+                >
+                  {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} {line.text}
+                </Text>
               </View>
-            </ScrollView>
-          </View>
-        );
-      })}
+            ),
+          )}
+        </View>
+      </ScrollView>
     </View>
   );
 }
