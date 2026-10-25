@@ -2,6 +2,7 @@
 
 use std::{
     env,
+    ffi::OsString,
     path::Path,
     process::{Child, Command},
 };
@@ -17,13 +18,17 @@ use crate::{log, update::git};
 #[cfg(unix)]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn start(exe: &Path) -> Child {
+pub fn start(exe: &Path, dotenv: &[OsString]) -> Child {
     match git(&["rev-parse", "--short", "HEAD"]) {
         Some(head) => log(&format!("starting the server at {head}")),
         None => log("starting the server"),
     }
     let mut command = Command::new(exe);
     command.arg("serve");
+    // The server reads these from .env itself, so it sees an edit made since the launcher started.
+    for name in dotenv {
+        command.env_remove(name);
+    }
     // The server finds T3 Code's CLI and scratch threads under $HOME, which Windows only has in
     // shells like Git Bash.
     if env::var_os("HOME").is_none()

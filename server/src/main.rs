@@ -1,6 +1,7 @@
 use std::{
     cmp::Reverse,
     collections::{HashMap, HashSet},
+    ffi::OsString,
     future::Future,
     sync::Arc,
     time::Duration,
@@ -47,7 +48,8 @@ type Cache<T> = Arc<RwLock<Option<T>>>;
 const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
 
 // Paginated by `gh api graphql --paginate`, which fills in $endCursor. $q is the user's open PRs,
-// narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`.
+// narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`. Search ORs the qualifiers
+// naming where to look, so `org:livekit repo:u9g/gem` adds one repository to an organization.
 const PRS_QUERY: &str = r#"
 query($endCursor: String, $q: String!) {
   search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
@@ -128,7 +130,7 @@ fn main() {
     // GEM_SEARCH, GEM_T3_PROVIDER and GEM_OP_ITEM, or LIVEKIT_URL, LIVEKIT_API_KEY,
     // LIVEKIT_API_SECRET and GEM_ROOM themselves, can live in .env in the working directory, next
     // to the server's other state. The real environment wins.
-    let _ = dotenvy::dotenv();
+    let dotenv = load_dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runtime = || tokio::runtime::Runtime::new().unwrap();
     match args.first().map(String::as_str) {
@@ -150,9 +152,26 @@ fn main() {
                 eprintln!("launcher: {error}; asking again in {OP_RETRY_DELAY:?}");
                 std::thread::sleep(OP_RETRY_DELAY);
             }
-            gem_launcher::run()
+            gem_launcher::run(dotenv)
         }
     }
+}
+
+// Loads .env and returns the variables it set, other than the LiveKit login and room, for the
+// launcher to leave out of each server's environment: the server reads them from .env again, and
+// sees an edit made since. The login and room stay inherited, as they do from 1Password, so a
+// server never has to ask for them.
+fn load_dotenv() -> Vec<OsString> {
+    let names = || std::env::vars_os().map(|(name, _)| name);
+    let before: HashSet<OsString> = names().collect();
+    if let Err(error) = dotenvy::dotenv()
+        && !error.not_found()
+    {
+        eprintln!("cannot read .env: {error}");
+    }
+    names()
+        .filter(|name| !before.contains(name) && !OP_FIELDS.iter().any(|field| name == *field))
+        .collect()
 }
 
 // How long the launcher waits to read the 1Password item again after it could not, e.g. when the
