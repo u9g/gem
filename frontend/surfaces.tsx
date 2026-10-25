@@ -85,6 +85,62 @@ function DiffFile({
   const numbers = editing && hunks ? hunks.map((hunk) => hunk.start + hunk.lines.length - 1) : file.lines.map((line) => line.number ?? 0);
   const digits = String(Math.max(0, ...numbers)).length;
   const gutter = { width: digits * 7 + 14 };
+  const lines =
+    editing && hunks
+      ? hunks.map((hunk, i) => (
+          <View key={i}>
+            <Text style={styles.hunk}>
+              {'  ⋯  '}
+              {hunk.context}
+            </Text>
+            <View style={styles.diffLine}>
+              <View>
+                {hunk.lines.map((_, n) => (
+                  <Text key={n} numberOfLines={1} style={[styles.gutter, gutter]}>
+                    {hunk.start + n}
+                  </Text>
+                ))}
+              </View>
+              <TextInput
+                multiline
+                autoFocus={i === 0}
+                value={hunk.lines.join('\n')}
+                onChangeText={(text) => onChange!(editHunk(piece, i, text === '' ? [] : text.split('\n')))}
+                style={[styles.diffText, styles.codeInput]}
+              />
+            </View>
+          </View>
+        ))
+      : file.lines.map((line, i) =>
+          line.kind === 'hunk' ? (
+            <Text key={i} style={styles.hunk}>
+              {'  ⋯  '}
+              {line.text}
+            </Text>
+          ) : (
+            <View
+              key={i}
+              style={[
+                styles.diffLine,
+                line.kind === 'add' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' },
+                line.kind === 'del' && { backgroundColor: 'rgba(242, 109, 109, 0.12)' },
+              ]}
+            >
+              <Text numberOfLines={1} style={[styles.gutter, gutter]}>
+                {line.number ?? ''}
+              </Text>
+              <Text
+                style={[
+                  styles.diffText,
+                  line.kind === 'add' && { color: '#6EE7B7' },
+                  line.kind === 'del' && { color: '#FCA5A5' },
+                ]}
+              >
+                {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} {line.text}
+              </Text>
+            </View>
+          ),
+        );
   return (
     <View style={styles.diffSurface}>
       <View style={styles.diffHeader}>
@@ -109,65 +165,13 @@ function DiffFile({
           </View>
         )}
       </View>
-      <ScrollView horizontal contentContainerStyle={styles.diffLines}>
-        <View style={styles.diffLines}>
-          {editing && hunks
-            ? hunks.map((hunk, i) => (
-                <View key={i}>
-                  <Text style={styles.hunk}>
-                    {'  ⋯  '}
-                    {hunk.context}
-                  </Text>
-                  <View style={styles.diffLine}>
-                    <View>
-                      {hunk.lines.map((_, n) => (
-                        <Text key={n} numberOfLines={1} style={[styles.gutter, gutter]}>
-                          {hunk.start + n}
-                        </Text>
-                      ))}
-                    </View>
-                    <TextInput
-                      multiline
-                      autoFocus={i === 0}
-                      value={hunk.lines.join('\n')}
-                      onChangeText={(text) => onChange!(editHunk(piece, i, text === '' ? [] : text.split('\n')))}
-                      style={[styles.diffText, styles.codeInput]}
-                    />
-                  </View>
-                </View>
-              ))
-            : file.lines.map((line, i) =>
-            line.kind === 'hunk' ? (
-              <Text key={i} style={styles.hunk}>
-                {'  ⋯  '}
-                {line.text}
-              </Text>
-            ) : (
-              <View
-                key={i}
-                style={[
-                  styles.diffLine,
-                  line.kind === 'add' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' },
-                  line.kind === 'del' && { backgroundColor: 'rgba(242, 109, 109, 0.12)' },
-                ]}
-              >
-                <Text numberOfLines={1} style={[styles.gutter, gutter]}>
-                  {line.number ?? ''}
-                </Text>
-                <Text
-                  style={[
-                    styles.diffText,
-                    line.kind === 'add' && { color: '#6EE7B7' },
-                    line.kind === 'del' && { color: '#FCA5A5' },
-                  ]}
-                >
-                  {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} {line.text}
-                </Text>
-              </View>
-            ),
-          )}
-        </View>
-      </ScrollView>
+      {editing && hunks ? (
+        lines
+      ) : (
+        <ScrollView horizontal contentContainerStyle={styles.diffLines}>
+          <View style={styles.diffLines}>{lines}</View>
+        </ScrollView>
+      )}
     </View>
   );
 }
@@ -519,13 +523,17 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     whiteSpace: 'pre',
   } as object,
-  // A textarea exactly as big as its code, so the surface scrolls it like the diff's lines.
+  // As tall as its code, and scrolls its own long lines: iOS scrolls a selection drag only within the
+  // field it's in, never the field's scrolling ancestors.
   codeInput: {
+    flex: 1,
+    minWidth: 0,
     color: t3.foreground,
     padding: 0,
     outlineStyle: 'solid',
     outlineWidth: 0,
     fieldSizing: 'content',
+    overflowX: 'auto',
     resize: 'none',
   } as object,
   edited: {
