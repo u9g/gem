@@ -38,7 +38,7 @@ mod proposals;
 mod rebases;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{gh, gh_json, login};
+use gem_github::{Head, gh, gh_json, login};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -564,32 +564,19 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
     clusters
 }
 
-// The URLs of the PRs whose head commit lacks commits on their base branch, in one request. A
-// field's arguments cannot come from another field, so search cannot compare them itself.
+// The URLs of the PRs whose head commit lacks commits on their base branch.
 async fn behind(prs: &[SearchedPullRequest]) -> HashSet<&str> {
-    let fields: String = (prs.iter().enumerate())
-        .map(|(i, pr)| {
-            format!(
-                "pr{i}: repository(owner: {}, name: {}) {{ ref(qualifiedName: {}) {{ compare(headRef: {}) {{ behindBy }} }} }}\n",
-                json!(pr.repository.owner),
-                json!(pr.repository.name),
-                json!(pr.base),
-                json!(pr.head_oid),
-            )
+    let heads: Vec<Head> = (prs.iter())
+        .map(|pr| Head {
+            owner: &pr.repository.owner,
+            name: &pr.repository.name,
+            base: &pr.base,
+            oid: &pr.head_oid,
         })
         .collect();
-    if fields.is_empty() {
-        return HashSet::new();
-    }
-    let Some(data) =
-        gh_json::<Value>(&["api", "graphql", "-f", &format!("query={{\n{fields}}}")]).await
-    else {
-        return HashSet::new();
-    };
+    let behind = gem_github::behind(&heads).await;
     (prs.iter().enumerate())
-        .filter(|(i, _)| {
-            data["data"][format!("pr{i}")]["ref"]["compare"]["behindBy"].as_u64() > Some(0)
-        })
+        .filter(|(i, _)| behind.contains(i))
         .map(|(_, pr)| pr.url.as_str())
         .collect()
 }

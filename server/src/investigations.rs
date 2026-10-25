@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::proto::{CheckFailure, Investigation, ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::{login, mcp, proposals, t3};
+use gem_github::short;
 
 // One `<id>.json` file per open investigation, relative to the server's working directory.
 const DIR: &str = "investigations";
@@ -155,7 +156,7 @@ pub fn watch() {
                 let reply_html = if reply == investigation.reply {
                     investigation.reply_html.clone()
                 } else {
-                    proposals::render(&investigation.pull_request_url, &reply)
+                    gem_github::render(&investigation.pull_request_url, &reply)
                         .await
                         .unwrap_or_default()
                 };
@@ -213,14 +214,6 @@ async fn track(
         proposals: Vec::new(),
     })
     .await;
-}
-
-// The repository's name and the pull request's number in `pr`'s URL.
-pub fn short(pr: &str) -> (&str, &str) {
-    let mut parts = pr.trim_end_matches('/').rsplit('/');
-    let number = parts.next().unwrap_or_default();
-    let repository = parts.nth(1).unwrap_or_default();
-    (repository, number)
 }
 
 fn prompt(id: &str, pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
