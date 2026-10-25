@@ -132,7 +132,8 @@ where
                 Some(RoomEvent::Disconnected { reason }) => {
                     return Err(format!("disconnected: {reason:?}").into());
                 }
-                Some(RoomEvent::ParticipantConnected(_)) => snapshots.mark_changed(),
+                // A frontend receives data only once it is active, not when it connects.
+                Some(RoomEvent::ParticipantActive(_)) => snapshots.mark_changed(),
                 Some(RoomEvent::ParticipantDisconnected(_))
                     if room.remote_participants().is_empty() =>
                 {
