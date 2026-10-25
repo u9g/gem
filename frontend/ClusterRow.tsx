@@ -83,11 +83,10 @@ export function section(cluster: PullRequestCluster): (typeof sections)[number] 
 const SEGMENT_WIDTH = 36;
 const SEGMENT_GAP = 4;
 
-// Each PR's checks, review and merge, as three bars: green done, red failed, amber in progress, blue
-// waiting on the user.
+// Each PR's checks, review and merge, as three bars: green done, red failed, amber in progress.
 function segments(pr: PullRequest): (string | undefined)[] {
   const checks = pr.checksFailing ? t3.deletion : pr.checksPassing ? t3.addition : t3.warning;
-  const review = pr.approved ? t3.addition : pr.proposals.length > 0 ? '#8FA8F5' : undefined;
+  const review = pr.approved ? t3.addition : undefined;
   const merge = pr.merge ? t3.warning : undefined;
   return [checks, review, merge];
 }
