@@ -6,8 +6,10 @@
 //
 // The launcher itself stays one process for as long as it runs, so whatever started it keeps
 // watching the same process, and the environment it was started with, the LiveKit login from
-// 1Password included, is handed to every server. It keeps running the build it started as: a
-// change to the launcher applies once the launcher is restarted.
+// 1Password included, is handed to every server. Only the `dotenv` variables `run` is given are
+// left out: each server reads those from .env again, so stopping the server applies an edit to
+// them. It keeps running the build it started as: a change to the launcher applies once the
+// launcher is restarted.
 //
 // Run it from server/, where the .env and state live, e.g. with `cargo run --release` or at
 // logon from a scheduled task or a launchd agent. `server serve` runs the server alone.
@@ -19,6 +21,7 @@ mod update;
 
 use std::{
     env,
+    ffi::OsString,
     path::Path,
     thread::sleep,
     time::{Duration, Instant},
@@ -29,7 +32,7 @@ use update::Updates;
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const RESTART_DELAY: Duration = Duration::from_secs(10);
 
-pub fn run() -> ! {
+pub fn run(dotenv: Vec<OsString>) -> ! {
     let _lock = lock::acquire();
     let mut exe = env::current_exe().unwrap();
     // Outside a checkout, e.g. an installed binary, there is nothing to update from.
@@ -44,7 +47,7 @@ pub fn run() -> ! {
         releases::prune(&[&exe, &release]);
     }
 
-    let mut server = server::start(&release);
+    let mut server = server::start(&release, &dotenv);
     let mut next_check = Instant::now() + CHECK_INTERVAL;
     loop {
         sleep(Duration::from_secs(2));
@@ -53,7 +56,7 @@ pub fn run() -> ! {
                 "server exited ({status}); restarting in {RESTART_DELAY:?}"
             ));
             sleep(RESTART_DELAY);
-            server = server::start(&release);
+            server = server::start(&release, &dotenv);
         }
         if let Some(updates) = &mut updates
             && Instant::now() >= next_check
@@ -64,7 +67,7 @@ pub fn run() -> ! {
                 server::stop(server);
                 release = releases::install(&build);
                 releases::prune(&[&exe, &release]);
-                server = server::start(&release);
+                server = server::start(&release, &dotenv);
             }
         }
     }
