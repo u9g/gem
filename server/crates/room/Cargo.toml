@@ -1,0 +1,9 @@
+[package]
+name = "gem-room"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"] }
+livekit-api = { version = "0.9.1", default-features = false, features = ["access-token", "services", "rustls-tls-native-roots"] }
+tokio = { version = "1.54.1", features = ["signal", "sync", "time"] }

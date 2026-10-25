@@ -706,10 +706,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-github"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "gem-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tower",
+]
+
+[[package]]
+name = "gem-launcher"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "gem-proto"
+version = "0.1.0"
+dependencies = [
+ "pbjson",
+ "pbjson-build",
+ "pbjson-types",
+ "prost",
+ "prost-build",
+ "serde",
+]
+
+[[package]]
 name = "gem-rebases"
 version = "0.1.0"
 dependencies = [
  "gem-db",
+ "tokio",
+]
+
+[[package]]
+name = "gem-room"
+version = "0.1.0"
+dependencies = [
+ "livekit",
+ "livekit-api",
+ "tokio",
+]
+
+[[package]]
+name = "gem-t3"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2476,20 +2532,19 @@ dependencies = [
  "axum",
  "dotenvy",
  "gem-db",
+ "gem-github",
+ "gem-http",
+ "gem-launcher",
+ "gem-proto",
  "gem-rebases",
- "livekit",
- "livekit-api",
- "pbjson",
- "pbjson-build",
+ "gem-room",
+ "gem-t3",
  "pbjson-types",
- "prost",
- "prost-build",
  "reqwest 0.13.5",
  "rustls",
  "serde",
  "serde_json",
  "tokio",
- "tower",
 ]
 
 [[package]]
