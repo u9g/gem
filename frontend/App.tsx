@@ -72,10 +72,10 @@ export default function App() {
   const [selectedInvestigation, setSelectedInvestigation] = useState<string>();
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
-  // Proposal being approved, dismissed or investigated, the oldest PR's URL of the cluster being
-  // restarted, `merge` and that URL for one whose merge is starting, the URL of the PR whose rebase
-  // is starting, or the investigation being closed.
-  const [busy, setBusy] = useState<string>();
+  // Each request in flight: proposals being approved, dismissed or investigated, the oldest PR's URL
+  // of clusters being restarted, `merge` and that URL for ones whose merge is starting, the URLs of
+  // PRs whose rebase is starting, and investigations being closed.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || SIDEBAR_DEFAULT_WIDTH),
@@ -130,8 +130,16 @@ export default function App() {
 
   // Marks `key` busy until the request and the reload after it settle.
   function track(key: string, request: Promise<unknown>) {
-    setBusy(key);
-    request.then(load).finally(() => setBusy(undefined));
+    setBusy((keys) => new Set(keys).add(key));
+    request
+      .then(load)
+      .finally(() =>
+        setBusy((keys) => {
+          const rest = new Set(keys);
+          rest.delete(key);
+          return rest;
+        }),
+      );
   }
 
   function approve(id: string, reply: string, followUp: string) {

@@ -16,7 +16,7 @@ export function PullRequestList({
   onRebase,
 }: {
   pullRequests: PullRequest[];
-  busy?: string;
+  busy?: ReadonlySet<string>;
   onRebase?: (url: string) => void;
 }) {
   const phone = usePhone();
@@ -69,7 +69,7 @@ export function PullRequestList({
             {onRebase && (pr.behind || pr.rebase) && (
               <Button
                 label="Rebase"
-                disabled={pr.rebase !== undefined || busy === pr.url}
+                disabled={pr.rebase !== undefined || busy?.has(pr.url)}
                 onPress={() => onRebase(pr.url)}
               />
             )}
