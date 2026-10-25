@@ -1,6 +1,6 @@
 use std::{
     cmp::Reverse,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     sync::{Arc, OnceLock},
     time::Duration,
@@ -24,7 +24,8 @@ use proto::{
     InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
     ListOpenPullRequestsResponse, MessageClusterRequest, MessageClusterResponse,
     MessageInvestigationRequest, MessageInvestigationResponse, PullRequest, PullRequestCluster,
-    Repository, RestartClusterRequest, RestartClusterResponse,
+    RebasePullRequestRequest, RebasePullRequestResponse, Repository, RestartClusterRequest,
+    RestartClusterResponse,
 };
 
 mod conversations;
@@ -33,6 +34,7 @@ mod launcher;
 mod mcp;
 mod names;
 mod proposals;
+mod rebases;
 mod room;
 mod t3;
 
@@ -299,6 +301,15 @@ async fn run_server() {
                 serve_prs(prs, names, conversations)
             })
         })
+        .route("/prs/rebase", {
+            let prs = prs.clone();
+            post(|Json(request): Json<RebasePullRequestRequest>| async move {
+                rebases::start(&request.url, prs)
+                    .await
+                    .map(|()| Json(RebasePullRequestResponse {}))
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
+            })
+        })
         .route("/proposals/approve", {
             let prs = prs.clone();
             post(|Json(request): Json<ApproveProposalRequest>| async move {
@@ -411,6 +422,7 @@ async fn filled(
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     investigations::fill(&mut response).await;
+    rebases::fill(&mut response.clusters).await;
     Some(response)
 }
 
@@ -435,7 +447,7 @@ async fn open_pull_requests(
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
-    let clusters = cluster(&prs);
+    let clusters = cluster(&prs, &behind(&prs).await);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
     Some(ListOpenPullRequestsResponse {
@@ -449,7 +461,7 @@ async fn open_pull_requests(
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
 // branch in the same repository) or one mentions the other. A cluster is a connected component
 // of links, so PRs join through any chain of links, not only direct ones.
-fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
+fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullRequestCluster> {
     let by_url: HashMap<&str, usize> = prs
         .iter()
         .enumerate()
@@ -506,6 +518,8 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         checks_passing: pr.checks_passing,
                         checks_failing: pr.checks_failing,
                         proposals: Vec::new(),
+                        behind: behind.contains(pr.url.as_str()),
+                        rebase: None,
                     })
                     .collect(),
                 name: String::new(),
@@ -514,6 +528,36 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         .collect();
     clusters.sort_by_key(|c| Reverse(c.updated_at.as_ref().map(|t| (t.seconds, t.nanos))));
     clusters
+}
+
+// The URLs of the PRs whose head commit lacks commits on their base branch, in one request. A
+// field's arguments cannot come from another field, so search cannot compare them itself.
+async fn behind(prs: &[SearchedPullRequest]) -> HashSet<&str> {
+    let fields: String = (prs.iter().enumerate())
+        .map(|(i, pr)| {
+            format!(
+                "pr{i}: repository(owner: {}, name: {}) {{ ref(qualifiedName: {}) {{ compare(headRef: {}) {{ behindBy }} }} }}\n",
+                json!(pr.repository.owner),
+                json!(pr.repository.name),
+                json!(pr.base),
+                json!(pr.head_oid),
+            )
+        })
+        .collect();
+    if fields.is_empty() {
+        return HashSet::new();
+    }
+    let Some(data) =
+        gh_json::<Value>(&["api", "graphql", "-f", &format!("query={{\n{fields}}}")]).await
+    else {
+        return HashSet::new();
+    };
+    (prs.iter().enumerate())
+        .filter(|(i, _)| {
+            data["data"][format!("pr{i}")]["ref"]["compare"]["behindBy"].as_u64() > Some(0)
+        })
+        .map(|(_, pr)| pr.url.as_str())
+        .collect()
 }
 
 fn root(parent: &mut [usize], mut i: usize) -> usize {

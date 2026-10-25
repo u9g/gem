@@ -25,7 +25,9 @@ struct ShownThread {
 // the agent to settle its own thread: T3 Code does not settle threads when they finish.
 pub async fn ask(title: &str, prompt: &str) -> Option<String> {
     let output = t3(
-        &["thread", "start", ".", "--title", title, "--wait", "--json", "-"],
+        &[
+            "thread", "start", ".", "--title", title, "--wait", "--json", "-",
+        ],
         prompt,
     )
     .await?;
@@ -99,6 +101,45 @@ pub async fn show(thread_id: &str) -> Option<(bool, String)> {
         .map(|message| message.text)
         .unwrap_or_default();
     Some((working, reply))
+}
+
+// Whether the thread is done, settled or stopped, and whether its agent waits on the user to
+// answer a question.
+pub async fn progress(thread_id: &str) -> Option<(bool, bool)> {
+    #[derive(Deserialize)]
+    struct Shown {
+        thread: Thread,
+    }
+    #[derive(Deserialize)]
+    struct Thread {
+        status: String,
+        settled: bool,
+        #[serde(rename = "pendingRequestCount")]
+        pending_request_count: u32,
+    }
+    let output = t3(
+        &["thread", "show", "--json", "--messages", "0", thread_id],
+        "",
+    )
+    .await?;
+    let thread = serde_json::from_slice::<Shown>(&output).ok()?.thread;
+    let stopped = matches!(
+        thread.status.as_str(),
+        "failed" | "cancelled" | "interrupted"
+    );
+    Some((thread.settled || stopped, thread.pending_request_count > 0))
+}
+
+// Opens the thread in T3 Code's hosted app, which reaches this machine's T3 Code from a phone too.
+pub fn url(thread_id: &str) -> Option<String> {
+    let environment = std::fs::read_to_string(
+        PathBuf::from(env::var("HOME").ok()?).join(".t3/userdata/environment-id"),
+    )
+    .ok()?;
+    Some(format!(
+        "https://app.t3.codes/{}/{thread_id}",
+        environment.trim()
+    ))
 }
 
 // A busy thread gets the message as its next turn.

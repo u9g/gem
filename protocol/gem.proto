@@ -71,6 +71,18 @@ message PullRequest {
   bool checks_failing = 7;
   // Proposed answers to conversations on this PR that still wait on the user.
   repeated Proposal proposals = 8;
+  // The head commit lacks commits on the base branch.
+  bool behind = 9;
+  // Set while a T3 Code agent rebases the head branch onto the base branch.
+  Rebase rebase = 10;
+}
+
+// A T3 Code agent rebasing a pull request, until it settles its thread or stops.
+message Rebase {
+  // Opens the agent's thread in T3 Code.
+  string thread_url = 1;
+  // The agent waits on the user to answer a question in its thread.
+  bool question = 2;
 }
 
 message Repository {
@@ -214,6 +226,14 @@ message RestartClusterRequest {
 }
 
 message RestartClusterResponse {}
+
+// Starts a T3 Code agent rebasing the pull request onto its base branch. Its progress shows in
+// the pull request's `rebase`.
+message RebasePullRequestRequest {
+  string url = 1;
+}
+
+message RebasePullRequestResponse {}
 
 // Starts an agent on the user's message about a cluster, followed like an investigation. The
 // agent reads the cluster and its pull requests through gem's MCP server.
