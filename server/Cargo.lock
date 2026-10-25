@@ -745,6 +745,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-merges"
+version = "0.1.0"
+dependencies = [
+ "gem-db",
+ "tokio",
+]
+
+[[package]]
 name = "gem-proto"
 version = "0.1.0"
 dependencies = [
@@ -2550,6 +2558,7 @@ dependencies = [
  "gem-github",
  "gem-http",
  "gem-launcher",
+ "gem-merges",
  "gem-proto",
  "gem-rebases",
  "gem-room",

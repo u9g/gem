@@ -24,7 +24,8 @@ use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseInvestigationRequest,
     CloseInvestigationResponse, DismissProposalRequest, DismissProposalResponse,
     InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
-    ListOpenPullRequestsResponse, MessageClusterRequest, MessageClusterResponse,
+    ListOpenPullRequestsResponse, MergeClusterRequest, MergeClusterResponse, MessageClusterRequest,
+    MessageClusterResponse,
     MessageInvestigationRequest, MessageInvestigationResponse, PullRequest, PullRequestCluster,
     RebasePullRequestRequest, RebasePullRequestResponse, Repository, RestartClusterRequest,
     RestartClusterResponse,
@@ -33,6 +34,7 @@ use proto::{
 mod conversations;
 mod investigations;
 mod mcp;
+mod merges;
 mod names;
 mod proposals;
 mod rebases;
@@ -286,7 +288,8 @@ async fn run_server() {
     };
     // The server's own database, next to its other state.
     let db = gem_db::Db::open("gem.sqlite").unwrap_or_else(|error| panic!("{error}"));
-    rebases::init(db, prs.clone()).unwrap_or_else(|error| panic!("{error}"));
+    rebases::init(db.clone(), prs.clone()).unwrap_or_else(|error| panic!("{error}"));
+    merges::init(db).unwrap_or_else(|error| panic!("{error}"));
 
     // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
     // change. Proposals and investigations change on disk, written by other processes, so the
@@ -330,6 +333,20 @@ async fn run_server() {
                 investigations::ask(cluster, &request.message)
                     .await
                     .map(|investigation_id| Json(MessageClusterResponse { investigation_id }))
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
+            })
+        })
+        .route("/clusters/merge", {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            post(|Json(request): Json<MergeClusterRequest>| async move {
+                let response = filled(&prs, &names, &conversations).await;
+                let first = request.pull_request_urls.first();
+                let cluster = (response.iter().flat_map(|r| &r.clusters))
+                    .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
+                    .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                merges::start(cluster)
+                    .await
+                    .map(|()| Json(MergeClusterResponse {}))
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })
@@ -469,6 +486,7 @@ async fn filled(
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     investigations::fill(&mut response).await;
     rebases::fill(&mut response.clusters).await;
+    merges::fill(&mut response.clusters).await;
     conversations.fill(&mut response.clusters).await;
     Some(response)
 }
@@ -579,6 +597,7 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         checks: Some(pr.checks),
                         head_oid: pr.head_oid.clone(),
                         agents: Vec::new(),
+                        merge: None,
                     })
                     .collect(),
                 name: String::new(),

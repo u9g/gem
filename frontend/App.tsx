@@ -8,12 +8,15 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   ClusterRow,
   InvestigationRow,
+  Legend,
   PhoneClusterRow,
   PhoneInvestigationRow,
+  section,
+  sections,
   SectionTitle,
 } from './ClusterRow';
 import { ClusterView, timeAgo } from './ClusterView';
-import { InvestigationView } from './InvestigationView';
+import { Composer, InvestigationView } from './InvestigationView';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { type Profile, useServer } from './server';
 import { Login } from './surfaces';
@@ -26,6 +29,7 @@ import {
   type Investigation,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
+  MergeClusterRequestSchema,
   MessageClusterRequestSchema,
   MessageClusterResponseSchema,
   MessageInvestigationRequestSchema,
@@ -69,7 +73,8 @@ export default function App() {
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Proposal being approved, dismissed or investigated, the oldest PR's URL of the cluster being
-  // restarted, the URL of the PR whose rebase is starting, or the investigation being closed.
+  // restarted, `merge` and that URL for one whose merge is starting, the URL of the PR whose rebase
+  // is starting, or the investigation being closed.
   const [busy, setBusy] = useState<string>();
   const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
@@ -141,6 +146,15 @@ export default function App() {
     setBusy(cluster.pullRequests[0].url);
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })))
+      .then(load)
+      .finally(() => setBusy(undefined));
+  }
+
+  // Starts an agent merging the cluster's PRs, without opening its thread.
+  function merge(cluster: PullRequestCluster) {
+    setBusy(`merge ${cluster.pullRequests[0].url}`);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
+    post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls })))
       .then(load)
       .finally(() => setBusy(undefined));
   }
@@ -285,16 +299,24 @@ export default function App() {
     );
   }
 
-  // One screen at a time: the cluster list, or the cluster tapped in it.
+  // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
+  // it, with the box to ask about it under the scrolling content.
   if (phone) {
     const opened = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
+    const listed = sections
+      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
+      .filter(({ clusters }) => clusters.length > 0);
+    const open = (cluster: PullRequestCluster) => {
+      history.pushState(null, '');
+      setSelectedUrl(cluster.pullRequests[0].url);
+    };
     return (
       <Login value={login}>
         <View style={styles.phone}>
           {investigationView || opened ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={() => history.back()}>
-                <ChevronLeft size={20} color="#8FA8F5" />
+                <ChevronLeft size={22} color="#8FA8F5" />
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
@@ -305,21 +327,26 @@ export default function App() {
                     onApprove={approve}
                     onDismiss={dismiss}
                     onRestart={restart}
-                onRebase={rebase}
+                    onRebase={rebase}
+                    onMerge={merge}
                     onInvestigate={investigate}
-                    onMessage={(message) => messageCluster(opened!, message)}
                   />
                 )}
               </ScrollView>
+              {!investigationView && (
+                <View style={styles.dock}>
+                  <Composer placeholder="Ask an agent about this cluster…" onSend={(message) => messageCluster(opened!, message)} />
+                </View>
+              )}
             </>
           ) : (
             <>
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
-              <ScrollView>
+              <ScrollView contentContainerStyle={styles.phoneList}>
                 {investigations.length > 0 && (
                   <View style={styles.phoneSection}>
-                    <SectionTitle>Agents</SectionTitle>
+                    <SectionTitle>Investigations</SectionTitle>
                   </View>
                 )}
                 {investigations.map((i) => (
@@ -332,20 +359,16 @@ export default function App() {
                     }}
                   />
                 ))}
-                {investigations.length > 0 && (
-                  <View style={styles.phoneSection}>
-                    <SectionTitle>Clusters</SectionTitle>
+                {listed.map(({ name, clusters }, i) => (
+                  <View key={name}>
+                    <View style={styles.phoneSection}>
+                      <SectionTitle>{name}</SectionTitle>
+                    </View>
+                    {i === 0 && <Legend />}
+                    {clusters.map((cluster) => (
+                      <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => open(cluster)} />
+                    ))}
                   </View>
-                )}
-                {visible.map((cluster) => (
-                  <PhoneClusterRow
-                    key={cluster.pullRequests[0].url}
-                    cluster={cluster}
-                    onPress={() => {
-                      history.pushState(null, '');
-                      setSelectedUrl(cluster.pullRequests[0].url);
-                    }}
-                  />
                 ))}
               </ScrollView>
             </>
@@ -400,6 +423,7 @@ export default function App() {
                 onDismiss={dismiss}
                 onRestart={restart}
                 onRebase={rebase}
+                onMerge={merge}
                 onInvestigate={investigate}
                 onMessage={(message) => messageCluster(selected, message)}
               />
@@ -469,9 +493,20 @@ const styles = StyleSheet.create({
   },
   phoneContent: {
     padding: 12,
+    paddingBottom: 24,
+  },
+  phoneList: {
+    paddingBottom: 24,
+  },
+  dock: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
   phoneSection: {
     paddingHorizontal: 8,
+    paddingTop: 8,
   },
   container: {
     flex: 1,
