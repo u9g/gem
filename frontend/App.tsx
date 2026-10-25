@@ -348,7 +348,8 @@ export default function App() {
             <>
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
-              <ScrollView contentContainerStyle={styles.phoneList}>
+              {/* The legend is the third child: after the investigations and the first section's title. */}
+              <ScrollView contentContainerStyle={styles.phoneList} stickyHeaderIndices={[2]}>
                 <View>
                   {investigations.length > 0 && (
                     <View style={styles.phoneSection}>

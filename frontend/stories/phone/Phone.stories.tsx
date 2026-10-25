@@ -78,7 +78,7 @@ function Home({ clusters }: { clusters: PullRequestCluster[] }) {
     .map((name) => ({ name, clusters: clusters.filter((c) => section(c) === name) }))
     .filter((s) => s.clusters.length > 0);
   return (
-    <ScrollView style={styles.page}>
+    <ScrollView style={styles.page} stickyHeaderIndices={[1]}>
       {listed.flatMap(({ name, clusters }, i) => [
         <View key={name} style={styles.section}>
           <SectionTitle>{name}</SectionTitle>
