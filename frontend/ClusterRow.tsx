@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Investigation, PullRequest, PullRequestCluster } from './gen/gem_pb';
-import { ChecksIcon } from './PullRequestList';
+import { t3 } from './t3';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [
   ['year', 365 * 24 * 60 * 60],
@@ -60,39 +60,72 @@ export function ClusterRow({
   );
 }
 
-// One PR per repository, the one whose checks look worst: failing, then running, then passing.
-function worstPerRepository(cluster: PullRequestCluster): PullRequest[] {
-  const rank = (pr: PullRequest) => (pr.checksFailing ? 0 : pr.checksPassing ? 2 : 1);
-  const worst = new Map<string, PullRequest>();
-  for (const pr of cluster.pullRequests) {
-    const name = pr.repository?.name ?? '';
-    const seen = worst.get(name);
-    if (!seen || rank(pr) < rank(seen)) worst.set(name, pr);
-  }
-  return [...worst.values()];
+// Where a cluster sits on a phone's list, by what it waits on: the user first, then its agents, then
+// only a merge, its checks, or a reviewer.
+export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
+
+export function section(cluster: PullRequestCluster): (typeof sections)[number] {
+  const prs = cluster.pullRequests;
+  const running = (pr: PullRequest) => (pr.checks?.total ?? 0) > (pr.checks?.done ?? 0);
+  const needsYou = (pr: PullRequest) =>
+    pr.proposals.length > 0 ||
+    pr.rebase?.question ||
+    pr.merge?.question ||
+    (pr.behind && !pr.rebase) ||
+    (pr.checksFailing && !running(pr) && pr.agents.length === 0);
+  if (prs.some(needsYou)) return 'Needs you';
+  if (prs.some((pr) => pr.agents.length > 0 || pr.rebase || pr.merge)) return 'Agents working';
+  if (ready(cluster)) return 'Ready to merge';
+  if (prs.some(running)) return 'Checks running';
+  return 'Waiting on review';
 }
 
-// A cluster sized for a thumb: its name over each PR's checks and repository, then how many
-// proposals wait and how long ago.
-export function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestCluster; onPress: () => void }) {
-  const count = pending(cluster);
+const SEGMENT_WIDTH = 36;
+const SEGMENT_GAP = 4;
+
+// Each PR's checks, review and merge, as three bars: green done, red failed, amber in progress, blue
+// waiting on the user.
+function segments(pr: PullRequest): (string | undefined)[] {
+  const checks = pr.checksFailing ? t3.deletion : pr.checksPassing ? t3.addition : t3.warning;
+  const review = pr.approved ? t3.addition : pr.proposals.length > 0 ? '#8FA8F5' : undefined;
+  const merge = pr.merge ? t3.warning : undefined;
+  return [checks, review, merge];
+}
+
+// Above the first card, naming the bars.
+export function Legend() {
   return (
-    <Pressable onPress={onPress} style={styles.phoneRow}>
-      <View style={{ flex: 1, gap: 3 }}>
-        <Text numberOfLines={1} style={[styles.phoneRowName, ready(cluster) && styles.ready]}>
+    <View style={styles.legend}>
+      {['Checks', 'Review', 'Merge'].map((name) => (
+        <Text key={name} style={styles.legendText}>
+          {name}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+// A cluster sized for a thumb: its name and how long ago, over one line per PR with its repository,
+// number and bars.
+export function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestCluster; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={styles.card}>
+      <View style={styles.cardTop}>
+        <Text numberOfLines={1} style={styles.cardName}>
           {cluster.name || cluster.pullRequests[0].title}
         </Text>
-        <View style={styles.phoneRepos}>
-          {worstPerRepository(cluster).map((pr) => (
-            <View key={pr.url} style={styles.phoneRepo}>
-              <ChecksIcon pr={pr} size={11} />
-              <Text style={styles.meta}>{pr.repository?.name}</Text>
-            </View>
+        {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
+      </View>
+      {cluster.pullRequests.map((pr) => (
+        <View key={pr.url} style={styles.pipe}>
+          <Text numberOfLines={1} style={styles.pipeRef}>
+            <Text style={styles.pipeRepo}>{pr.repository?.name}</Text> #{pr.number}
+          </Text>
+          {segments(pr).map((color, i) => (
+            <View key={i} style={[styles.segment, { backgroundColor: color ?? 'rgba(255, 255, 255, 0.08)' }]} />
           ))}
         </View>
-      </View>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
-      {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
+      ))}
     </Pressable>
   );
 }
@@ -171,18 +204,64 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
+  card: {
+    gap: 6,
+    marginHorizontal: 12,
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: t3.border,
+    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+  },
+  cardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  cardName: {
+    flex: 1,
+    color: t3.foreground,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  pipe: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SEGMENT_GAP,
+  },
+  pipeRef: {
+    flex: 1,
+    color: t3.muted,
+    fontSize: 12.5,
+  },
+  pipeRepo: {
+    color: t3.foreground,
+    fontWeight: '600',
+  },
+  segment: {
+    width: SEGMENT_WIDTH,
+    height: 4,
+    borderRadius: 2,
+  },
+  legend: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: SEGMENT_GAP,
+    paddingHorizontal: 26,
+    paddingBottom: 6,
+  },
+  legendText: {
+    width: SEGMENT_WIDTH,
+    color: t3.faint,
+    fontSize: 9,
+    textAlign: 'center',
+  },
   phoneRowName: {
     color: '#D0CFD4',
     fontSize: 16,
-  },
-  phoneRepos: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  phoneRepo: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   row: {
     flexDirection: 'row',
@@ -230,9 +309,5 @@ const styles = StyleSheet.create({
   },
   ready: {
     color: '#4ADE80',
-  },
-  meta: {
-    color: 'rgba(208, 207, 212, 0.55)',
-    fontSize: 12,
   },
 });

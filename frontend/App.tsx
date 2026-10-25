@@ -1,5 +1,4 @@
 import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
-import { timestampDate } from '@bufbuild/protobuf/wkt';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
@@ -9,19 +8,19 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   ClusterRow,
   InvestigationRow,
+  Legend,
   PhoneClusterRow,
   PhoneInvestigationRow,
-  ready,
+  section,
+  sections,
   SectionTitle,
-  units,
 } from './ClusterRow';
+import { ClusterView, timeAgo } from './ClusterView';
 import { Composer, InvestigationView } from './InvestigationView';
-import { bySubject, ProposalGroup } from './ProposalView';
-import { PullRequestList } from './PullRequestList';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { type Profile, useServer } from './server';
 import { Login } from './surfaces';
-import { Button, usePhone } from './t3';
+import { usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
   CloseInvestigationRequestSchema,
@@ -30,6 +29,7 @@ import {
   type Investigation,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
+  MergeClusterRequestSchema,
   MessageClusterRequestSchema,
   MessageClusterResponseSchema,
   MessageInvestigationRequestSchema,
@@ -38,15 +38,6 @@ import {
   type PullRequestCluster,
   type Repository,
 } from './gen/gem_pb';
-
-const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
-
-// Largest unit that fits, truncated: 59 minutes stays "59 minutes ago", not "1 hour ago".
-function timeAgo(date: Date): string {
-  const seconds = (date.getTime() - Date.now()) / 1000;
-  const [unit, size] = units.find(([, size]) => Math.abs(seconds) >= size) ?? units[units.length - 1];
-  return relativeTime.format(Math.trunc(seconds / size), unit);
-}
 
 const SIDEBAR_WIDTH_KEY = 'gem.sidebarWidth';
 const SIDEBAR_DEFAULT_WIDTH = 375;
@@ -82,7 +73,8 @@ export default function App() {
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Proposal being approved, dismissed or investigated, the oldest PR's URL of the cluster being
-  // restarted, the URL of the PR whose rebase is starting, or the investigation being closed.
+  // restarted, `merge` and that URL for one whose merge is starting, the URL of the PR whose rebase
+  // is starting, or the investigation being closed.
   const [busy, setBusy] = useState<string>();
   const phone = usePhone();
   const [sidebarWidth, setSidebarWidth] = useState(() =>
@@ -154,6 +146,15 @@ export default function App() {
     setBusy(cluster.pullRequests[0].url);
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })))
+      .then(load)
+      .finally(() => setBusy(undefined));
+  }
+
+  // Starts an agent merging the cluster's PRs, without opening its thread.
+  function merge(cluster: PullRequestCluster) {
+    setBusy(`merge ${cluster.pullRequests[0].url}`);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
+    post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls })))
       .then(load)
       .finally(() => setBusy(undefined));
   }
@@ -298,16 +299,24 @@ export default function App() {
     );
   }
 
-  // One screen at a time: the cluster list, or the cluster tapped in it.
+  // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
+  // it, with the box to ask about it under the scrolling content.
   if (phone) {
     const opened = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
+    const listed = sections
+      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
+      .filter(({ clusters }) => clusters.length > 0);
+    const open = (cluster: PullRequestCluster) => {
+      history.pushState(null, '');
+      setSelectedUrl(cluster.pullRequests[0].url);
+    };
     return (
       <Login value={login}>
         <View style={styles.phone}>
           {investigationView || opened ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={() => history.back()}>
-                <ChevronLeft size={20} color="#8FA8F5" />
+                <ChevronLeft size={22} color="#8FA8F5" />
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
@@ -318,21 +327,26 @@ export default function App() {
                     onApprove={approve}
                     onDismiss={dismiss}
                     onRestart={restart}
-                onRebase={rebase}
+                    onRebase={rebase}
+                    onMerge={merge}
                     onInvestigate={investigate}
-                    onMessage={(message) => messageCluster(opened!, message)}
                   />
                 )}
               </ScrollView>
+              {!investigationView && (
+                <View style={styles.dock}>
+                  <Composer placeholder="Ask an agent about this cluster…" onSend={(message) => messageCluster(opened!, message)} />
+                </View>
+              )}
             </>
           ) : (
             <>
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
-              <ScrollView>
+              <ScrollView contentContainerStyle={styles.phoneList}>
                 {investigations.length > 0 && (
                   <View style={styles.phoneSection}>
-                    <SectionTitle>Agents</SectionTitle>
+                    <SectionTitle>Investigations</SectionTitle>
                   </View>
                 )}
                 {investigations.map((i) => (
@@ -345,20 +359,16 @@ export default function App() {
                     }}
                   />
                 ))}
-                {investigations.length > 0 && (
-                  <View style={styles.phoneSection}>
-                    <SectionTitle>Clusters</SectionTitle>
+                {listed.map(({ name, clusters }, i) => (
+                  <View key={name}>
+                    <View style={styles.phoneSection}>
+                      <SectionTitle>{name}</SectionTitle>
+                    </View>
+                    {i === 0 && <Legend />}
+                    {clusters.map((cluster) => (
+                      <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => open(cluster)} />
+                    ))}
                   </View>
-                )}
-                {visible.map((cluster) => (
-                  <PhoneClusterRow
-                    key={cluster.pullRequests[0].url}
-                    cluster={cluster}
-                    onPress={() => {
-                      history.pushState(null, '');
-                      setSelectedUrl(cluster.pullRequests[0].url);
-                    }}
-                  />
                 ))}
               </ScrollView>
             </>
@@ -413,6 +423,7 @@ export default function App() {
                 onDismiss={dismiss}
                 onRestart={restart}
                 onRebase={rebase}
+                onMerge={merge}
                 onInvestigate={investigate}
                 onMessage={(message) => messageCluster(selected, message)}
               />
@@ -420,62 +431,6 @@ export default function App() {
         </ScrollView>
       </Login>
       <StatusBar style="auto" />
-    </View>
-  );
-}
-
-// A cluster's title, its PRs, the conversations waiting on u9g, and a box to ask an agent about
-// it.
-function ClusterView({
-  cluster,
-  busy,
-  onApprove,
-  onDismiss,
-  onRestart,
-  onRebase,
-  onInvestigate,
-  onMessage,
-}: {
-  cluster: PullRequestCluster;
-  busy?: string;
-  onApprove: (id: string, reply: string, followUp: string) => void;
-  onDismiss: (id: string) => void;
-  onRestart: (cluster: PullRequestCluster) => void;
-  onRebase: (url: string) => void;
-  onInvestigate: (id: string) => void;
-  // Starts an agent on the message, which reads the cluster through gem's MCP server. Resolves
-  // once the agent started.
-  onMessage: (message: string) => Promise<unknown>;
-}) {
-  return (
-    <View style={styles.column}>
-      <View style={styles.header}>
-        <View style={styles.titleBlock}>
-          <Text style={[styles.title, ready(cluster) && styles.ready]}>{cluster.name}</Text>
-          <Text style={styles.meta}>
-            {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
-          </Text>
-        </View>
-        <Button
-          label={busy === cluster.pullRequests[0].url ? 'Restarting…' : 'Restart investigation'}
-          disabled={busy !== undefined}
-          onPress={() => onRestart(cluster)}
-        />
-      </View>
-      <View style={styles.pullRequests}>
-        <PullRequestList pullRequests={cluster.pullRequests} busy={busy} onRebase={onRebase} />
-      </View>
-      {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
-        <ProposalGroup
-          key={group[0].id}
-          proposals={group}
-          busy={busy}
-          onApprove={onApprove}
-          onDismiss={onDismiss}
-          onInvestigate={onInvestigate}
-        />
-      ))}
-      <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />
     </View>
   );
 }
@@ -538,9 +493,20 @@ const styles = StyleSheet.create({
   },
   phoneContent: {
     padding: 12,
+    paddingBottom: 24,
+  },
+  phoneList: {
+    paddingBottom: 24,
+  },
+  dock: {
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
   phoneSection: {
     paddingHorizontal: 8,
+    paddingTop: 8,
   },
   container: {
     flex: 1,
@@ -626,35 +592,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 24,
     paddingVertical: 32,
-  },
-  column: {
-    width: '100%',
-    maxWidth: 1240,
-    gap: 12,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 8,
-  },
-  titleBlock: {
-    flex: 1,
-    gap: 4,
-  },
-  pullRequests: {
-    marginBottom: 16,
-  },
-  title: {
-    color: '#D0CFD4',
-    fontSize: 20,
-    fontWeight: '600',
-  },
-  ready: {
-    color: '#4ADE80',
-  },
-  meta: {
-    color: 'rgba(208, 207, 212, 0.55)',
-    fontSize: 12,
   },
 });

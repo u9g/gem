@@ -8,7 +8,7 @@ import { Button, Icon, t3, usePhone } from './t3';
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
 // On a phone the review state is a check mark when approved, leaving the title room. A PR behind
 // its base branch can be rebased by an agent, which spins until its thread settles; a question
-// from it opens the thread. Under the row, a line says what is happening to the PR and what it
+// from it opens the thread, as does one from an agent merging the cluster. Under the row, a line says what is happening to the PR and what it
 // waits on.
 export function PullRequestList({
   pullRequests,
@@ -45,6 +45,16 @@ export function PullRequestList({
                 {pr.approved ? 'Approved' : 'Review required'}
               </Text>
             )}
+            {pr.merge?.question && (
+              <Pressable
+                accessibilityLabel="Open the merge's question"
+                style={styles.question}
+                onPress={() => Linking.openURL(pr.merge!.threadUrl)}
+              >
+                <Icon icon={MessageCircleQuestionMark} size={14} color={t3.warning} />
+                {!phone && <Text style={styles.questionText}>Question</Text>}
+              </Pressable>
+            )}
             {pr.rebase?.question && (
               <Pressable
                 accessibilityLabel="Open the rebase's question"
@@ -55,7 +65,7 @@ export function PullRequestList({
                 {!phone && <Text style={styles.questionText}>Question</Text>}
               </Pressable>
             )}
-            {(pr.rebase || pr.agents.some((agent) => !agent.queued)) && <ActivityIndicator size={12} color="#8FA8F5" />}
+            {(pr.rebase || pr.merge || pr.agents.some((agent) => !agent.queued)) && <ActivityIndicator size={12} color="#8FA8F5" />}
             {onRebase && (pr.behind || pr.rebase) && (
               <Button
                 label="Rebase"
@@ -82,6 +92,8 @@ function status(pr: PullRequest): Status | undefined {
   const running = checks.total - checks.done;
   const noun = checks.failed === 1 ? 'check' : 'checks';
   const checksFailed = `${checks.failed} ${noun} failed`;
+  if (pr.merge?.question) return { doing: 'Merging', waiting: 'waiting on you to answer its agent', link: pr.merge.threadUrl };
+  if (pr.merge) return { doing: 'Merging', waiting: 'waiting on its agent', link: pr.merge.threadUrl };
   if (pr.rebase?.pushed) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
   if (pr.rebase?.question) return { doing: 'Rebasing', waiting: 'waiting on you to answer its agent', link: pr.rebase.threadUrl };
   if (pr.rebase) return { doing: 'Rebasing', waiting: 'waiting on its agent', link: pr.rebase.threadUrl };

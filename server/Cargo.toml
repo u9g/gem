@@ -17,6 +17,7 @@ gem-db = { path = "crates/db" }
 gem-github = { path = "crates/github" }
 gem-http = { path = "crates/http" }
 gem-launcher = { path = "crates/launcher" }
+gem-merges = { path = "crates/merges" }
 gem-proto = { path = "crates/proto" }
 gem-rebases = { path = "crates/rebases" }
 gem-room = { path = "crates/room" }
