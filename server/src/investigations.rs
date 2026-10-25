@@ -47,6 +47,8 @@ pub async fn follow_up(title: &str, pr: &str, follow_up: &str) -> Result<(), Str
     let prompt = format!(
         "{follow_up}
 
+Link {pr} in the description of any pull request you open, so gem groups the two together.
+
 {login} follows this thread in an app that shows only your latest reply, so end each reply \
 with where things stand, such as a link to the pull request you opened. {login} may message you \
 afterwards in this thread.",
@@ -267,8 +269,9 @@ Then propose what {login} should do about it. A proposal can:
 - hand the fix to another agent, with --follow-up: such as a pull request that fixes the test or \
 the code on the base branch. Write a prompt for a T3 Code agent to a markdown file. It must stand \
 alone: the repositories (checked out under ~/code), the branch to build on, what to change and \
-why, how to verify it, and that it opens a pull request. The agent must be able to finish without \
-anyone else reviewing, merging or releasing something first.
+why, how to verify it, and that it opens a pull request with the fix whose description links \
+{pr}, where the test failed. The agent must be able to finish without anyone else reviewing, \
+merging or releasing something first.
 - change the code of {pr}, with --patch and --message, when the pull request itself causes it: \
 clone the repository into a temporary directory, run `gh pr checkout <number>` in it, edit, and \
 save `git diff` to a file. Never commit or push.
