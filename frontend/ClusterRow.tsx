@@ -26,40 +26,6 @@ export function ready(cluster: PullRequestCluster): boolean {
   return cluster.pullRequests.every((pr) => pr.approved && pr.checksPassing);
 }
 
-function pending(cluster: PullRequestCluster): number {
-  return cluster.pullRequests.reduce((sum, pr) => sum + pr.proposals.length, 0);
-}
-
-// One line per cluster, like a thread in T3 Code's sidebar: a red dot when a PR's checks fail, the
-// name (green when every PR is approved and passing), how many proposals wait, and how long ago.
-export function ClusterRow({
-  cluster,
-  selected,
-  onPress,
-}: {
-  cluster: PullRequestCluster;
-  selected: boolean;
-  onPress: () => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const count = pending(cluster);
-  return (
-    <Pressable
-      onPress={onPress}
-      onHoverIn={() => setHovered(true)}
-      onHoverOut={() => setHovered(false)}
-      style={[styles.row, (selected || hovered) && styles.rowActive]}
-    >
-      <View style={[styles.dot, cluster.pullRequests.some((pr) => pr.checksFailing) && styles.dotFailing]} />
-      <Text numberOfLines={1} style={[styles.rowName, ready(cluster) && styles.ready]}>
-        {cluster.name || cluster.pullRequests[0].title}
-      </Text>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
-      {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
-    </Pressable>
-  );
-}
-
 // Where a cluster sits on a phone's list, by what it waits on: the user first, then its agents, then
 // only a merge, its checks, or a reviewer.
 export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
@@ -105,12 +71,23 @@ export function Legend() {
 }
 
 // A cluster sized for a thumb: its name and how long ago, over one line per PR with its repository,
-// number and bars.
-export function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestCluster; onPress: () => void }) {
+// number and bars. On the board, where columns are narrow, the name wraps to a second line, the bars
+// shorten, and a PR's waiting proposals are counted; the open cluster's card is outlined.
+export function PhoneClusterRow({
+  cluster,
+  board = false,
+  selected = false,
+  onPress,
+}: {
+  cluster: PullRequestCluster;
+  board?: boolean;
+  selected?: boolean;
+  onPress: () => void;
+}) {
   return (
-    <Pressable onPress={onPress} style={styles.card}>
+    <Pressable onPress={onPress} style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}>
       <View style={styles.cardTop}>
-        <Text numberOfLines={1} style={styles.cardName}>
+        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, ready(cluster) && styles.ready]}>
           {cluster.name || cluster.pullRequests[0].title}
         </Text>
         {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
@@ -120,8 +97,12 @@ export function PhoneClusterRow({ cluster, onPress }: { cluster: PullRequestClus
           <Text numberOfLines={1} style={styles.pipeRef}>
             <Text style={styles.pipeRepo}>{pr.repository?.name}</Text> #{pr.number}
           </Text>
+          {board && pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
           {segments(pr).map((color, i) => (
-            <View key={i} style={[styles.segment, { backgroundColor: color ?? 'rgba(255, 255, 255, 0.08)' }]} />
+            <View
+              key={i}
+              style={[styles.segment, board && styles.boardSegment, { backgroundColor: color ?? 'rgba(255, 255, 255, 0.08)' }]}
+            />
           ))}
         </View>
       ))}
@@ -214,6 +195,16 @@ const styles = StyleSheet.create({
     borderColor: t3.border,
     backgroundColor: 'rgba(255, 255, 255, 0.03)',
   },
+  boardCard: {
+    marginHorizontal: 0,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  cardSelected: {
+    borderColor: 'rgba(55, 103, 232, 0.55)',
+    backgroundColor: 'rgba(55, 103, 232, 0.08)',
+  },
   cardTop: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -225,6 +216,9 @@ const styles = StyleSheet.create({
     color: t3.foreground,
     fontSize: 15,
     fontWeight: '600',
+  },
+  boardCardName: {
+    fontSize: 14,
   },
   pipe: {
     flexDirection: 'row',
@@ -244,6 +238,9 @@ const styles = StyleSheet.create({
     width: SEGMENT_WIDTH,
     height: 4,
     borderRadius: 2,
+  },
+  boardSegment: {
+    width: 24,
   },
   legend: {
     flexDirection: 'row',
@@ -278,9 +275,6 @@ const styles = StyleSheet.create({
     width: 6,
     height: 6,
     borderRadius: 3,
-  },
-  dotFailing: {
-    backgroundColor: '#F87171',
   },
   dotProposals: {
     backgroundColor: '#3767E8',
