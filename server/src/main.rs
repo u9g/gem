@@ -19,7 +19,7 @@ use tokio::{process::Command, sync::RwLock};
 use conversations::Conversations;
 use names::Names;
 use proto::{
-    ApproveProposalRequest, ApproveProposalResponse, CloseInvestigationRequest,
+    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseInvestigationRequest,
     CloseInvestigationResponse, DismissProposalRequest, DismissProposalResponse,
     InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
     ListOpenPullRequestsResponse, MessageClusterRequest, MessageClusterResponse,
@@ -64,7 +64,10 @@ query($endCursor: String, $q: String!) {
     nodes {
       ... on PullRequest {
         id number title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
-        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 0) {
+          checkRunCount checkRunCountsByState { state count }
+          statusContextCount statusContextCountsByState { state count }
+        } } } } }
         repository { nameWithOwner name owner { login } }
         headRepository { nameWithOwner }
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
@@ -88,6 +91,15 @@ const PRS_JQ: &str = r#".data.search.nodes[] | {
   approved: (.reviewDecision == "APPROVED"),
   checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
   checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
+  checks: (.commits.nodes[0].commit.statusCheckRollup.contexts
+    | if . == null then {total: 0, done: 0, failed: 0} else
+      [.checkRunCountsByState[], .statusContextCountsByState[]] as $by
+      | (.checkRunCount + .statusContextCount) as $total
+      | {
+        total: $total,
+        done: ($total - ([$by[] | select(.state | IN("QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED", "EXPECTED")) | .count] | add // 0)),
+        failed: ([$by[] | select(.state | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR")) | .count] | add // 0)
+      } end),
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
@@ -108,6 +120,7 @@ struct SearchedPullRequest {
     approved: bool,
     checks_passing: bool,
     checks_failing: bool,
+    checks: Checks,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
 }
@@ -423,6 +436,7 @@ async fn filled(
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     investigations::fill(&mut response).await;
     rebases::fill(&mut response.clusters).await;
+    conversations.fill(&mut response.clusters).await;
     Some(response)
 }
 
@@ -520,6 +534,9 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         proposals: Vec::new(),
                         behind: behind.contains(pr.url.as_str()),
                         rebase: None,
+                        checks: Some(pr.checks),
+                        head_oid: pr.head_oid.clone(),
+                        check_agent: None,
                     })
                     .collect(),
                 name: String::new(),

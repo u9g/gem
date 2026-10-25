@@ -1,10 +1,10 @@
-import { clone, create } from '@bufbuild/protobuf';
+import { clone, create, type MessageInitShape } from '@bufbuild/protobuf';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type PullRequest, ProposalSchema, PullRequestSchema } from '../../gen/gem_pb';
+import { type PullRequest, ProposalSchema, PullRequestSchema, RebaseSchema } from '../../gen/gem_pb';
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
 import { Icon, t3 } from '../../t3';
@@ -179,8 +179,8 @@ export const CTabs: StoryObj = { name: 'C · Tabs', render: () => <Tabs /> };
 const threadUrl = 'https://app.t3.codes/environment/thread';
 const rebasing = [
   { ...agents, behind: true },
-  { ...agentsJs, behind: true, rebase: { $typeName: 'gem.v1.Rebase' as const, threadUrl, question: false } },
-  { ...protocol, behind: true, rebase: { $typeName: 'gem.v1.Rebase' as const, threadUrl, question: true } },
+  { ...agentsJs, behind: true, rebase: create(RebaseSchema, { threadUrl }) },
+  { ...protocol, behind: true, rebase: create(RebaseSchema, { threadUrl, question: true }) },
   pending,
 ];
 export const DRebase: StoryObj = {
@@ -192,6 +192,45 @@ export const DRebase: StoryObj = {
         <View style={{ gap: 16 }}>
           <Title />
           <PullRequestList pullRequests={rebasing} onRebase={() => {}} />
+        </View>
+      }
+    />
+  ),
+};
+
+// One PR through a rebase, its checks, and the agent answering the checks that failed.
+const step = (title: string, status: Exclude<MessageInitShape<typeof PullRequestSchema>, PullRequest>) =>
+  create(PullRequestSchema, {
+    repository: { owner: 'livekit', name: 'agents' },
+    number: 4821,
+    title,
+    url: 'https://github.com/livekit/agents/pull/4821',
+    approved: true,
+    ...status,
+  });
+const passed = { total: 8, done: 8, failed: 0 };
+const failed = { total: 8, done: 8, failed: 2 };
+const steps = [
+  step('Behind its base', { checksPassing: true, checks: passed, behind: true }),
+  step('Rebasing', { checksPassing: true, checks: passed, behind: true, rebase: { threadUrl } }),
+  step('Rebased, not listed yet', { checksPassing: true, checks: passed, rebase: { threadUrl, pushed: true } }),
+  step('Checks running', { checks: { total: 8, done: 3, failed: 0 } }),
+  step('A check failed, others run', { checksFailing: true, checks: { total: 8, done: 5, failed: 1 } }),
+  step('Agent queued', { checksFailing: true, checks: failed, checkAgent: { queued: true } }),
+  step('Agent looking', { checksFailing: true, checks: failed, checkAgent: { threadUrl } }),
+  step('Proposal ready', { checksFailing: true, checks: failed, proposals: [moved('failed', agents)] }),
+  step('No proposal', { checksFailing: true, checks: failed }),
+  step('Green', { checksPassing: true, checks: passed }),
+];
+export const EStatus: StoryObj = {
+  name: 'E · Status',
+  render: () => (
+    <Page
+      proposalsShown={[]}
+      header={
+        <View style={{ gap: 16 }}>
+          <Title />
+          <PullRequestList pullRequests={steps} onRebase={() => {}} />
         </View>
       }
     />

@@ -8,7 +8,8 @@ import { Button, Icon, t3, usePhone } from './t3';
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
 // On a phone the review state is a check mark when approved, leaving the title room. A PR behind
 // its base branch can be rebased by an agent, which spins until its thread settles; a question
-// from it opens the thread.
+// from it opens the thread. Under the row, a line says what is happening to the PR and what it
+// waits on.
 export function PullRequestList({
   pullRequests,
   busy,
@@ -26,52 +27,103 @@ export function PullRequestList({
       {pullRequests.map((pr, i) => (
         <Pressable
           key={pr.url}
-          style={[styles.row, i > 0 && styles.rowBorder]}
+          style={[styles.item, i > 0 && styles.rowBorder]}
           onPress={() => Linking.openURL(pr.url)}
         >
-          <ChecksIcon pr={pr} />
-          <Text numberOfLines={1} style={[styles.ref, { width: refWidth }]}>
-            {pr.repository?.name}#{pr.number}
-          </Text>
-          <Text numberOfLines={1} style={styles.title}>
-            {pr.title}
-          </Text>
-          {phone ? (
-            pr.approved && <Icon icon={Check} size={14} color={t3.addition} />
-          ) : (
-            <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
-              {pr.approved ? 'Approved' : 'Review required'}
+          <View style={styles.row}>
+            <ChecksIcon pr={pr} />
+            <Text numberOfLines={1} style={[styles.ref, { width: refWidth }]}>
+              {pr.repository?.name}#{pr.number}
             </Text>
-          )}
-          {pr.rebase?.question && (
-            <Pressable
-              accessibilityLabel="Open the rebase's question"
-              style={styles.question}
-              onPress={() => Linking.openURL(pr.rebase!.threadUrl)}
-            >
-              <Icon icon={MessageCircleQuestionMark} size={14} color={t3.warning} />
-              {!phone && <Text style={styles.questionText}>Question</Text>}
-            </Pressable>
-          )}
-          {pr.rebase && <ActivityIndicator size={12} color="#8FA8F5" />}
-          {onRebase && (pr.behind || pr.rebase) && (
-            <Button
-              label="Rebase"
-              disabled={pr.rebase !== undefined || busy === pr.url}
-              onPress={() => onRebase(pr.url)}
-            />
-          )}
-          <View style={styles.countSlot}>
-            {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
+            <Text numberOfLines={1} style={styles.title}>
+              {pr.title}
+            </Text>
+            {phone ? (
+              pr.approved && <Icon icon={Check} size={14} color={t3.addition} />
+            ) : (
+              <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
+                {pr.approved ? 'Approved' : 'Review required'}
+              </Text>
+            )}
+            {pr.rebase?.question && (
+              <Pressable
+                accessibilityLabel="Open the rebase's question"
+                style={styles.question}
+                onPress={() => Linking.openURL(pr.rebase!.threadUrl)}
+              >
+                <Icon icon={MessageCircleQuestionMark} size={14} color={t3.warning} />
+                {!phone && <Text style={styles.questionText}>Question</Text>}
+              </Pressable>
+            )}
+            {(pr.rebase || (pr.checkAgent && !pr.checkAgent.queued)) && <ActivityIndicator size={12} color="#8FA8F5" />}
+            {onRebase && (pr.behind || pr.rebase) && (
+              <Button
+                label="Rebase"
+                disabled={pr.rebase !== undefined || busy === pr.url}
+                onPress={() => onRebase(pr.url)}
+              />
+            )}
+            <View style={styles.countSlot}>
+              {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
+            </View>
           </View>
+          <StatusLine pr={pr} />
         </Pressable>
       ))}
     </View>
   );
 }
 
-// Checks on the head commit: failed, passed, or still running.
+// What is happening to the PR, what it waits on, and a link to the agent doing it.
+type Status = { doing: string; waiting?: string; link?: string; ready?: boolean };
+
+function status(pr: PullRequest): Status | undefined {
+  const checks = pr.checks ?? { total: 0, done: 0, failed: 0 };
+  const running = checks.total - checks.done;
+  const noun = checks.failed === 1 ? 'check' : 'checks';
+  const checksFailed = `${checks.failed} ${noun} failed`;
+  if (pr.rebase?.pushed) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
+  if (pr.rebase?.question) return { doing: 'Rebasing', waiting: 'waiting on you to answer its agent', link: pr.rebase.threadUrl };
+  if (pr.rebase) return { doing: 'Rebasing', waiting: 'waiting on its agent', link: pr.rebase.threadUrl };
+  if (running > 0 && checks.failed > 0) {
+    return { doing: checksFailed, waiting: `waiting on ${running} still running before an agent looks at them` };
+  }
+  if (running > 0) return { doing: `${checks.done} of ${checks.total} checks done`, waiting: `waiting on ${running} running` };
+  if (pr.checkAgent?.queued) return { doing: checksFailed, waiting: 'waiting on other agents to finish before one looks at them' };
+  if (pr.checkAgent) {
+    return { doing: `An agent is looking into the ${checks.failed} failed ${noun}`, waiting: 'waiting on its proposals', link: pr.checkAgent.threadUrl };
+  }
+  if (pr.proposals.length > 0) {
+    return { doing: `${pr.proposals.length} ${pr.proposals.length === 1 ? 'proposal' : 'proposals'}`, waiting: 'waiting on you' };
+  }
+  if (checks.failed > 0) return { doing: checksFailed, waiting: 'no proposal for them' };
+  if (pr.behind) return { doing: 'Behind its base branch', waiting: 'waiting on you to rebase' };
+  if (pr.approved && pr.checksPassing) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
+  return undefined;
+}
+
+function StatusLine({ pr }: { pr: PullRequest }) {
+  const line = status(pr);
+  if (!line) return null;
+  return (
+    <View style={styles.status}>
+      <Text numberOfLines={1} style={styles.statusText}>
+        <Text style={[styles.doing, line.ready && { color: t3.addition }]}>{line.doing}</Text>
+        {line.waiting && ` · ${line.waiting}`}
+      </Text>
+      {line.link && (
+        <Pressable onPress={() => Linking.openURL(line.link!)}>
+          <Text style={styles.link}>Thread ↗</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+// Checks on the head commit: failed, passed, or still running. A pushed rebase's new commit has
+// not had its checks listed yet.
 export function ChecksIcon({ pr, size = 14 }: { pr: PullRequest; size?: number }) {
+  if (pr.rebase?.pushed) return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
   if (pr.checksFailing) return <Icon icon={CircleX} size={size} color={t3.deletion} />;
   if (pr.checksPassing) return <Icon icon={CircleCheck} size={size} color={t3.addition} />;
   return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
@@ -84,12 +136,34 @@ const styles = StyleSheet.create({
     borderColor: t3.border,
     backgroundColor: 'rgba(255, 255, 255, 0.025)',
   },
+  item: {
+    paddingHorizontal: 6,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     height: 36,
-    paddingHorizontal: 6,
+  },
+  status: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: -6,
+    paddingBottom: 8,
+    paddingLeft: 22,
+  },
+  statusText: {
+    flexShrink: 1,
+    color: t3.faint,
+    fontSize: 12,
+  },
+  doing: {
+    color: t3.muted,
+  },
+  link: {
+    color: '#8FA8F5',
+    fontSize: 12,
   },
   rowBorder: {
     borderTopWidth: 1,

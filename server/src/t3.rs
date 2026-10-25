@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, process::Stdio};
+use std::{env, path::PathBuf, process::Stdio, time::Duration};
 
 use serde::Deserialize;
 use tokio::{io::AsyncWriteExt, process::Command};
@@ -48,9 +48,14 @@ pub async fn ask(title: &str, prompt: &str) -> Option<String> {
 // outside any project. Returns the thread's id.
 pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
     let scratch = PathBuf::from(env::var("HOME").map_err(|e| e.to_string())?).join(".t3/scratch");
-    let scratch = scratch.to_string_lossy();
+    start_in(&scratch.to_string_lossy(), title, prompt).await
+}
+
+// Starts an agent on `prompt` without waiting for it, in the T3 Code project containing
+// `project`. Returns the thread's id.
+pub async fn start_in(project: &str, title: &str, prompt: &str) -> Result<String, String> {
     let output = t3(
-        &["thread", "start", &scratch, "--title", title, "--json", "-"],
+        &["thread", "start", project, "--title", title, "--json", "-"],
         prompt,
     )
     .await
@@ -101,6 +106,16 @@ pub async fn show(thread_id: &str) -> Option<(bool, String)> {
         .map(|message| message.text)
         .unwrap_or_default();
     Some((working, reply))
+}
+
+// Returns once the thread's agent stops working: it finished, stopped, or waits on the user.
+pub async fn wait(thread_id: &str) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        if show(thread_id).await.is_some_and(|(working, _)| !working) {
+            return;
+        }
+    }
 }
 
 // Whether the thread is done, settled or stopped, and whether its agent waits on the user to
