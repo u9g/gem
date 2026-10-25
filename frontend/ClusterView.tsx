@@ -32,7 +32,7 @@ export function ClusterView({
   onMessage,
 }: {
   cluster: PullRequestCluster;
-  busy?: string;
+  busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
@@ -44,7 +44,8 @@ export function ClusterView({
   onMessage?: (message: string) => Promise<unknown>;
 }) {
   const phone = usePhone();
-  const merging = busy === `merge ${cluster.pullRequests[0].url}`;
+  const restarting = busy?.has(cluster.pullRequests[0].url);
+  const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
   return (
     <View style={styles.column}>
       <View style={styles.header}>
@@ -55,8 +56,8 @@ export function ClusterView({
           </Text>
         </View>
         <Button
-          label={busy === cluster.pullRequests[0].url ? 'Restarting…' : 'Restart investigation'}
-          disabled={busy !== undefined}
+          label={restarting ? 'Restarting…' : 'Restart investigation'}
+          disabled={restarting || merging}
           onPress={() => onRestart(cluster)}
         />
       </View>
@@ -70,7 +71,7 @@ export function ClusterView({
               label={merging ? 'Starting an agent…' : 'Merge cluster'}
               variant="default"
               large={phone}
-              disabled={busy !== undefined}
+              disabled={restarting || merging}
               onPress={() => onMerge(cluster)}
             />
         </View>

@@ -20,7 +20,7 @@ export function InvestigationView({
 }: {
   investigation: Investigation;
   ago: (date: Date) => string;
-  busy?: string;
+  busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string) => void;
   onDismiss: (id: string) => void;
   // Resolves once the message is sent.
@@ -38,7 +38,7 @@ export function InvestigationView({
             {investigation.startedAt && ` · ${ago(timestampDate(investigation.startedAt))}`}
           </Text>
         </View>
-        <Button label="Done" disabled={busy !== undefined} onPress={onClose} />
+        <Button label="Done" disabled={busy?.has(investigation.id)} onPress={onClose} />
       </View>
       {investigation.checkFailure && <FailedChecks failure={investigation.checkFailure} />}
       {investigation.reply !== '' && <Html html={investigation.replyHtml} />}

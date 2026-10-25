@@ -47,8 +47,8 @@ export function ProposalGroup({
   onInvestigate,
 }: {
   proposals: Proposal[];
-  // The proposal being approved or dismissed, if any.
-  busy?: string;
+  // Proposals being approved or dismissed.
+  busy?: ReadonlySet<string>;
   // Called with the user's rewrites of the reply and follow-up prompt where that version is showing,
   // and '' otherwise.
   onApprove: (id: string, reply: string, followUp: string) => void;
@@ -82,8 +82,9 @@ export function ProposalGroup({
           </View>
         )
       }
-      busy={busy === proposal.id}
-      disabled={busy !== undefined}
+      busy={busy?.has(proposal.id) === true}
+      // Approving one alternative clears the others.
+      disabled={proposals.some((p) => busy?.has(p.id))}
       onApprove={(reply, followUp) => onApprove(proposal.id, reply, followUp)}
       onDismiss={() => onDismiss(proposal.id)}
       onInvestigate={onInvestigate && (() => onInvestigate(proposal.id))}
