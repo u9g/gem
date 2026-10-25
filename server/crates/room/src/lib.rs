@@ -1,18 +1,17 @@
+mod http;
+
 use std::{env, error::Error, time::Duration};
 
-use axum::{Router, body::Body, http::Request};
+use axum::Router;
 use livekit::{
     StreamTextOptions,
-    prelude::{Room, RoomEvent, RoomOptions, RpcError},
+    prelude::{Room, RoomEvent, RoomOptions},
 };
 use livekit_api::{
     access_token::{AccessToken, VideoGrants},
     services::room::RoomClient,
 };
-use serde::Deserialize;
-use serde_json::Value;
 use tokio::sync::watch;
-use tower::ServiceExt;
 
 // The frontend sends every request to this participant.
 const IDENTITY: &str = "server";
@@ -94,11 +93,7 @@ async fn join(
         })
         .to_jwt()?;
     let (room, mut events) = Room::connect(url, &token, RoomOptions::default()).await?;
-    let app = app.clone();
-    room.local_participant()
-        .register_rpc_method("http".to_string(), move |data| {
-            Box::pin(handle(app.clone(), data.payload))
-        });
+    http::serve(&room.local_participant(), app.clone());
     // The last frontend can leave between the poll and the join.
     let mut left = room.remote_participants().is_empty().then_some(Left::Empty);
     snapshots.mark_unchanged();
@@ -128,35 +123,4 @@ async fn join(
     }
     room.close().await?;
     Ok(left.unwrap())
-}
-
-#[derive(Deserialize)]
-struct HttpRequest {
-    method: String,
-    path: String,
-    body: Value,
-}
-
-// The payload is a JSON request to the router; the response is the router's body, or an RPC error
-// whose code is the HTTP status.
-async fn handle(app: Router, payload: String) -> Result<String, RpcError> {
-    let bad_request = |error: &dyn Error| RpcError::new(400, error.to_string(), None);
-    let request: HttpRequest = serde_json::from_str(&payload).map_err(|e| bad_request(&e))?;
-    let request = Request::builder()
-        .method(request.method.as_str())
-        .uri(request.path)
-        .header("content-type", "application/json")
-        .body(Body::from(request.body.to_string()))
-        .map_err(|e| bad_request(&e))?;
-    let response = app.oneshot(request).await.unwrap();
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .map_err(|e| RpcError::new(500, e.to_string(), None))?;
-    let body = String::from_utf8_lossy(&body).into_owned();
-    if status.is_success() {
-        Ok(body)
-    } else {
-        Err(RpcError::new(status.as_u16().into(), body, None))
-    }
 }
