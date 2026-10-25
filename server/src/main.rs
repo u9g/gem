@@ -280,6 +280,9 @@ async fn run_server() {
             changes,
         )
     };
+    // The server's own database, next to its other state.
+    let db = gem_db::Db::open("gem.sqlite").unwrap_or_else(|error| panic!("{error}"));
+    rebases::init(db, prs.clone()).unwrap_or_else(|error| panic!("{error}"));
 
     // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
     // change. Proposals and investigations change on disk, written by other processes, so the
@@ -332,15 +335,15 @@ async fn run_server() {
                 serve_prs(prs, names, conversations)
             })
         })
-        .route("/prs/rebase", {
-            let prs = prs.clone();
+        .route(
+            "/prs/rebase",
             post(|Json(request): Json<RebasePullRequestRequest>| async move {
-                rebases::start(&request.url, prs)
+                rebases::start(&request.url)
                     .await
                     .map(|()| Json(RebasePullRequestResponse {}))
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            })
-        })
+            }),
+        )
         .route("/proposals/approve", {
             let prs = prs.clone();
             post(|Json(request): Json<ApproveProposalRequest>| async move {

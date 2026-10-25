@@ -1,110 +1,90 @@
-use std::{collections::BTreeMap, time::Duration};
+// gem-rebases, reaching GitHub through gh, T3 Code through its CLI, and the listed head through
+// the server's cache.
 
-use tokio::sync::Mutex;
+use std::sync::OnceLock;
+
+use gem_db::Db;
+use gem_rebases::{Host, Progress, Rebases, Refs};
 
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster, Rebase};
 use crate::{Cache, gh, investigations, t3};
 
-// Reading a thread is a local CLI call.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+static REBASES: OnceLock<Rebases<Server>> = OnceLock::new();
 
-// By pull request URL, until the agent's thread settles or stops.
-static REBASES: Mutex<BTreeMap<String, Rebase>> = Mutex::const_new(BTreeMap::new());
+struct Server {
+    prs: Cache<ListOpenPullRequestsResponse>,
+}
 
-// The agent settles its thread when done: T3 Code does not settle threads when they finish.
-pub async fn start(url: &str, prs: Cache<ListOpenPullRequestsResponse>) -> Result<(), String> {
-    let base = gh(&[
-        "pr",
-        "view",
-        url,
-        "--json",
-        "baseRefName",
-        "--jq",
-        ".baseRefName",
-    ])
-    .await
-    .ok_or(format!("gh: cannot read {url}"))?;
-    let base = String::from_utf8_lossy(&base).trim().to_string();
-    let head = head(url).await.ok_or(format!("gh: cannot read {url}"))?;
-    let (repository, number) = investigations::short(url);
-    let prompt = format!(
-        "rebase on {base}: {url}
+impl Host for Server {
+    async fn refs(&self, url: &str) -> Option<Refs> {
+        let refs = gh(&[
+            "pr",
+            "view",
+            url,
+            "--json",
+            "baseRefName,headRefName,headRefOid",
+            "--jq",
+            r#".baseRefName + " " + .headRefName + " " + .headRefOid"#,
+        ])
+        .await?;
+        let refs = String::from_utf8_lossy(&refs);
+        let [base, branch, head] = refs.split_whitespace().collect::<Vec<_>>()[..] else {
+            return None;
+        };
+        Some(Refs {
+            base: base.to_string(),
+            branch: branch.to_string(),
+            head: head.to_string(),
+        })
+    }
 
-When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
-settle this thread."
-    );
-    let thread_id = t3::start(&format!("Rebase {repository}#{number}"), &prompt).await?;
-    let rebase = Rebase {
-        thread_url: t3::url(&thread_id).unwrap_or_default(),
-        question: false,
-        pushed: false,
-    };
-    REBASES.lock().await.insert(url.to_string(), rebase);
-    tokio::spawn(watch(url.to_string(), head, thread_id, prs));
+    async fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
+        t3::start(title, prompt).await
+    }
+
+    async fn progress(&self, thread_id: &str) -> Option<Progress> {
+        let (done, question) = t3::progress(thread_id).await?;
+        Some(Progress { done, question })
+    }
+
+    async fn listed_head(&self, url: &str) -> Option<String> {
+        let prs = self.prs.read().await;
+        (prs.iter().flat_map(|r| &r.clusters))
+            .flat_map(|c| &c.pull_requests)
+            .find(|pr| pr.url == url)
+            .map(|pr| pr.head_oid.clone())
+    }
+
+    fn thread_url(&self, thread_id: &str) -> String {
+        t3::url(thread_id).unwrap_or_default()
+    }
+}
+
+// Also watches the rebases the server's last run left.
+pub fn init(db: Db, prs: Cache<ListOpenPullRequestsResponse>) -> Result<(), String> {
+    let rebases = Rebases::new(db, Server { prs })?;
+    rebases.resume()?;
+    let _ = REBASES.set(rebases);
     Ok(())
 }
 
+pub async fn start(url: &str) -> Result<(), String> {
+    let (repository, number) = investigations::short(url);
+    let rebases = REBASES.get().ok_or("rebases are not ready")?;
+    rebases.start(url, &format!("{repository}#{number}")).await
+}
+
 pub async fn fill(clusters: &mut [PullRequestCluster]) {
-    let rebases = REBASES.lock().await;
+    let Some(rebases) = REBASES.get() else { return };
+    let rebases = rebases.all().unwrap_or_else(|error| {
+        eprintln!("{error}");
+        Default::default()
+    });
     for pr in clusters.iter_mut().flat_map(|c| &mut c.pull_requests) {
-        pr.rebase = rebases.get(&pr.url).cloned();
+        pr.rebase = rebases.get(&pr.url).map(|rebase| Rebase {
+            thread_url: rebase.thread_url.clone(),
+            question: rebase.question,
+            pushed: rebase.pushed,
+        });
     }
-}
-
-// Search keeps listing the old head, with its checks and how far behind it is, until its next
-// refresh, so a pushed rebase lasts until the pull request is listed with another head.
-async fn watch(
-    url: String,
-    head: String,
-    thread_id: String,
-    prs: Cache<ListOpenPullRequestsResponse>,
-) {
-    loop {
-        tokio::time::sleep(REFRESH_INTERVAL).await;
-        let Some((done, question)) = t3::progress(&thread_id).await else {
-            continue;
-        };
-        if done {
-            break;
-        }
-        if let Some(rebase) = REBASES.lock().await.get_mut(&url) {
-            rebase.question = question;
-        }
-    }
-    if self::head(&url).await.is_some_and(|pushed| pushed != head) {
-        if let Some(rebase) = REBASES.lock().await.get_mut(&url) {
-            rebase.question = false;
-            rebase.pushed = true;
-        }
-        while listed_head(&prs, &url)
-            .await
-            .is_some_and(|listed| listed == head)
-        {
-            tokio::time::sleep(REFRESH_INTERVAL).await;
-        }
-    }
-    REBASES.lock().await.remove(&url);
-}
-
-async fn head(url: &str) -> Option<String> {
-    let head = gh(&[
-        "pr",
-        "view",
-        url,
-        "--json",
-        "headRefOid",
-        "--jq",
-        ".headRefOid",
-    ])
-    .await?;
-    Some(String::from_utf8_lossy(&head).trim().to_string())
-}
-
-// None once the pull request is no longer listed.
-async fn listed_head(prs: &Cache<ListOpenPullRequestsResponse>, url: &str) -> Option<String> {
-    let prs = prs.read().await;
-    (prs.iter().flat_map(|r| &r.clusters))
-        .flat_map(|c| &c.pull_requests)
-        .find(|pr| pr.url == url)
-        .map(|pr| pr.head_oid.clone())
 }

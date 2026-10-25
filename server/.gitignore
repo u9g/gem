@@ -7,3 +7,5 @@
 /launcher.lock
 /clusters.json
 /clusters.json.partial
+/gem.sqlite
+/gem.sqlite-journal
