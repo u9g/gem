@@ -136,7 +136,7 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(2);
 // `serve` runs the server, `propose` records a proposal for it, `mcp` serves its clusters to
 // agents over MCP, and no command runs the launcher, which runs `serve` and keeps it up to date.
 fn main() {
-    // GEM_SEARCH, GEM_T3_PROVIDER, GEM_T3_MODEL and GEM_OP_ITEM, or LIVEKIT_URL, LIVEKIT_API_KEY,
+    // GEM_SEARCH, GEM_T3_PROVIDER and GEM_OP_ITEM, or LIVEKIT_URL, LIVEKIT_API_KEY,
     // LIVEKIT_API_SECRET and GEM_ROOM themselves, can live in .env in the working directory, next
     // to the server's other state. The real environment wins.
     let _ = dotenvy::dotenv();

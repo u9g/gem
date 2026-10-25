@@ -52,15 +52,11 @@ pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
     start_in(&scratch()?, title, prompt).await
 }
 
-// The provider instance and model agents run on, from GEM_T3_PROVIDER and GEM_T3_MODEL, such as
-// `claudeCloud` and `claude-opus-5-5`; T3 Code takes the two together. Without them, agents run
-// on the project's default.
+// The provider instance agents run on, from GEM_T3_PROVIDER, such as `claudeCloud`, with the model
+// T3 Code picks for it. Without it, agents run on the project's default.
 fn agent() -> Vec<String> {
-    let setting = |name| env::var(name).ok().filter(|value| !value.trim().is_empty());
-    match (setting("GEM_T3_PROVIDER"), setting("GEM_T3_MODEL")) {
-        (Some(provider), Some(model)) => {
-            vec!["--provider".into(), provider, "--model".into(), model]
-        }
+    match env::var("GEM_T3_PROVIDER") {
+        Ok(provider) if !provider.trim().is_empty() => vec!["--provider".into(), provider],
         _ => Vec::new(),
     }
 }
