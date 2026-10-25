@@ -8,7 +8,7 @@ use pbjson_types::Timestamp;
 use tokio::sync::Mutex;
 
 use crate::proto::{CheckFailure, Investigation, ListOpenPullRequestsResponse, PullRequestCluster};
-use crate::{login, proposals, t3};
+use crate::{login, mcp, proposals, t3};
 
 // One `<id>.json` file per open investigation, relative to the server's working directory.
 const DIR: &str = "investigations";
@@ -57,8 +57,8 @@ afterwards in this thread.",
 }
 
 // Starts an agent on the user's message about a cluster, and follows it like an investigation.
-// The prompt names the cluster's pull requests; the agent reads the rest through gem's MCP
-// server. Returns the investigation's id.
+// The prompt carries the cluster, as the agent may run out of reach of gem's MCP server, such as
+// in Claude Cloud. Returns the investigation's id.
 pub async fn ask(cluster: &PullRequestCluster, message: &str) -> Result<String, String> {
     let first = cluster
         .pull_requests
@@ -83,10 +83,15 @@ requests linked by stacking or mentions, and sent you a message about it. The cl
 \"{name}\", has:
 
 {pull_requests}
-Read it with the `get_cluster` tool of the `gem` MCP server, passing any of those URLs: it has \
-each pull request's review and check state, and the conversations on them still waiting on \
-{login}, with what other agents propose answering. Use `gh` for anything more, such as diffs, \
+Here it is as gem showed it when {login} sent the message, with each pull request's review and \
+check state, and the conversations on them still waiting on {login}, with what other agents \
+propose answering. Where gem's MCP server is available, its `get_cluster` tool, passed any of \
+those URLs, has the cluster as gem shows it now. Use `gh` for anything more, such as diffs, \
 comments and check logs.
+
+```json
+{snapshot}
+```
 
 {login}'s message:
 
@@ -96,6 +101,7 @@ comments and check logs.
 where things stand, such as a link to anything you opened. {login} may message you afterwards in \
 this thread.",
         login = login(),
+        snapshot = mcp::cluster_json(cluster),
     );
     let thread_id = t3::start(&title, &prompt).await?;
     let nanos = now();
