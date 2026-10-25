@@ -9,6 +9,7 @@ use livekit_api::{
     services::room::RoomClient,
 };
 use tokio::sync::watch;
+use tracing::Instrument;
 
 // The frontend sends every request to this participant, as an RPC call to this method.
 const IDENTITY: &str = "server";
@@ -65,7 +66,7 @@ where
             match join(&url, &room, &handler, &mut snapshots, &mut terminate).await {
                 Ok(Left::Terminated) => return,
                 Ok(Left::Empty) => {}
-                Err(error) => eprintln!("room: {error}"),
+                Err(error) => tracing::error!(room = %room, %error, "room lost"),
             }
         }
         tokio::select! {
@@ -102,15 +103,41 @@ where
         })
         .to_jwt()?;
     let (room, mut events) = Room::connect(url, &token, RoomOptions::default()).await?;
+    tracing::info!(
+        room = name,
+        frontends = room.remote_participants().len(),
+        "joined the room"
+    );
     let handler = handler.clone();
     room.local_participant()
         .register_rpc_method(METHOD.to_string(), move |data| {
-            let reply = handler(data.payload);
-            Box::pin(async move {
-                reply
-                    .await
-                    .map_err(|(code, message)| RpcError::new(code, message, None))
-            })
+            // Everything logged while answering carries the request's ID and caller.
+            let span = tracing::info_span!(
+                "rpc",
+                request_id = %data.request_id,
+                caller = %data.caller_identity,
+            );
+            let reply = span.in_scope(|| handler(data.payload));
+            let timeout_ms = data.response_timeout.as_millis() as u64;
+            Box::pin(
+                async move {
+                    let started = std::time::Instant::now();
+                    let reply = reply.await;
+                    let elapsed_ms = started.elapsed().as_millis() as u64;
+                    match &reply {
+                        Ok(_) => tracing::info!(elapsed_ms, timeout_ms, "rpc answered"),
+                        Err((code, message)) => tracing::warn!(
+                            elapsed_ms,
+                            timeout_ms,
+                            code,
+                            message,
+                            "rpc failed"
+                        ),
+                    }
+                    reply.map_err(|(code, message)| RpcError::new(code, message, None))
+                }
+                .instrument(span),
+            )
         });
     // The last frontend can leave between the poll and the join.
     let mut left = room.remote_participants().is_empty().then_some(Left::Empty);
@@ -125,20 +152,30 @@ where
                 }
                 let options = StreamTextOptions::new_with_topic(SNAPSHOT_TOPIC);
                 if let Err(error) = room.local_participant().send_text(&snapshot, options).await {
-                    eprintln!("room: cannot send a snapshot: {error}");
+                    tracing::warn!(%error, "cannot send a snapshot");
                 }
             }
             event = events.recv() => match event {
                 Some(RoomEvent::Disconnected { reason }) => {
                     return Err(format!("disconnected: {reason:?}").into());
                 }
-                // A frontend receives data only once it is active, not when it connects.
-                Some(RoomEvent::ParticipantActive(_)) => snapshots.mark_changed(),
-                Some(RoomEvent::ParticipantDisconnected(_))
-                    if room.remote_participants().is_empty() =>
-                {
-                    left = Some(Left::Empty);
+                Some(RoomEvent::ParticipantConnected(p)) => {
+                    tracing::info!(frontend = %p.identity(), "frontend connected");
                 }
+                // A frontend receives data only once it is active, not when it connects.
+                Some(RoomEvent::ParticipantActive(p)) => {
+                    tracing::info!(frontend = %p.identity(), "frontend active");
+                    snapshots.mark_changed();
+                }
+                Some(RoomEvent::ParticipantDisconnected(p)) => {
+                    let frontends = room.remote_participants().len();
+                    tracing::info!(frontend = %p.identity(), frontends, "frontend disconnected");
+                    if frontends == 0 {
+                        left = Some(Left::Empty);
+                    }
+                }
+                Some(RoomEvent::Reconnecting) => tracing::warn!("reconnecting to the room"),
+                Some(RoomEvent::Reconnected) => tracing::info!("reconnected to the room"),
                 Some(_) => {}
                 None => return Err("room closed".into()),
             },
@@ -146,5 +183,13 @@ where
         }
     }
     room.close().await?;
-    Ok(left.unwrap())
+    let left = left.unwrap();
+    tracing::info!(
+        reason = match left {
+            Left::Empty => "no frontend left",
+            Left::Terminated => "terminated",
+        },
+        "left the room"
+    );
+    Ok(left)
 }
