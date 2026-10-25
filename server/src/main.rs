@@ -525,7 +525,7 @@ fn root(parent: &mut [usize], mut i: usize) -> usize {
 }
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
-async fn gh(args: &[&str]) -> Option<Vec<u8>> {
+pub async fn gh(args: &[&str]) -> Option<Vec<u8>> {
     let output = Command::new("gh").args(args).output().await.ok()?;
     output.status.success().then_some(output.stdout)
 }
