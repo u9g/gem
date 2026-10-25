@@ -55,7 +55,7 @@ export function PullRequestList({
                 {!phone && <Text style={styles.questionText}>Question</Text>}
               </Pressable>
             )}
-            {(pr.rebase || (pr.checkAgent && !pr.checkAgent.queued)) && <ActivityIndicator size={12} color="#8FA8F5" />}
+            {(pr.rebase || pr.agents.some((agent) => !agent.queued)) && <ActivityIndicator size={12} color="#8FA8F5" />}
             {onRebase && (pr.behind || pr.rebase) && (
               <Button
                 label="Rebase"
@@ -85,14 +85,27 @@ function status(pr: PullRequest): Status | undefined {
   if (pr.rebase?.pushed) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
   if (pr.rebase?.question) return { doing: 'Rebasing', waiting: 'waiting on you to answer its agent', link: pr.rebase.threadUrl };
   if (pr.rebase) return { doing: 'Rebasing', waiting: 'waiting on its agent', link: pr.rebase.threadUrl };
+  if (pr.agents.length > 0) {
+    const comments = pr.agents.filter((agent) => !agent.checks).length;
+    const subject = [
+      comments > 0 && `${comments} ${comments === 1 ? 'comment' : 'comments'}`,
+      pr.agents.some((agent) => agent.checks) && `the ${checks.failed} failed ${noun}`,
+    ]
+      .filter(Boolean)
+      .join(' and ');
+    const working = pr.agents.filter((agent) => !agent.queued);
+    const queued = pr.agents.length - working.length;
+    if (working.length === 0) return { doing: `Queued to answer ${subject}`, waiting: 'waiting on other agents to finish' };
+    return {
+      doing: `Answering ${subject}`,
+      waiting: `${queued > 0 ? `${queued} of ${pr.agents.length} agents queued · ` : ''}waiting on proposals`,
+      link: working.find((agent) => agent.threadUrl)?.threadUrl,
+    };
+  }
   if (running > 0 && checks.failed > 0) {
     return { doing: checksFailed, waiting: `waiting on ${running} still running before an agent looks at them` };
   }
   if (running > 0) return { doing: `${checks.done} of ${checks.total} checks done`, waiting: `waiting on ${running} running` };
-  if (pr.checkAgent?.queued) return { doing: checksFailed, waiting: 'waiting on other agents to finish before one looks at them' };
-  if (pr.checkAgent) {
-    return { doing: `An agent is looking into the ${checks.failed} failed ${noun}`, waiting: 'waiting on its proposals', link: pr.checkAgent.threadUrl };
-  }
   if (pr.proposals.length > 0) {
     return { doing: `${pr.proposals.length} ${pr.proposals.length === 1 ? 'proposal' : 'proposals'}`, waiting: 'waiting on you' };
   }

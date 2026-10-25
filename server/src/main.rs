@@ -536,7 +536,7 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         rebase: None,
                         checks: Some(pr.checks),
                         head_oid: pr.head_oid.clone(),
-                        check_agent: None,
+                        agents: Vec::new(),
                     })
                     .collect(),
                 name: String::new(),
