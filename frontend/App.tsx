@@ -69,7 +69,8 @@ function repositoryValue(repository: Repository): string {
 }
 
 export default function App() {
-  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post } = useServer();
+  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot } =
+    useServer();
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
@@ -115,13 +116,14 @@ export default function App() {
     setRepoFilter(undefined);
   }, [profileId]);
 
-  // Proposals arrive whenever their agents finish, not only when the page loads.
+  // Later changes arrive as snapshots.
   useEffect(() => {
-    if (status !== 'online') return;
-    load();
-    const timer = setInterval(load, 30_000);
-    return () => clearInterval(timer);
+    if (status === 'online') load();
   }, [status, load]);
+
+  useEffect(() => {
+    if (snapshot) show(snapshot);
+  }, [snapshot, show]);
 
   // On a phone an open cluster or investigation is a history entry, so the browser's back returns
   // to the list.

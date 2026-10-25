@@ -128,6 +128,8 @@ struct SearchedPullRequest {
 
 // A refresh costs one GitHub API request per 100 results, far under GitHub's hourly limits.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+// Building the snapshot reads only memory and the state directory.
+const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(2);
 
 // `serve` runs the server, `propose` records a proposal for it, `mcp` serves its clusters to
 // agents over MCP, and no command runs the launcher, which runs `serve` and keeps it up to date.
@@ -271,16 +273,23 @@ async fn run_server() {
         cached(move || open_pull_requests(names.clone(), conversations.clone()))
     };
 
-    // Agents read the clusters through `server mcp`, from a snapshot kept as fresh as the cache.
+    // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
+    // change. Proposals and investigations change on disk, written by other processes, so the
+    // snapshot is compared rather than announced.
     tokio::task::spawn_blocking(mcp::register);
+    let (snapshots, snapshot) = tokio::sync::watch::channel(String::new());
     {
         let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
         tokio::spawn(async move {
             loop {
                 if let Some(response) = filled(&prs, &names, &conversations).await {
-                    mcp::save(&response).await;
+                    let json = serde_json::to_string(&response).unwrap();
+                    if *snapshots.borrow() != json {
+                        mcp::save(&response).await;
+                        snapshots.send_replace(json);
+                    }
                 }
-                tokio::time::sleep(REFRESH_INTERVAL).await;
+                tokio::time::sleep(SNAPSHOT_INTERVAL).await;
             }
         });
     }
@@ -378,7 +387,7 @@ async fn run_server() {
         );
 
     investigations::watch();
-    room::serve(app).await;
+    room::serve(app, snapshot).await;
 }
 
 async fn healthz() -> Json<Value> {

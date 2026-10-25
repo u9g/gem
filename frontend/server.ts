@@ -11,6 +11,8 @@ const PROJECT_KEY = 'gem.project';
 const SERVER = 'server';
 // Approving pushes a commit and posts to GitHub before it answers.
 const RESPONSE_TIMEOUT_MS = 5 * 60_000;
+// The server sends what `/prs` answers on this topic whenever it changes.
+const SNAPSHOT_TOPIC = 'prs';
 
 // The user's own LiveKit project, the one their gem server is configured with. It never leaves
 // this browser: tokens are minted here.
@@ -56,6 +58,8 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
+  // The latest snapshot the server sent since connecting, as JSON.
+  const [snapshot, setSnapshot] = useState<JsonValue>();
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -92,14 +96,19 @@ export function useServer() {
       .on(RoomEvent.ConnectionStateChanged, update)
       .on(RoomEvent.ParticipantConnected, update)
       .on(RoomEvent.ParticipantDisconnected, update);
+    room.registerTextStreamHandler(SNAPSHOT_TOPIC, (reader) =>
+      reader.readAll().then((text) => setSnapshot(JSON.parse(text))),
+    );
     mintToken(connection)
       .then((jwt) => room.connect(connection.url, jwt))
       // A project that refuses the token can still be edited or switched away from.
       .catch(() => setStatus('unreachable'));
     return () => {
       room.removeAllListeners();
+      room.unregisterTextStreamHandler(SNAPSHOT_TOPIC);
       room.disconnect();
       setStatus('connecting');
+      setSnapshot(undefined);
     };
   }, [room, connection, visible]);
 
@@ -146,5 +155,5 @@ export function useServer() {
     [room],
   );
 
-  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post };
+  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot };
 }
