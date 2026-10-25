@@ -128,50 +128,50 @@ export default function App() {
     return () => removeEventListener('popstate', close);
   }, []);
 
+  // Marks `key` busy until the request and the reload after it settle.
+  function track(key: string, request: Promise<unknown>) {
+    setBusy(key);
+    request.then(load).finally(() => setBusy(undefined));
+  }
+
   function approve(id: string, reply: string, followUp: string) {
-    setBusy(id);
-    post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+    track(
+      id,
+      post('/proposals/approve', toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp }))),
+    );
   }
 
   function dismiss(id: string) {
-    setBusy(id);
-    post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+    track(id, post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id }))));
   }
 
   function restart(cluster: PullRequestCluster) {
-    setBusy(cluster.pullRequests[0].url);
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+    track(
+      cluster.pullRequests[0].url,
+      post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls }))),
+    );
   }
 
   // Starts an agent merging the cluster's PRs, without opening its thread.
   function merge(cluster: PullRequestCluster) {
-    setBusy(`merge ${cluster.pullRequests[0].url}`);
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+    track(
+      `merge ${cluster.pullRequests[0].url}`,
+      post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls }))),
+    );
   }
 
   // Starts an agent rebasing the PR, without opening its thread.
   function rebase(url: string) {
-    setBusy(url);
-    post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+    track(url, post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url }))));
   }
 
   function investigate(proposalId: string) {
-    setBusy(proposalId);
-    post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId })))
-      .then(load)
-      .finally(() => setBusy(undefined));
+    track(
+      proposalId,
+      post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId }))),
+    );
   }
 
   // Starts an agent on the message, then opens it, where the conversation goes on.
@@ -193,14 +193,15 @@ export default function App() {
   }
 
   function closeInvestigation(id: string) {
-    setBusy(id);
-    post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id })))
-      .then(() => {
-        if (phone) history.back();
-        setSelectedInvestigation(undefined);
-        return load();
-      })
-      .finally(() => setBusy(undefined));
+    track(
+      id,
+      post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id }))).then(
+        () => {
+          if (phone) history.back();
+          setSelectedInvestigation(undefined);
+        },
+      ),
+    );
   }
 
   const investigation = investigations.find((i) => i.id === selectedInvestigation);
