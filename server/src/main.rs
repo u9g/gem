@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{process::Command, sync::RwLock};
 
+use changes::Changes;
 use conversations::Conversations;
 use names::Names;
 use proto::{
@@ -28,6 +29,7 @@ use proto::{
     RestartClusterResponse,
 };
 
+mod changes;
 mod conversations;
 mod investigations;
 mod launcher;
@@ -264,13 +266,19 @@ async fn run_server() {
         .set(String::from_utf8(login).unwrap().trim().to_string())
         .unwrap();
 
-    let repos: Cache<Value> = cached(|| gh_json(REPOS));
+    // Nothing watches the repositories for changes.
+    let repos: Cache<Value> = cached(|| gh_json(REPOS), Changes::default());
     let names = Names::load().await;
     let conversations = Conversations::load().await;
+    let changes = Changes::default();
+    changes.poll();
     let prs: Cache<ListOpenPullRequestsResponse> = {
-        let names = names.clone();
-        let conversations = conversations.clone();
-        cached(move || open_pull_requests(names.clone(), conversations.clone()))
+        let (names, conversations, watched) =
+            (names.clone(), conversations.clone(), changes.clone());
+        cached(
+            move || open_pull_requests(names.clone(), conversations.clone(), watched.clone()),
+            changes,
+        )
     };
 
     // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
@@ -394,8 +402,9 @@ async fn healthz() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
-// Requests never call GitHub; a failed refresh keeps serving the last good result.
-fn cached<T, F, Fut>(refresh: F) -> Cache<T>
+// Requests never call GitHub; a failed refresh keeps serving the last good result. Refreshes as
+// soon as `changes` sees GitHub change, and every REFRESH_INTERVAL for what it does not watch.
+fn cached<T, F, Fut>(refresh: F, changes: Changes) -> Cache<T>
 where
     T: Send + Sync + 'static,
     F: Fn() -> Fut + Send + 'static,
@@ -408,7 +417,10 @@ where
             if let Some(value) = refresh().await {
                 *writer.write().await = Some(value);
             }
-            tokio::time::sleep(REFRESH_INTERVAL).await;
+            tokio::select! {
+                () = tokio::time::sleep(REFRESH_INTERVAL) => {}
+                () = changes.changed() => {}
+            }
         }
     });
     cache
@@ -453,6 +465,7 @@ async fn filled(
 async fn open_pull_requests(
     names: Names,
     conversations: Conversations,
+    changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
     let search = std::env::var("GEM_SEARCH").unwrap_or_default();
     let stdout = gh(&[
@@ -471,6 +484,7 @@ async fn open_pull_requests(
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
+    changes.watch(&prs).await;
     let clusters = cluster(&prs, &behind(&prs).await);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;

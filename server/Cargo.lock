@@ -2421,6 +2421,8 @@ dependencies = [
  "pbjson-types",
  "prost",
  "prost-build",
+ "reqwest 0.13.5",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
