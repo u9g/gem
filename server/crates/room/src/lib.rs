@@ -56,6 +56,8 @@ where
     let room = env::var("GEM_ROOM").expect("GEM_ROOM is not set");
     let rooms = RoomClient::new(&url).expect("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set");
     let mut terminate = terminate();
+    // Counts the times the server has been in the room, to tell one stay's events from another's.
+    let mut session: u64 = 0;
     loop {
         // A room that does not exist yet has no frontend in it.
         let occupied = rooms
@@ -63,10 +65,16 @@ where
             .await
             .is_ok_and(|p| !p.is_empty());
         if occupied {
-            match join(&url, &room, &handler, &mut snapshots, &mut terminate).await {
+            session += 1;
+            // Everything logged during this stay in the room, requests included, carries it.
+            let span = tracing::info_span!("room_session", room = %room, session);
+            match join(&url, &room, &handler, &mut snapshots, &mut terminate)
+                .instrument(span.clone())
+                .await
+            {
                 Ok(Left::Terminated) => return,
                 Ok(Left::Empty) => {}
-                Err(error) => tracing::error!(room = %room, %error, "room lost"),
+                Err(error) => span.in_scope(|| tracing::error!(%error, "room lost")),
             }
         }
         tokio::select! {
@@ -104,15 +112,17 @@ where
         .to_jwt()?;
     let (room, mut events) = Room::connect(url, &token, RoomOptions::default()).await?;
     tracing::info!(
-        room = name,
         frontends = room.remote_participants().len(),
         "joined the room"
     );
     let handler = handler.clone();
+    // LiveKit answers requests on its own tasks, outside this stay's span unless it is named.
+    let session = tracing::Span::current();
     room.local_participant()
         .register_rpc_method(METHOD.to_string(), move |data| {
             // Everything logged while answering carries the request's ID and caller.
             let span = tracing::info_span!(
+                parent: &session,
                 "rpc",
                 request_id = %data.request_id,
                 caller = %data.caller_identity,
@@ -126,13 +136,9 @@ where
                     let elapsed_ms = started.elapsed().as_millis() as u64;
                     match &reply {
                         Ok(_) => tracing::info!(elapsed_ms, timeout_ms, "rpc answered"),
-                        Err((code, message)) => tracing::warn!(
-                            elapsed_ms,
-                            timeout_ms,
-                            code,
-                            message,
-                            "rpc failed"
-                        ),
+                        Err((code, message)) => {
+                            tracing::warn!(elapsed_ms, timeout_ms, code, message, "rpc failed")
+                        }
                     }
                     reply.map_err(|(code, message)| RpcError::new(code, message, None))
                 }
