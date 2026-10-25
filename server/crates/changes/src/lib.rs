@@ -5,11 +5,10 @@ use reqwest::{
     header::{ETAG, IF_NONE_MATCH},
 };
 use tokio::{
+    process::Command,
     sync::{Mutex, Notify},
     task::JoinSet,
 };
-
-use crate::{SearchedPullRequest, gh};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 // GitHub allows 900 REST points a minute and documents no exemption for a 304.
@@ -17,9 +16,9 @@ const REQUESTS_PER_MINUTE: u32 = 600;
 // GitHub allows 100 concurrent requests.
 const CONCURRENT_REQUESTS: usize = 50;
 
-// Notices GitHub changing what gem shows of the open pull requests, between refreshes. Each poll
-// asks for every watched response again with its last ETag; GitHub answers 304 Not Modified
-// while it is unchanged, which costs none of the hourly rate limit.
+// Notices GitHub changing the REST responses it watches. Each poll asks for every one again with
+// its last ETag; GitHub answers 304 Not Modified while it is unchanged, which costs none of the
+// hourly rate limit.
 #[derive(Clone, Default)]
 pub struct Changes(Arc<Inner>);
 
@@ -31,21 +30,8 @@ struct Inner {
 }
 
 impl Changes {
-    // Each PR's own response changes with pushes, its title, comments, reviews and closing; its
-    // head commit's check runs and statuses with its checks; and its base branch with `behind`.
-    pub async fn watch(&self, prs: &[SearchedPullRequest]) {
-        let mut paths: Vec<String> = prs
-            .iter()
-            .flat_map(|pr| {
-                let repo = format!("repos/{}/{}", pr.repository.owner, pr.repository.name);
-                [
-                    format!("{repo}/pulls/{}", pr.number),
-                    format!("{repo}/commits/{}/check-runs?per_page=100", pr.head_oid),
-                    format!("{repo}/commits/{}/status", pr.head_oid),
-                    format!("{repo}/git/ref/heads/{}", pr.base),
-                ]
-            })
-            .collect();
+    // Watches `paths`, REST paths under https://api.github.com/, instead of the ones before.
+    pub async fn watch(&self, mut paths: Vec<String>) {
         paths.sort();
         paths.dedup();
         *self.0.paths.lock().await = paths;
@@ -68,10 +54,9 @@ impl Changes {
                 let paths = changes.0.paths.lock().await.clone();
                 let interval = Duration::from_secs(60) * paths.len() as u32 / REQUESTS_PER_MINUTE;
                 tokio::time::sleep(interval.max(POLL_INTERVAL)).await;
-                let Some(token) = gh(&["auth", "token"]).await else {
+                let Some(token) = token().await else {
                     continue;
                 };
-                let token = String::from_utf8_lossy(&token).trim().to_string();
                 etags.retain(|path, _| paths.contains(path));
                 let mut changed = false;
                 for chunk in paths.chunks(CONCURRENT_REQUESTS) {
@@ -110,4 +95,14 @@ impl Changes {
             }
         });
     }
+}
+
+// The token gh is authenticated with, asked for every poll so a new login is picked up.
+async fn token() -> Option<String> {
+    let output = Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .await
+        .ok()?;
+    (output.status.success()).then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use changes::Changes;
+use gem_changes::Changes;
 use conversations::Conversations;
 use names::Names;
 use proto::{
@@ -29,7 +29,6 @@ use proto::{
     RestartClusterResponse,
 };
 
-mod changes;
 mod conversations;
 mod investigations;
 mod mcp;
@@ -477,7 +476,7 @@ async fn open_pull_requests(
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
-    changes.watch(&prs).await;
+    changes.watch(watched(&prs)).await;
     let clusters = cluster(&prs, &behind(&prs).await);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
@@ -487,6 +486,23 @@ async fn open_pull_requests(
         search,
         investigations: Vec::new(),
     })
+}
+
+// What `changes` asks GitHub about each PR. Its own response changes with pushes, its title,
+// comments, reviews and closing; its head commit's check runs and statuses with its checks; and its
+// base branch with `behind`.
+fn watched(prs: &[SearchedPullRequest]) -> Vec<String> {
+    (prs.iter())
+        .flat_map(|pr| {
+            let repo = format!("repos/{}/{}", pr.repository.owner, pr.repository.name);
+            [
+                format!("{repo}/pulls/{}", pr.number),
+                format!("{repo}/commits/{}/check-runs?per_page=100", pr.head_oid),
+                format!("{repo}/commits/{}/status", pr.head_oid),
+                format!("{repo}/git/ref/heads/{}", pr.base),
+            ]
+        })
+        .collect()
 }
 
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
