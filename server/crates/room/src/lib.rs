@@ -1,11 +1,8 @@
-mod http;
+use std::{env, error::Error, future::Future, sync::Arc, time::Duration};
 
-use std::{env, error::Error, time::Duration};
-
-use axum::Router;
 use livekit::{
     StreamTextOptions,
-    prelude::{Room, RoomEvent, RoomOptions},
+    prelude::{Room, RoomEvent, RoomOptions, RpcError},
 };
 use livekit_api::{
     access_token::{AccessToken, VideoGrants},
@@ -13,8 +10,9 @@ use livekit_api::{
 };
 use tokio::sync::watch;
 
-// The frontend sends every request to this participant.
+// The frontend sends every request to this participant, as an RPC call to this method.
 const IDENTITY: &str = "server";
+const METHOD: &str = "http";
 // How long a frontend waits for the server to join after the frontend does.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 // Every frontend in the room receives the snapshots on this topic.
@@ -38,14 +36,21 @@ enum Left {
     Terminated,
 }
 
-// The router's requests, carried over a room in the user's own LiveKit project instead of a port:
-// nothing listens on the network. LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET name the
+// Answers the frontends' requests with `handler`, which is given each request's payload and
+// returns the reply, or an error code and message for the frontend to see. The requests are
+// carried over a room in the user's own LiveKit project instead of a port: nothing listens on the
+// network. LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET name the
 // project and GEM_ROOM the room, so several servers can share a project. Each new snapshot is sent
 // to the frontends in the room. Returns on SIGTERM.
 //
 // Every connected participant costs the project's connection minutes, so the server is in the
 // room only while a frontend is.
-pub async fn serve(app: Router, mut snapshots: watch::Receiver<String>) {
+pub async fn serve<H, F>(handler: H, mut snapshots: watch::Receiver<String>)
+where
+    H: Fn(String) -> F + Send + Sync + 'static,
+    F: Future<Output = Result<String, (u32, String)>> + Send + 'static,
+{
+    let handler = Arc::new(handler);
     let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
     let room = env::var("GEM_ROOM").expect("GEM_ROOM is not set");
     let rooms = RoomClient::new(&url).expect("LIVEKIT_API_KEY or LIVEKIT_API_SECRET is not set");
@@ -57,7 +62,7 @@ pub async fn serve(app: Router, mut snapshots: watch::Receiver<String>) {
             .await
             .is_ok_and(|p| !p.is_empty());
         if occupied {
-            match join(&url, &room, &app, &mut snapshots, &mut terminate).await {
+            match join(&url, &room, &handler, &mut snapshots, &mut terminate).await {
                 Ok(Left::Terminated) => return,
                 Ok(Left::Empty) => {}
                 Err(error) => eprintln!("room: {error}"),
@@ -74,13 +79,17 @@ pub async fn serve(app: Router, mut snapshots: watch::Receiver<String>) {
 // offline at once instead of after LiveKit's participant timeout. Errors when the room is lost;
 // the SDK reconnects through shorter outages itself. A frontend loads the current snapshot when
 // the server joins, so only later ones are sent.
-async fn join(
+async fn join<H, F>(
     url: &str,
     name: &str,
-    app: &Router,
+    handler: &Arc<H>,
     snapshots: &mut watch::Receiver<String>,
     terminate: &mut Terminate,
-) -> Result<Left, Box<dyn Error>> {
+) -> Result<Left, Box<dyn Error>>
+where
+    H: Fn(String) -> F + Send + Sync + 'static,
+    F: Future<Output = Result<String, (u32, String)>> + Send + 'static,
+{
     let token = AccessToken::new()?
         .with_identity(IDENTITY)
         .with_grants(VideoGrants {
@@ -93,7 +102,16 @@ async fn join(
         })
         .to_jwt()?;
     let (room, mut events) = Room::connect(url, &token, RoomOptions::default()).await?;
-    http::serve(&room.local_participant(), app.clone());
+    let handler = handler.clone();
+    room.local_participant()
+        .register_rpc_method(METHOD.to_string(), move |data| {
+            let reply = handler(data.payload);
+            Box::pin(async move {
+                reply
+                    .await
+                    .map_err(|(code, message)| RpcError::new(code, message, None))
+            })
+        });
     // The last frontend can leave between the poll and the join.
     let mut left = room.remote_participants().is_empty().then_some(Left::Empty);
     snapshots.mark_unchanged();

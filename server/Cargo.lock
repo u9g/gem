@@ -715,6 +715,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "serde",
+ "serde_json",
+ "tower",
+]
+
+[[package]]
 name = "gem-launcher"
 version = "0.1.0"
 dependencies = [
@@ -745,13 +755,9 @@ dependencies = [
 name = "gem-room"
 version = "0.1.0"
 dependencies = [
- "axum",
  "livekit",
  "livekit-api",
- "serde",
- "serde_json",
  "tokio",
- "tower",
 ]
 
 [[package]]
@@ -2527,6 +2533,7 @@ dependencies = [
  "dotenvy",
  "gem-db",
  "gem-github",
+ "gem-http",
  "gem-launcher",
  "gem-proto",
  "gem-rebases",

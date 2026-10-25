@@ -13,6 +13,7 @@ axum = "0.8.9"
 dotenvy = "0.15.7"
 gem-db = { path = "crates/db" }
 gem-github = { path = "crates/github" }
+gem-http = { path = "crates/http" }
 gem-launcher = { path = "crates/launcher" }
 gem-proto = { path = "crates/proto" }
 gem-rebases = { path = "crates/rebases" }
