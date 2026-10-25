@@ -21,7 +21,7 @@ export function InvestigationView({
   investigation: Investigation;
   ago: (date: Date) => string;
   busy?: ReadonlySet<string>;
-  onApprove: (id: string, reply: string, followUp: string) => void;
+  onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
   onDismiss: (id: string) => void;
   // Resolves once the message is sent.
   onMessage: (message: string) => Promise<unknown>;

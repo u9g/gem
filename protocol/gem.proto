@@ -252,6 +252,9 @@ message ApproveProposalRequest {
   // The user's rewrite of the proposal's follow-up prompt, run in its place. Empty
   // runs the prompt as proposed.
   string follow_up = 3;
+  // The user's rewrite of the proposal's patch diff, committed in its place. Empty
+  // commits the patch as proposed.
+  string diff = 4;
 }
 
 message ApproveProposalResponse {}

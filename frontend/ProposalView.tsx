@@ -50,8 +50,8 @@ export function ProposalGroup({
   // Proposals being approved or dismissed.
   busy?: ReadonlySet<string>;
   // Called with the user's rewrites of the reply and follow-up prompt where that version is showing,
-  // and '' otherwise.
-  onApprove: (id: string, reply: string, followUp: string) => void;
+  // and of the patch's diff where it differs, and '' otherwise.
+  onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
   onDismiss: (id: string) => void;
   // Approves a rerun and starts an investigation of the checks it reruns.
   onInvestigate?: (id: string) => void;
@@ -85,7 +85,7 @@ export function ProposalGroup({
       busy={busy?.has(proposal.id) === true}
       // Approving one alternative clears the others.
       disabled={proposals.some((p) => busy?.has(p.id))}
-      onApprove={(reply, followUp) => onApprove(proposal.id, reply, followUp)}
+      onApprove={(reply, followUp, diff) => onApprove(proposal.id, reply, followUp, diff)}
       onDismiss={() => onDismiss(proposal.id)}
       onInvestigate={onInvestigate && (() => onInvestigate(proposal.id))}
     />
@@ -105,7 +105,7 @@ function ProposalView({
   stepper: ReactNode;
   busy: boolean;
   disabled: boolean;
-  onApprove: (reply: string, followUp: string) => void;
+  onApprove: (reply: string, followUp: string, diff: string) => void;
   onDismiss: () => void;
   onInvestigate?: () => void;
 }) {
@@ -114,7 +114,8 @@ function ProposalView({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   const [followUp, setFollowUp] = useState<ReplyDraft>({ yours: proposal.followUp, showing: 'suggested' });
-  const files = proposal.patch ? diffFiles(proposal.patch.diff) : [];
+  const [diff, setDiff] = useState(proposal.patch?.diff ?? '');
+  const files = diffFiles(diff);
   const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
   const comment = proposal.comment;
   const quote =
@@ -138,6 +139,7 @@ function ProposalView({
             onApprove(
               draft.showing === 'yours' ? draft.yours : '',
               followUp.showing === 'yours' ? followUp.yours : '',
+              diff === proposal.patch?.diff ? '' : diff,
             )
           }
         />
@@ -235,7 +237,7 @@ function ProposalView({
                 />
               </Text>
               <Clamp max={130}>
-                <DiffSurface diff={proposal.patch.diff} />
+                <DiffSurface diff={diff} suggested={proposal.patch.diff} onChange={setDiff} />
               </Clamp>
             </>
           ) : proposal.requestedTool ? (

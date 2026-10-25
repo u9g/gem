@@ -75,7 +75,12 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>
 }
 
 // Returns the PR's URL when approving closed it.
-pub async fn approve(id: &str, reply: &str, follow_up: &str) -> Result<Option<String>, String> {
+pub async fn approve(
+    id: &str,
+    reply: &str,
+    follow_up: &str,
+    diff: &str,
+) -> Result<Option<String>, String> {
     let proposals = load(Path::new(DIR)).await;
     let Some((path, mut proposal)) = proposals.iter().find(|(_, p)| p.id == id).cloned() else {
         return Err(format!("no proposal {id}"));
@@ -92,6 +97,9 @@ pub async fn approve(id: &str, reply: &str, follow_up: &str) -> Result<Option<St
         if let Ok(html) = render(&proposal.pull_request_url, follow_up).await {
             proposal.follow_up_html = html;
         }
+    }
+    if let Some(patch) = proposal.patch.as_mut().filter(|_| !diff.is_empty()) {
+        patch.diff = diff.to_string();
     }
     match run(&path, &mut proposal).await {
         // Nothing else on a closed PR needs answering.

@@ -28,7 +28,7 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
     let failure = (proposal.check_failure.clone())
         .filter(|_| proposal.rerun)
         .ok_or("only a rerun of failed checks can be investigated")?;
-    proposals::approve(proposal_id, "", "").await?;
+    proposals::approve(proposal_id, "", "", "").await?;
 
     let pr = &proposal.pull_request_url;
     let (repository, number) = short(pr);

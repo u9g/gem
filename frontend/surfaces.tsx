@@ -1,11 +1,11 @@
-import { Bot, CheckCheck, CircleX, ExternalLink, FileCode, GitPullRequestClosed, Hammer, RotateCcw } from 'lucide-react';
+import { Bot, CheckCheck, CircleX, ExternalLink, FileCode, GitPullRequestClosed, Hammer, RotateCcw, Undo2 } from 'lucide-react';
 import { createContext, type CSSProperties, type ReactNode, useContext, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
 
 import type { CheckFailure, Comment, Proposal } from './gen/gem_pb';
-import { splitFiles } from './patch';
+import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // T3 Code's surfaces for what a proposal does, rebuilt in React Native.
@@ -32,24 +32,58 @@ function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
 }
 
 // T3 Code's diff surface: code background, tinted add/delete lines, a new-line-number gutter.
-// `header` replaces each file header's stats, e.g. with an error mark.
-export function DiffSurface({ diff, header }: { diff: string; header?: ReactNode }) {
+// `header` replaces each file header's stats, e.g. with an error mark. Given `onChange`, each file's
+// Diff / Edit switch flips it to the code the patch leaves, to rewrite; `diff` is then the user's
+// rewrite of `suggested`, which has the same files.
+export function DiffSurface({
+  diff,
+  header,
+  suggested,
+  onChange,
+}: {
+  diff: string;
+  header?: ReactNode;
+  suggested?: string;
+  onChange?: (diff: string) => void;
+}) {
+  const files = splitFiles(diff);
+  const theirs = suggested === undefined ? [] : splitFiles(suggested);
   return (
     <View style={{ gap: 8 }}>
-      {splitFiles(diff).map((file, i) => (
-        <DiffFile key={i} file={file} header={header} />
+      {files.map((file, i) => (
+        <DiffFile
+          key={i}
+          file={file}
+          header={header}
+          suggested={theirs[i]}
+          onChange={onChange && ((edited) => onChange(files.map((f, j) => (j === i ? edited : f)).join('\n')))}
+        />
       ))}
     </View>
   );
 }
 
 // One file of a patch; renders nothing for a piece without a file.
-function DiffFile({ file: piece, header }: { file: string; header?: ReactNode }) {
+function DiffFile({
+  file: piece,
+  header,
+  suggested,
+  onChange,
+}: {
+  file: string;
+  header?: ReactNode;
+  suggested?: string;
+  onChange?: (file: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
   const [file] = parseDiff(piece);
   if (!file) return null;
   const [stat] = diffFiles(piece);
+  const hunks = onChange && newSides(piece);
+  const edited = suggested !== undefined && piece !== suggested;
   // Wide enough for the file's longest line number, so numbers never wrap.
-  const digits = String(Math.max(0, ...file.lines.map((line) => line.number ?? 0))).length;
+  const numbers = editing && hunks ? hunks.map((hunk) => hunk.start + hunk.lines.length - 1) : file.lines.map((line) => line.number ?? 0);
+  const digits = String(Math.max(0, ...numbers)).length;
   const gutter = { width: digits * 7 + 14 };
   return (
     <View style={styles.diffSurface}>
@@ -58,11 +92,51 @@ function DiffFile({ file: piece, header }: { file: string; header?: ReactNode })
         <Text numberOfLines={1} style={styles.diffPath}>
           {file.path.split('/').slice(-2).join('/')}
         </Text>
+        {edited && <Text style={styles.edited}>Edited</Text>}
+        {edited && (
+          <Pressable accessibilityLabel="Revert to the suggestion" onPress={() => onChange!(suggested)} style={styles.revert}>
+            <Icon icon={Undo2} size={12} />
+          </Pressable>
+        )}
         {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
+        {hunks && (
+          <View style={[styles.segmented, { marginLeft: 4 }]}>
+            {[false, true].map((edit) => (
+              <Pressable key={String(edit)} onPress={() => setEditing(edit)} style={[styles.segment, editing === edit && styles.segmentOn]}>
+                <Text style={[styles.segmentText, editing === edit && { color: t3.foreground }]}>{edit ? 'Edit' : 'Diff'}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
       </View>
       <ScrollView horizontal contentContainerStyle={styles.diffLines}>
         <View style={styles.diffLines}>
-          {file.lines.map((line, i) =>
+          {editing && hunks
+            ? hunks.map((hunk, i) => (
+                <View key={i}>
+                  <Text style={styles.hunk}>
+                    {'  ⋯  '}
+                    {hunk.context}
+                  </Text>
+                  <View style={styles.diffLine}>
+                    <View>
+                      {hunk.lines.map((_, n) => (
+                        <Text key={n} numberOfLines={1} style={[styles.gutter, gutter]}>
+                          {hunk.start + n}
+                        </Text>
+                      ))}
+                    </View>
+                    <TextInput
+                      multiline
+                      autoFocus={i === 0}
+                      value={hunk.lines.join('\n')}
+                      onChangeText={(text) => onChange!(editHunk(piece, i, text === '' ? [] : text.split('\n')))}
+                      style={[styles.diffText, styles.codeInput]}
+                    />
+                  </View>
+                </View>
+              ))
+            : file.lines.map((line, i) =>
             line.kind === 'hunk' ? (
               <Text key={i} style={styles.hunk}>
                 {'  ⋯  '}
@@ -184,7 +258,8 @@ export function Clamp({ max, children }: { max: number; children: ReactNode }) {
   // Cutting less than a couple of lines saves nothing.
   const cut = height > max + 24;
   return (
-    <View>
+    // Focus inside opens it, so nothing being typed in is cut off.
+    <View onFocus={() => setOpen(true)}>
       <View style={[{ overflow: 'hidden' }, cut && !open && ({ maxHeight: max, ...fade } as object)]}>
         <View onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>{children}</View>
       </View>
@@ -444,6 +519,26 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     whiteSpace: 'pre',
   } as object,
+  // A textarea exactly as big as its code, so the surface scrolls it like the diff's lines.
+  codeInput: {
+    color: t3.foreground,
+    padding: 0,
+    outlineStyle: 'solid',
+    outlineWidth: 0,
+    fieldSizing: 'content',
+    resize: 'none',
+  } as object,
+  edited: {
+    color: t3.muted,
+    fontSize: 11,
+  },
+  revert: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   bubble: {
     maxWidth: '80%',
     gap: 8,
