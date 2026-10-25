@@ -433,8 +433,7 @@ async fn run_server() {
                 tracing::info!(proposal = %request.id, "proposal dismissed");
                 Json(DismissProposalResponse {})
             }),
-        )
-        .route("/log", post(log_frontend_events));
+        );
 
     investigations::watch();
     gem_room::serve(
@@ -457,39 +456,6 @@ fn init_logging() {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
-}
-
-// What a frontend saw go wrong where only it could see it, e.g. a request that never reached the
-// server, sent once it can reach the server again.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct FrontendEvent {
-    // When the frontend saw it, as an ISO 8601 time.
-    at: String,
-    event: String,
-    #[serde(default)]
-    fields: Value,
-}
-
-#[derive(Deserialize)]
-struct FrontendLog {
-    // Identifies one page load, so its events can be told from another device's.
-    session: String,
-    events: Vec<FrontendEvent>,
-}
-
-async fn log_frontend_events(Json(log): Json<FrontendLog>) -> Json<Value> {
-    for event in log.events {
-        tracing::warn!(
-            target: "frontend",
-            session = %log.session,
-            at = %event.at,
-            event = %event.event,
-            fields = %event.fields,
-            "frontend event"
-        );
-    }
-    Json(json!({}))
 }
 
 async fn healthz() -> Json<Value> {
