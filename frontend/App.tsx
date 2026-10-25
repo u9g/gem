@@ -1,4 +1,4 @@
-import { create, fromJson, toJson } from '@bufbuild/protobuf';
+import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
@@ -88,18 +88,20 @@ export default function App() {
     clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || SIDEBAR_DEFAULT_WIDTH),
   );
 
+  const show = useCallback(
+    (json: JsonValue) => {
+      const response = fromJson(ListOpenPullRequestsResponseSchema, json);
+      setClusters(response.clusters);
+      setInvestigations(response.investigations);
+      setLogin(response.login);
+      reported(response.login, response.search);
+    },
+    [reported],
+  );
+
   const load = useCallback(
-    () =>
-      post('/prs', toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))).then(
-        (json) => {
-          const response = fromJson(ListOpenPullRequestsResponseSchema, json);
-          setClusters(response.clusters);
-          setInvestigations(response.investigations);
-          setLogin(response.login);
-          reported(response.login, response.search);
-        },
-      ),
-    [post, reported],
+    () => post('/prs', toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))).then(show),
+    [post, show],
   );
 
   // Another profile is another server: nothing shown belongs to it.
