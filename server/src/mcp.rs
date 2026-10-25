@@ -11,7 +11,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::proto::ListOpenPullRequestsResponse;
+use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 
 // The clusters as gem last showed them, with their names and proposals, relative to the
 // server's working directory.
@@ -192,6 +192,13 @@ fn call(state: &Path, tool: &str, arguments: &Value) -> Result<String, String> {
         }
         tool => Err(format!("no tool {tool}")),
     }
+}
+
+// A cluster as `get_cluster` returns it, for prompts of agents that may not reach this server.
+pub fn cluster_json(cluster: &PullRequestCluster) -> String {
+    let mut cluster = serde_json::to_value(cluster).unwrap();
+    strip_html(&mut cluster);
+    serde_json::to_string_pretty(&cluster).unwrap()
 }
 
 fn strip_html(value: &mut Value) {

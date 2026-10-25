@@ -26,13 +26,13 @@ struct ShownThread {
 // threads when they finish.
 pub async fn ask(title: &str, prompt: &str) -> Option<String> {
     let scratch = scratch().ok()?;
-    let output = t3(
-        &[
-            "thread", "start", &scratch, "--title", title, "--wait", "--json", "-",
-        ],
-        prompt,
-    )
-    .await?;
+    let mut args = vec![
+        "thread", "start", &scratch, "--title", title, "--wait", "--json",
+    ];
+    let agent = agent();
+    args.extend(agent.iter().map(String::as_str));
+    args.push("-");
+    let output = t3(&args, prompt).await?;
     let run: Run = serde_json::from_slice(&output).ok()?;
 
     let shown: Option<Shown> = t3(&["thread", "show", "--json", &run.thread_id], "")
@@ -52,6 +52,19 @@ pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
     start_in(&scratch()?, title, prompt).await
 }
 
+// The provider instance and model agents run on, from GEM_T3_PROVIDER and GEM_T3_MODEL, such as
+// `claudeCloud` and `claude-opus-5-5`; T3 Code takes the two together. Without them, agents run
+// on the project's default.
+fn agent() -> Vec<String> {
+    let setting = |name| env::var(name).ok().filter(|value| !value.trim().is_empty());
+    match (setting("GEM_T3_PROVIDER"), setting("GEM_T3_MODEL")) {
+        (Some(provider), Some(model)) => {
+            vec!["--provider".into(), provider, "--model".into(), model]
+        }
+        _ => Vec::new(),
+    }
+}
+
 // T3 Code's scratch space for threads outside any project.
 fn scratch() -> Result<String, String> {
     let home = env::var("HOME").map_err(|e| e.to_string())?;
@@ -61,12 +74,11 @@ fn scratch() -> Result<String, String> {
 // Starts an agent on `prompt` without waiting for it, in the T3 Code project containing
 // `project`. Returns the thread's id.
 pub async fn start_in(project: &str, title: &str, prompt: &str) -> Result<String, String> {
-    let output = t3(
-        &["thread", "start", project, "--title", title, "--json", "-"],
-        prompt,
-    )
-    .await
-    .ok_or("t3: could not run the CLI")?;
+    let mut args = vec!["thread", "start", project, "--title", title, "--json"];
+    let agent = agent();
+    args.extend(agent.iter().map(String::as_str));
+    args.push("-");
+    let output = t3(&args, prompt).await.ok_or("t3: could not run the CLI")?;
     #[derive(Deserialize)]
     struct Started {
         #[serde(rename = "threadId")]
