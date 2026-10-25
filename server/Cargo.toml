@@ -12,6 +12,7 @@ edition = "2024"
 axum = "0.8.9"
 dotenvy = "0.15.7"
 gem-changes = { path = "crates/changes" }
+gem-cluster = { path = "crates/cluster" }
 gem-db = { path = "crates/db" }
 gem-github = { path = "crates/github" }
 gem-http = { path = "crates/http" }

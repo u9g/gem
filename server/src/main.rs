@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
-use gem_changes::Changes;
 use conversations::Conversations;
+use gem_changes::Changes;
 use names::Names;
 use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseInvestigationRequest,
@@ -506,8 +506,8 @@ fn watched(prs: &[SearchedPullRequest]) -> Vec<String> {
 }
 
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
-// branch in the same repository) or one mentions the other. A cluster is a connected component
-// of links, so PRs join through any chain of links, not only direct ones.
+// branch in the same repository) or one mentions the other. A cluster is every PR linked through
+// any chain of links, not only direct ones.
 fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullRequestCluster> {
     let by_url: HashMap<&str, usize> = prs
         .iter()
@@ -520,32 +520,22 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
         .filter_map(|(i, pr)| Some(((&pr.repository, pr.head.as_deref()?), i)))
         .collect();
 
-    let mut parent: Vec<usize> = (0..prs.len()).collect();
-    for (i, pr) in prs.iter().enumerate() {
+    let links = prs.iter().enumerate().flat_map(|(i, pr)| {
         let stacked_on = by_head.get(&(&pr.repository, pr.base.as_str()));
         let mentioned_by = pr
             .mentioned_by
             .iter()
             .filter_map(|url| by_url.get(url.as_str()));
-        for &j in stacked_on.into_iter().chain(mentioned_by) {
-            let (a, b) = (root(&mut parent, i), root(&mut parent, j));
-            parent[a] = b;
-        }
-    }
-
-    let mut clusters: Vec<Vec<&SearchedPullRequest>> = Vec::new();
-    let mut cluster_of_root: HashMap<usize, usize> = HashMap::new();
-    for (i, pr) in prs.iter().enumerate() {
-        let r = root(&mut parent, i);
-        let c = *cluster_of_root.entry(r).or_insert_with(|| {
-            clusters.push(Vec::new());
-            clusters.len() - 1
-        });
-        clusters[c].push(pr);
-    }
+        stacked_on
+            .into_iter()
+            .chain(mentioned_by)
+            .map(move |&j| (i, j))
+    });
+    let clusters = gem_cluster::components(prs.len(), links);
 
     let mut clusters: Vec<PullRequestCluster> = clusters
         .into_iter()
+        .map(|group| group.into_iter().map(|i| &prs[i]).collect::<Vec<_>>())
         .map(|mut members| {
             members.sort_by_key(|pr| (pr.created_at.seconds, pr.created_at.nanos));
             PullRequestCluster {
@@ -595,12 +585,4 @@ async fn behind(prs: &[SearchedPullRequest]) -> HashSet<&str> {
         .filter(|(i, _)| behind.contains(i))
         .map(|(_, pr)| pr.url.as_str())
         .collect()
-}
-
-fn root(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
-    }
-    i
 }

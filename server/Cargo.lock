@@ -708,6 +708,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-cluster"
+version = "0.1.0"
+
+[[package]]
 name = "gem-db"
 version = "0.1.0"
 dependencies = [
@@ -2541,6 +2545,7 @@ dependencies = [
  "axum",
  "dotenvy",
  "gem-changes",
+ "gem-cluster",
  "gem-db",
  "gem-github",
  "gem-http",
