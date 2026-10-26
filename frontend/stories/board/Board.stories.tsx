@@ -8,7 +8,7 @@ import { Board } from '../../Board';
 import { ClusterView } from '../../ClusterView';
 import { type Proposal, type PullRequest, type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { InvestigationView } from '../../InvestigationView';
-import { investigations, proposals } from '../fixtures';
+import { clusterMergeBy, investigations, mergeBy, proposals } from '../fixtures';
 
 // Made-up clusters, at least one in each column. Stories render at the window's width, so view
 // them at a laptop's.
@@ -33,11 +33,17 @@ const pullRequest = (name: string, number: number, title: string, fields: Fields
     title,
     url: `https://github.com/livekit/${name}/pull/${number}`,
     checks: { total: 14, done: 14, failed: 0 },
+    mergeBy: mergeBy(fields),
     ...fields,
   });
 
 const cluster = (name: string, minutes: number, pullRequests: PullRequest[]) =>
-  create(PullRequestClusterSchema, { name, updatedAt: minutesAgo(minutes), pullRequests });
+  create(PullRequestClusterSchema, {
+    name,
+    updatedAt: minutesAgo(minutes),
+    pullRequests,
+    mergeBy: clusterMergeBy(pullRequests),
+  });
 
 const passing = { approved: true, checksPassing: true };
 

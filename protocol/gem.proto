@@ -58,6 +58,9 @@ message PullRequestCluster {
   // Short name for the cluster's shared work, chosen by a T3 Code thread. Empty
   // until that thread replies.
   string name = 3;
+  // How the cluster can merge: by approval when every pull request merges by approval, unspecified
+  // when any cannot merge, and by admin otherwise.
+  MergeBy merge_by = 4;
 }
 
 message PullRequest {
@@ -87,6 +90,20 @@ message PullRequest {
   // Set while a T3 Code agent merges the pull request's cluster. Every pull request it merges has
   // the same one.
   Merge merge = 14;
+  // How the user can merge it.
+  MergeBy merge_by = 15;
+}
+
+// How a pull request can merge, decided by the server.
+enum MergeBy {
+  // It cannot: its checks do not all pass, or it is not approved and the user is not an admin of
+  // its repository.
+  MERGE_BY_UNSPECIFIED = 0;
+  // Its checks pass and it is approved.
+  MERGE_BY_APPROVAL = 1;
+  // Its checks pass but it is not approved. The user is an admin of its repository, so can force it
+  // in past review with `gh pr merge --admin`.
+  MERGE_BY_ADMIN = 2;
 }
 
 // Check runs and commit statuses on a pull request's head commit.
@@ -286,6 +303,9 @@ message RebasePullRequestResponse {}
 message MergeClusterRequest {
   // The cluster's pull requests, oldest first.
   repeated string pull_request_urls = 1;
+  // The user chose to force the cluster's unapproved pull requests in as an admin. Without it, a
+  // cluster that merges by admin is refused.
+  bool admin = 2;
 }
 
 message MergeClusterResponse {}

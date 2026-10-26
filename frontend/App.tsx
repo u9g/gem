@@ -148,11 +148,11 @@ export default function App() {
   }
 
   // Starts an agent merging the cluster's PRs, without opening its thread.
-  function merge(cluster: PullRequestCluster) {
+  function merge(cluster: PullRequestCluster, admin: boolean) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     track(
       `merge ${cluster.pullRequests[0].url}`,
-      post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls }))),
+      post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin }))),
     );
   }
 

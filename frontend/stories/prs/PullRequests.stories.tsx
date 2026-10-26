@@ -8,7 +8,7 @@ import { type PullRequest, ProposalSchema, PullRequestSchema, RebaseSchema } fro
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
 import { Icon, t3 } from '../../t3';
-import { proposals } from '../fixtures';
+import { mergeBy, proposals } from '../fixtures';
 
 // Made-up cluster: one change across three repositories.
 const pullRequest = (name: string, number: number, title: string, status: { approved?: boolean; checksPassing?: boolean; checksFailing?: boolean }) =>
@@ -17,6 +17,7 @@ const pullRequest = (name: string, number: number, title: string, status: { appr
     number,
     title,
     url: `https://github.com/livekit/${name}/pull/${number}`,
+    mergeBy: mergeBy(status),
     ...status,
   });
 
@@ -206,6 +207,7 @@ const step = (title: string, status: Exclude<MessageInitShape<typeof PullRequest
     title,
     url: 'https://github.com/livekit/agents/pull/4821',
     approved: true,
+    mergeBy: mergeBy({ approved: true, ...status }),
     ...status,
   });
 const passed = { total: 8, done: 8, failed: 0 };

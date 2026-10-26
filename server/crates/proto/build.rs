@@ -2,6 +2,8 @@ use std::{env, path::PathBuf};
 
 fn main() {
     let descriptors = PathBuf::from(env::var("OUT_DIR").unwrap()).join("descriptors.bin");
+    // Outside this crate, so Cargo would not otherwise rebuild when it changes.
+    println!("cargo:rerun-if-changed=../../../protocol/gem.proto");
 
     prost_build::Config::new()
         .file_descriptor_set_path(&descriptors)

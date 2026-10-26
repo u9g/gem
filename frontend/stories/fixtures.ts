@@ -3,11 +3,24 @@ import { create } from '@bufbuild/protobuf';
 import {
   type Investigation,
   InvestigationSchema,
+  MergeBy,
   type Proposal,
   ProposalSchema,
   type PullRequest,
   PullRequestSchema,
 } from '../gen/gem_pb';
+
+// What the server would send as a made-up PR's `mergeBy`, and its cluster's.
+export function mergeBy(pr: { approved?: boolean; checksPassing?: boolean; admin?: boolean }): MergeBy {
+  if (!pr.checksPassing) return MergeBy.UNSPECIFIED;
+  if (pr.approved) return MergeBy.APPROVAL;
+  return pr.admin ? MergeBy.ADMIN : MergeBy.UNSPECIFIED;
+}
+
+export function clusterMergeBy(prs: { mergeBy: MergeBy }[]): MergeBy {
+  if (prs.some((pr) => pr.mergeBy === MergeBy.UNSPECIFIED)) return MergeBy.UNSPECIFIED;
+  return prs.some((pr) => pr.mergeBy === MergeBy.ADMIN) ? MergeBy.ADMIN : MergeBy.APPROVAL;
+}
 
 // Made-up conversations shaped like real ones: this repository is public.
 

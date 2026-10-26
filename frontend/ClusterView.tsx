@@ -1,12 +1,12 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { ready, units } from './ClusterRow';
-import type { PullRequestCluster } from './gen/gem_pb';
+import { units } from './ClusterRow';
+import { MergeBy, type PullRequestCluster } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
-import { Button, usePhone } from './t3';
+import { Button, t3, usePhone } from './t3';
 
 const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
 
@@ -17,7 +17,8 @@ export function timeAgo(date: Date): string {
   return relativeTime.format(Math.trunc(seconds / size), unit);
 }
 
-// A cluster's title, its PRs, a button to merge them once every one is approved and passing, the
+// A cluster's title, its PRs, a button to merge them once the server says they can (forcing the
+// unapproved ones in as an admin, said plainly, when that is how), the
 // conversations waiting on u9g, and a box to ask an agent about it unless the phone docks that box
 // below.
 export function ClusterView({
@@ -37,7 +38,8 @@ export function ClusterView({
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
   onRebase: (url: string) => void;
-  onMerge: (cluster: PullRequestCluster) => void;
+  // `admin`: the user chose to force the unapproved pull requests in as an admin.
+  onMerge: (cluster: PullRequestCluster, admin: boolean) => void;
   onInvestigate: (id: string) => void;
   // Starts an agent on the message, which reads the cluster through gem's MCP server. Resolves
   // once the agent started.
@@ -46,11 +48,14 @@ export function ClusterView({
   const phone = usePhone();
   const restarting = busy?.has(cluster.pullRequests[0].url);
   const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
+  const admin = cluster.mergeBy === MergeBy.ADMIN;
+  const forced = cluster.pullRequests.filter((pr) => pr.mergeBy === MergeBy.ADMIN).length;
+  const one = forced === 1;
   return (
     <View style={styles.column}>
       <View style={styles.header}>
         <View style={styles.titleBlock}>
-          <Text style={[styles.title, phone && styles.phoneTitle, ready(cluster) && styles.ready]}>{cluster.name}</Text>
+          <Text style={[styles.title, phone && styles.phoneTitle, cluster.mergeBy === MergeBy.APPROVAL && styles.ready, admin && styles.forceable]}>{cluster.name}</Text>
           <Text style={styles.meta}>
             {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
           </Text>
@@ -64,15 +69,19 @@ export function ClusterView({
       <View style={styles.pullRequests}>
         <PullRequestList pullRequests={cluster.pullRequests} busy={busy} onRebase={onRebase} />
       </View>
-      {ready(cluster) && !cluster.pullRequests.some((pr) => pr.merge) && (
-        <View style={[styles.merge, phone && styles.mergeStacked]}>
-          <Text style={[styles.mergeText, phone && styles.mergeTextStacked]}>Every pull request is approved and its checks pass.</Text>
+      {cluster.mergeBy !== MergeBy.UNSPECIFIED && !cluster.pullRequests.some((pr) => pr.merge) && (
+        <View style={[styles.merge, admin && styles.adminMerge, phone && styles.mergeStacked]}>
+          <Text style={[styles.mergeText, phone && styles.mergeTextStacked]}>
+            {admin
+              ? `${forced} of ${cluster.pullRequests.length} pull requests ${one ? 'is' : 'are'} not approved. Every check passes, and you are an admin of ${one ? 'its repository' : 'their repositories'}, so you can force ${one ? 'it' : 'them'} in past review.`
+              : 'Every pull request is approved and its checks pass.'}
+          </Text>
           <Button
-              label={merging ? 'Starting an agent…' : 'Merge cluster'}
+              label={merging ? 'Starting an agent…' : admin ? 'Force-merge with agent' : 'Merge with agent'}
               variant="default"
               large={phone}
               disabled={restarting || merging}
-              onPress={() => onMerge(cluster)}
+              onPress={() => onMerge(cluster, admin)}
             />
         </View>
       )}
@@ -123,6 +132,9 @@ const styles = StyleSheet.create({
   ready: {
     color: '#4ADE80',
   },
+  forceable: {
+    color: t3.warning,
+  },
   merge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -133,6 +145,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(16, 185, 129, 0.3)',
     backgroundColor: 'rgba(16, 185, 129, 0.06)',
+  },
+  adminMerge: {
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: 'rgba(245, 158, 11, 0.06)',
   },
   // The text takes a line of its own, and the large button grows along the next.
   mergeStacked: {
