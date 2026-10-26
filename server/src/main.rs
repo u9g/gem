@@ -623,7 +623,7 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         title: pr.title.clone(),
                         url: pr.url.clone(),
                         approved: pr.approved,
-                        admin: pr.admin,
+                        mergeable: (pr.approved || pr.admin) && pr.checks_passing,
                         checks_passing: pr.checks_passing,
                         checks_failing: pr.checks_failing,
                         proposals: Vec::new(),
@@ -634,9 +634,14 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         agents: Vec::new(),
                         merge: None,
                     })
-                    .collect(),
+                    .collect::<Vec<_>>(),
                 name: String::new(),
+                mergeable: false,
             }
+        })
+        .map(|mut cluster| {
+            cluster.mergeable = cluster.pull_requests.iter().all(|pr| pr.mergeable);
+            cluster
         })
         .collect();
     clusters.sort_by_key(|c| Reverse(c.updated_at.as_ref().map(|t| (t.seconds, t.nanos))));

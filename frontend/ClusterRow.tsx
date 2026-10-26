@@ -22,15 +22,6 @@ function shortAgo(date: Date): string {
   return `${Math.trunc(seconds / size)}${unit === 'month' ? 'mo' : unit[0]}`;
 }
 
-// Approved, or in a repository the user administers, so can merge without an approval.
-export function mergeable(pr: PullRequest): boolean {
-  return (pr.approved || pr.admin) && pr.checksPassing;
-}
-
-export function ready(cluster: PullRequestCluster): boolean {
-  return cluster.pullRequests.every(mergeable);
-}
-
 // Where a cluster sits on a phone's list, by what it waits on: the user first, then its agents, then
 // only a merge, its checks, or a reviewer.
 export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
@@ -46,7 +37,7 @@ export function section(cluster: PullRequestCluster): (typeof sections)[number] 
     (pr.checksFailing && !running(pr) && pr.agents.length === 0);
   if (prs.some(needsYou)) return 'Needs you';
   if (prs.some((pr) => pr.agents.length > 0 || pr.rebase || pr.merge)) return 'Agents working';
-  if (ready(cluster)) return 'Ready to merge';
+  if (cluster.mergeable) return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';
   return 'Waiting on review';
 }
@@ -92,7 +83,7 @@ export function PhoneClusterRow({
   return (
     <Pressable onPress={onPress} style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}>
       <View style={styles.cardTop}>
-        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, ready(cluster) && styles.ready]}>
+        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, cluster.mergeable && styles.ready]}>
           {cluster.name || cluster.pullRequests[0].title}
         </Text>
         {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}

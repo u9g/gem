@@ -33,11 +33,18 @@ const pullRequest = (name: string, number: number, title: string, fields: Fields
     title,
     url: `https://github.com/livekit/${name}/pull/${number}`,
     checks: { total: 14, done: 14, failed: 0 },
+    // The server marks an approved, passing PR mergeable.
+    mergeable: Boolean(fields.approved && fields.checksPassing),
     ...fields,
   });
 
 const cluster = (name: string, minutes: number, pullRequests: PullRequest[]) =>
-  create(PullRequestClusterSchema, { name, updatedAt: minutesAgo(minutes), pullRequests });
+  create(PullRequestClusterSchema, {
+    name,
+    updatedAt: minutesAgo(minutes),
+    pullRequests,
+    mergeable: pullRequests.every((pr) => pr.mergeable),
+  });
 
 const passing = { approved: true, checksPassing: true };
 

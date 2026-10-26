@@ -1,7 +1,7 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { ready, units } from './ClusterRow';
+import { units } from './ClusterRow';
 import type { PullRequestCluster } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
@@ -51,7 +51,7 @@ export function ClusterView({
     <View style={styles.column}>
       <View style={styles.header}>
         <View style={styles.titleBlock}>
-          <Text style={[styles.title, phone && styles.phoneTitle, ready(cluster) && styles.ready]}>{cluster.name}</Text>
+          <Text style={[styles.title, phone && styles.phoneTitle, cluster.mergeable && styles.ready]}>{cluster.name}</Text>
           <Text style={styles.meta}>
             {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
           </Text>
@@ -65,7 +65,7 @@ export function ClusterView({
       <View style={styles.pullRequests}>
         <PullRequestList pullRequests={cluster.pullRequests} busy={busy} onRebase={onRebase} />
       </View>
-      {ready(cluster) && !cluster.pullRequests.some((pr) => pr.merge) && (
+      {cluster.mergeable && !cluster.pullRequests.some((pr) => pr.merge) && (
         <View style={[styles.merge, phone && styles.mergeStacked]}>
           <Text style={[styles.mergeText, phone && styles.mergeTextStacked]}>Every pull request is approved or yours to merge as an admin, and its checks pass.</Text>
           <Button

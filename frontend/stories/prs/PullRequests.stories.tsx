@@ -17,6 +17,7 @@ const pullRequest = (name: string, number: number, title: string, status: { appr
     number,
     title,
     url: `https://github.com/livekit/${name}/pull/${number}`,
+    mergeable: Boolean(status.approved && status.checksPassing),
     ...status,
   });
 
@@ -206,6 +207,7 @@ const step = (title: string, status: Exclude<MessageInitShape<typeof PullRequest
     title,
     url: 'https://github.com/livekit/agents/pull/4821',
     approved: true,
+    mergeable: Boolean(status.checksPassing),
     ...status,
   });
 const passed = { total: 8, done: 8, failed: 0 };

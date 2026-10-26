@@ -58,6 +58,8 @@ message PullRequestCluster {
   // Short name for the cluster's shared work, chosen by a T3 Code thread. Empty
   // until that thread replies.
   string name = 3;
+  // Every pull request in the cluster is mergeable.
+  bool mergeable = 4;
 }
 
 message PullRequest {
@@ -87,8 +89,9 @@ message PullRequest {
   // Set while a T3 Code agent merges the pull request's cluster. Every pull request it merges has
   // the same one.
   Merge merge = 14;
-  // The user is an admin of the repository, so can merge it without an approval.
-  bool admin = 15;
+  // Its checks pass, and it is approved or the user is an admin of its repository, who can merge
+  // it without an approval.
+  bool mergeable = 15;
 }
 
 // Check runs and commit statuses on a pull request's head commit.

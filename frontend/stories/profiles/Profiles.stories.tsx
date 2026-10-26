@@ -25,6 +25,7 @@ const cluster = (
   create(PullRequestClusterSchema, {
     name,
     updatedAt: minutesAgo(updated),
+    mergeable: prs.every((pr) => pr.approved && pr.checksPassing),
     pullRequests: prs.map(({ owner, repo, number, title, waiting = 0, ...status }) =>
       create(PullRequestSchema, {
         repository: { owner, name: repo },
@@ -32,6 +33,7 @@ const cluster = (
         title,
         url: `https://github.com/${owner}/${repo}/pull/${number}`,
         proposals: proposals.slice(0, waiting),
+        mergeable: Boolean(status.approved && status.checksPassing),
         ...status,
       }),
     ),
