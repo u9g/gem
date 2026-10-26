@@ -9,7 +9,7 @@ import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
 import { type DiffLine, parseDiff } from './surfaces';
-import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
+import { Button, DiffStat, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
 // file: top-level comments and failed checks.
@@ -17,7 +17,7 @@ export type Section = { pr: PullRequest; path: string; groups: Proposal[][] };
 
 // A review comment's file, else the first file its proposal changes.
 function pathOf(proposal: Proposal): string {
-  return proposal.comment?.path || diffFiles(proposal.patch?.diff ?? '')[0]?.path || '';
+  return proposal.comment?.path || parseDiff(proposal.patch?.diff ?? '')[0]?.path || '';
 }
 
 export function sectionsOf(pr: PullRequest): Section[] {
