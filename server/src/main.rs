@@ -37,6 +37,7 @@ mod merges;
 mod names;
 mod proposals;
 mod rebases;
+mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
 use gem_github::{Head, gh, gh_json, login};
@@ -147,12 +148,12 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 // Building the snapshot reads only memory and the state directory.
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(2);
 
-// `serve` runs the server, `propose` records a proposal for it, `mcp` serves its clusters to
-// agents over MCP, and no command runs the launcher, which runs `serve` and keeps it up to date.
+// `serve` runs the server, `mcp` serves its clusters to agents over MCP, and no command runs the
+// launcher, which runs `serve` and keeps it up to date.
 fn main() {
-    // GEM_SEARCH, GEM_T3_PROVIDER and GEM_OP_ITEM, or LIVEKIT_URL, LIVEKIT_API_KEY,
-    // LIVEKIT_API_SECRET and GEM_ROOM themselves, can live in .env in the working directory, next
-    // to the server's other state. The real environment wins.
+    // GEM_SEARCH, GEM_T3_PROVIDER, GEM_MCP_PORT and GEM_OP_ITEM, or LIVEKIT_URL,
+    // LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_ROOM themselves, can live in .env in the working
+    // directory, next to the server's other state. The real environment wins.
     let dotenv = load_dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runtime = || tokio::runtime::Runtime::new().unwrap();
@@ -163,13 +164,6 @@ fn main() {
             runtime().block_on(run_server())
         }
         Some("mcp") => mcp::serve(&args[1..]),
-        Some("propose") => match runtime().block_on(proposals::propose(&args[1..])) {
-            Ok(id) => println!("{id}"),
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
-            }
-        },
         _ => {
             // Nothing restarts the launcher, so it asks again rather than exit.
             while let Err(error) = load_op_item() {
@@ -314,9 +308,10 @@ async fn run_server() {
     merges::init(db).unwrap_or_else(|error| panic!("{error}"));
 
     // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
-    // change. Proposals and investigations change on disk, written by other processes, so the
-    // snapshot is compared rather than announced.
+    // change. Proposals and investigations change on disk, so the snapshot is compared rather than
+    // announced. The agents gem starts propose through `gem-agent`.
     tokio::task::spawn_blocking(mcp::register);
+    tokio::spawn(mcp::listen());
     let (snapshots, snapshot) = tokio::sync::watch::channel(String::new());
     {
         let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());

@@ -47,9 +47,10 @@ pub async fn ask(title: &str, prompt: &str) -> Option<String> {
 }
 
 // Starts an agent on `prompt` without waiting for it, in T3 Code's scratch space for threads
-// outside any project. Returns the thread's id.
-pub async fn start(title: &str, prompt: &str) -> Result<String, String> {
-    start_in(&scratch()?, title, prompt).await
+// outside any project. Returns the thread's id. `mcp` adds MCP servers to the thread's sessions,
+// as Claude Code's `--mcp-config` takes them: JSON, or the path of a file holding it.
+pub async fn start(title: &str, prompt: &str, mcp: Option<&str>) -> Result<String, String> {
+    start_in(&scratch()?, title, prompt, mcp).await
 }
 
 // The provider instance agents run on, from GEM_T3_PROVIDER, such as `claudeCloud`, with the model
@@ -64,16 +65,22 @@ fn agent() -> Vec<String> {
 // T3 Code's scratch space for threads outside any project.
 fn scratch() -> Result<String, String> {
     let home = env::var("HOME").map_err(|e| e.to_string())?;
-    Ok(PathBuf::from(home).join(".t3/scratch").to_string_lossy().into_owned())
+    Ok(PathBuf::from(home)
+        .join(".t3/scratch")
+        .to_string_lossy()
+        .into_owned())
 }
 
 // Starts an agent on `prompt` without waiting for it, in the T3 Code project containing
-// `project`. Returns the thread's id.
-pub async fn start_in(project: &str, title: &str, prompt: &str) -> Result<String, String> {
-    let mut args = vec!["thread", "start", project, "--title", title, "--json"];
+// `project`. Returns the thread's id. `mcp` is as for `start`.
+pub async fn start_in(
+    project: &str,
+    title: &str,
+    prompt: &str,
+    mcp: Option<&str>,
+) -> Result<String, String> {
     let agent = agent();
-    args.extend(agent.iter().map(String::as_str));
-    args.push("-");
+    let args = start_args(project, title, &agent, mcp);
     let output = t3(&args, prompt).await.ok_or("t3: could not run the CLI")?;
     #[derive(Deserialize)]
     struct Started {
@@ -87,6 +94,22 @@ pub async fn start_in(project: &str, title: &str, prompt: &str) -> Result<String
         .find_map(|line| serde_json::from_str::<Started>(line.trim()).ok())
         .map(|started| started.thread_id)
         .ok_or_else(|| format!("t3: {}", output.trim()))
+}
+
+// T3 Code reads the prompt from stdin, after `-`.
+fn start_args<'a>(
+    project: &'a str,
+    title: &'a str,
+    agent: &'a [String],
+    mcp: Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut args = vec!["thread", "start", project, "--title", title, "--json"];
+    args.extend(agent.iter().map(String::as_str));
+    if let Some(mcp) = mcp {
+        args.extend(["--mcp-config", mcp]);
+    }
+    args.push("-");
+    args
 }
 
 // Whether the thread's agent is running, or about to run on the latest message, and its latest
@@ -201,4 +224,38 @@ async fn t3(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
     input.write_all(stdin.as_bytes()).await.ok()?;
     drop(input);
     Some(child.wait_with_output().await.ok()?.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_passes_the_mcp_config_before_the_prompt() {
+        let agent = vec!["--provider".to_string(), "claudeCloud".to_string()];
+        let args = start_args("C:/p", "Fix", &agent, Some("C:/state/agent.mcp.json"));
+        assert_eq!(
+            args,
+            [
+                "thread",
+                "start",
+                "C:/p",
+                "--title",
+                "Fix",
+                "--json",
+                "--provider",
+                "claudeCloud",
+                "--mcp-config",
+                "C:/state/agent.mcp.json",
+                "-",
+            ]
+        );
+    }
+
+    #[test]
+    fn start_without_an_mcp_config_passes_none() {
+        let args = start_args("C:/p", "Rebase", &[], None);
+        assert!(!args.contains(&"--mcp-config"));
+        assert_eq!(args.last(), Some(&"-"));
+    }
 }

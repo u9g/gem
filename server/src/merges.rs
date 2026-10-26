@@ -14,7 +14,7 @@ struct Server;
 
 impl Host for Server {
     async fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
-        t3::start(title, prompt).await
+        t3::start(title, prompt, None).await
     }
 
     async fn progress(&self, thread_id: &str) -> Option<Progress> {
