@@ -7,7 +7,7 @@ import { type ClusterView, MergeBanner, timeAgo } from './ClusterView';
 import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
-import { ChecksIcon } from './PullRequestList';
+import { ChecksIcon, StatusLine } from './PullRequestList';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
@@ -51,7 +51,7 @@ function parseHunks(patch: string): Line[] {
     if (header) {
       [old, next] = [Number(header[1]), Number(header[2])];
       lines.push({ kind: 'hunk', text: line });
-    } else if (!lines.length || line.startsWith('\\')) continue;
+    } else if (!lines.length || line === '' || line.startsWith('\\')) continue;
     else if (line.startsWith('+')) lines.push({ kind: 'add', text: line.slice(1), new: next++ });
     else if (line.startsWith('-')) lines.push({ kind: 'del', text: line.slice(1), old: old++ });
     else lines.push({ kind: 'ctx', text: line.slice(1), old: old++, new: next++ });
@@ -71,6 +71,7 @@ export function ClusterReview(props: Props) {
   // Approving or dismissing the last conversation on a file removes its section.
   const section = sections.find((s) => anchor(s) === chosen) ?? sections[0];
   const restarting = busy?.has(cluster.pullRequests[0].url);
+  const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
   return (
     <View style={styles.page}>
       <View style={styles.sidebar}>
@@ -89,7 +90,7 @@ export function ClusterReview(props: Props) {
           </Text>
           <Button
             label={restarting ? 'Restarting…' : 'Restart investigation'}
-            disabled={restarting}
+            disabled={restarting || merging}
             onPress={() => onRestart(cluster)}
           />
         </View>
@@ -112,6 +113,7 @@ export function ClusterReview(props: Props) {
                 )}
                 {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
               </Pressable>
+              <StatusLine pr={pr} />
               {sectionsOf(pr).map((s) => (
                 <Pressable
                   key={s.path}
@@ -141,17 +143,19 @@ export function ClusterReview(props: Props) {
   );
 }
 
-// One file's diff on its PR with the section's conversations inside it. Conversations on no line of
-// the diff come before it; without a diff, they are all there is.
+// One file's diff on its PR with the section's conversations inside it, each after the line its
+// comment's own hunk ends on. Conversations on no line of the diff, or on a deleted one, come before
+// it; without a diff, they are all there is.
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
   const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
   const lines = parseHunks(patch);
   const placed = new Map<number, Proposal[][]>();
   const unplaced: Proposal[][] = [];
   for (const group of section.groups) {
-    const line = group[0].comment?.line;
-    const at = lines.findIndex((l) => l.kind !== 'del' && l.new === line);
-    if (line && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
+    const comment = group[0].comment;
+    const last = comment?.diffHunk.split('\n').at(-1) ?? '';
+    const at = lines.findIndex((l) => l.kind !== 'del' && l.new === comment?.line && l.text === last.slice(1));
+    if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
     else unplaced.push(group);
   }
   const thread = (group: Proposal[], inline: boolean) => (

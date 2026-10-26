@@ -199,7 +199,7 @@ function ProposalView({
           {anchored && !inline && comment?.diffHunk && (
             <DiffSurface
               diff={anchorDiff(comment.path, comment.diffHunk)}
-              header={<Text style={styles.meta}>line {comment.line}</Text>}
+              header={<Text style={styles.meta}>{comment.line ? `line ${comment.line}` : 'outdated'}</Text>}
             />
           )}
           {proposal.earlierComments.map((earlier) => (
