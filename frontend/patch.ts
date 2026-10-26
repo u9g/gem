@@ -3,7 +3,17 @@
 export function splitFiles(diff: string): string[] {
   const lines = diff.split('\n');
   const starts = [0];
+  // Lines left in the current hunk on each side, from its header; within them, every line is code.
+  let [oldLeft, newLeft] = [0, 0];
   lines.forEach((line, i) => {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith('+')) newLeft--;
+      else if (line.startsWith('-')) oldLeft--;
+      else if (!line.startsWith('\\')) [oldLeft, newLeft] = [oldLeft - 1, newLeft - 1];
+      return;
+    }
+    const hunk = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))?/.exec(line);
+    if (hunk) [oldLeft, newLeft] = [Number(hunk[1] ?? 1), Number(hunk[2] ?? 1)];
     if (!line.startsWith('+++ ') || !lines[i - 1]?.startsWith('--- ')) return;
     let start = i - 1;
     const previous = starts[starts.length - 1];
