@@ -8,6 +8,7 @@ import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
+import { parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
@@ -38,25 +39,6 @@ export const anchor = (section: Section) => `${section.pr.url}:${section.path}`;
 
 function label(path: string): string {
   return path ? path.split('/').slice(-2).join('/') : 'Conversation';
-}
-
-type Line = { kind: 'hunk' | 'ctx' | 'add' | 'del'; text: string; old?: number; new?: number };
-
-// GitHub's hunks for one file, numbered on both sides.
-function parseHunks(patch: string): Line[] {
-  const lines: Line[] = [];
-  let [old, next] = [0, 0];
-  for (const line of patch.split('\n')) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-    if (header) {
-      [old, next] = [Number(header[1]), Number(header[2])];
-      lines.push({ kind: 'hunk', text: line });
-    } else if (!lines.length || line === '' || line.startsWith('\\')) continue;
-    else if (line.startsWith('+')) lines.push({ kind: 'add', text: line.slice(1), new: next++ });
-    else if (line.startsWith('-')) lines.push({ kind: 'del', text: line.slice(1), old: old++ });
-    else lines.push({ kind: 'ctx', text: line.slice(1), old: old++, new: next++ });
-  }
-  return lines;
 }
 
 type Props = Parameters<typeof ClusterView>[0];
@@ -148,13 +130,14 @@ export function ClusterReview(props: Props) {
 // it; without a diff, they are all there is.
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
   const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
-  const lines = parseHunks(patch);
+  // GitHub's hunks for the file come without a file header.
+  const lines = parseDiff(`+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
   const placed = new Map<number, Proposal[][]>();
   const unplaced: Proposal[][] = [];
   for (const group of section.groups) {
     const comment = group[0].comment;
     const last = comment?.diffHunk.split('\n').at(-1) ?? '';
-    const at = lines.findIndex((l) => l.kind !== 'del' && l.new === comment?.line && l.text === last.slice(1));
+    const at = lines.findIndex((l) => l.kind !== 'del' && l.number === comment?.line && l.text === last.slice(1));
     if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
     else unplaced.push(group);
   }
@@ -196,11 +179,14 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
           {lines.map((line, i) => (
             <Fragment key={i}>
               {line.kind === 'hunk' ? (
-                <Text style={styles.hunk}>{line.text}</Text>
+                <Text style={styles.hunk}>
+                  {'  ⋯  '}
+                  {line.text}
+                </Text>
               ) : (
                 <View style={[styles.line, line.kind === 'add' && styles.add, line.kind === 'del' && styles.del]}>
                   <Text style={styles.number}>{line.old ?? ''}</Text>
-                  <Text style={styles.number}>{line.new ?? ''}</Text>
+                  <Text style={styles.number}>{line.number ?? ''}</Text>
                   <Text
                     style={[
                       styles.text,

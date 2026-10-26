@@ -13,20 +13,22 @@ import { DiffStat, diffFiles, Icon, t3 } from './t3';
 // GitHub login of the user the server runs as.
 export const Login = createContext('');
 
-type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string; number?: number };
+// `number` is the line's number in the new file, `old` in the old one.
+export type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string; number?: number; old?: number };
 
-function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
+export function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
   const files: { path: string; lines: DiffLine[] }[] = [];
-  let next = 0;
+  let [old, next] = [0, 0];
   for (const line of diff.split('\n')) {
     if (line.startsWith('+++ ')) files.push({ path: line.slice(6), lines: [] });
     else if (line.startsWith('@@')) {
+      old = Number(/-(\d+)/.exec(line)?.[1] ?? 0);
       next = Number(/\+(\d+)/.exec(line)?.[1] ?? 0);
       files[files.length - 1].lines.push({ kind: 'hunk', text: line.replace(/^@@[^@]*@@ ?/, '') });
-    } else if (!files.length || line.startsWith('---') || line === '') continue;
+    } else if (!files.length || line.startsWith('---') || line === '' || line.startsWith('\\')) continue;
     else if (line.startsWith('+')) files[files.length - 1].lines.push({ kind: 'add', text: line.slice(1), number: next++ });
-    else if (line.startsWith('-')) files[files.length - 1].lines.push({ kind: 'del', text: line.slice(1) });
-    else files[files.length - 1].lines.push({ kind: 'ctx', text: line.slice(1), number: next++ });
+    else if (line.startsWith('-')) files[files.length - 1].lines.push({ kind: 'del', text: line.slice(1), old: old++ });
+    else files[files.length - 1].lines.push({ kind: 'ctx', text: line.slice(1), number: next++, old: old++ });
   }
   return files;
 }
