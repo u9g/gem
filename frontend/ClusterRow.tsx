@@ -106,10 +106,16 @@ export function PhoneClusterRow({
   );
 }
 
-// A spinner while the agent runs; otherwise a blue dot when it proposes something.
+// A spinner while the agent runs, in a slot as wide when it doesn't, so titles line up.
 function InvestigationMark({ investigation }: { investigation: Investigation }) {
   if (investigation.working) return <ActivityIndicator size={10} color="#8FA8F5" />;
-  return <View style={[styles.dot, investigation.proposals.length > 0 && styles.dotProposals]} />;
+  return <View style={styles.mark} />;
+}
+
+function ToReview({ investigation }: { investigation: Investigation }) {
+  const count = investigation.proposals.length;
+  if (count === 0) return null;
+  return <Text style={styles.toReview}>{count} to review</Text>;
 }
 
 // One line per investigation or follow-up, like a cluster's.
@@ -123,7 +129,6 @@ export function InvestigationRow({
   onPress: () => void;
 }) {
   const [hovered, setHovered] = useState(false);
-  const count = investigation.proposals.length;
   return (
     <Pressable
       onPress={onPress}
@@ -135,21 +140,20 @@ export function InvestigationRow({
       <Text numberOfLines={1} style={styles.rowName}>
         {investigation.title}
       </Text>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
+      <ToReview investigation={investigation} />
       {investigation.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(investigation.startedAt))}</Text>}
     </Pressable>
   );
 }
 
 export function PhoneInvestigationRow({ investigation, onPress }: { investigation: Investigation; onPress: () => void }) {
-  const count = investigation.proposals.length;
   return (
     <Pressable onPress={onPress} style={styles.phoneRow}>
       <InvestigationMark investigation={investigation} />
       <Text numberOfLines={1} style={[styles.phoneRowName, { flex: 1 }]}>
         {investigation.title}
       </Text>
-      {count > 0 && <Text style={styles.count}>{count}</Text>}
+      <ToReview investigation={investigation} />
       {investigation.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(investigation.startedAt))}</Text>}
     </Pressable>
   );
@@ -267,13 +271,18 @@ const styles = StyleSheet.create({
   rowActive: {
     backgroundColor: 'rgba(255, 255, 255, 0.05)',
   },
-  dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+  mark: {
+    width: 10,
   },
-  dotProposals: {
+  toReview: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '600',
+    paddingHorizontal: 7,
+    lineHeight: 18,
+    borderRadius: 9,
     backgroundColor: '#3767E8',
+    fontVariant: ['tabular-nums'],
   },
   rowName: {
     flex: 1,
