@@ -17,6 +17,7 @@ const pullRequest = (name: string, number: number, title: string, status: { appr
     number,
     title,
     url: `https://github.com/livekit/${name}/pull/${number}`,
+    base: 'main',
     mergeBy: mergeBy(status),
     ...status,
   });
@@ -176,10 +177,12 @@ export const AChips: StoryObj = { name: 'A · Chips', render: () => <Chips /> };
 export const BList: StoryObj = { name: 'B · List', render: () => <List /> };
 export const CTabs: StoryObj = { name: 'C · Tabs', render: () => <Tabs /> };
 
-// Behind its base, being rebased, and being rebased by an agent with a question.
+// Behind a base that requires it up to date, conflicting with its base, being rebased, and being
+// rebased by an agent with a question.
 const threadUrl = 'https://app.t3.codes/environment/thread';
 const rebasing = [
   { ...agents, behind: true },
+  { ...pullRequest('client-sdk-swift', 611, 'Close data channels idle for 30 s', {}), behind: true, conflicts: true },
   { ...agentsJs, behind: true, rebase: create(RebaseSchema, { threadUrl }) },
   { ...protocol, behind: true, rebase: create(RebaseSchema, { threadUrl, question: true }) },
   pending,
@@ -206,6 +209,7 @@ const step = (title: string, status: Exclude<MessageInitShape<typeof PullRequest
     number: 4821,
     title,
     url: 'https://github.com/livekit/agents/pull/4821',
+    base: 'main',
     approved: true,
     mergeBy: mergeBy({ approved: true, ...status }),
     ...status,
@@ -214,6 +218,7 @@ const passed = { total: 8, done: 8, failed: 0 };
 const failed = { total: 8, done: 8, failed: 2 };
 const steps = [
   step('Behind its base', { checksPassing: true, checks: passed, behind: true }),
+  step('Conflicts with its base', { checksPassing: true, checks: passed, behind: true, conflicts: true }),
   step('Rebasing', { checksPassing: true, checks: passed, behind: true, rebase: { threadUrl } }),
   step('Rebased, not listed yet', { checksPassing: true, checks: passed, rebase: { threadUrl, pushed: true } }),
   step('Checks running', { checks: { total: 8, done: 3, failed: 0 } }),

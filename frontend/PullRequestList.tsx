@@ -6,10 +6,10 @@ import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
-// On a phone the review state is a check mark when approved, leaving the title room. A PR behind
-// its base branch can be rebased by an agent, which spins until its thread settles; a question
-// from it opens the thread, as does one from an agent merging the cluster. Under the row, a line says what is happening to the PR and what it
-// waits on.
+// On a phone the review state is a check mark when approved, leaving the title room. A PR GitHub
+// will not merge until it is rebased onto its base branch can be rebased by an agent, which spins
+// until its thread settles; a question from it opens the thread, as does one from an agent merging
+// the cluster. Under the row, a line says what is happening to the PR and what it waits on.
 export function PullRequestList({
   pullRequests,
   busy,
@@ -122,7 +122,8 @@ function status(pr: PullRequest): Status | undefined {
     return { doing: `${pr.proposals.length} ${pr.proposals.length === 1 ? 'proposal' : 'proposals'}`, waiting: 'waiting on you' };
   }
   if (checks.failed > 0) return { doing: checksFailed, waiting: 'no proposal for them' };
-  if (pr.behind) return { doing: 'Behind its base branch', waiting: 'waiting on you to rebase' };
+  if (pr.conflicts) return { doing: `Conflicts with ${pr.base}`, waiting: 'waiting on you to rebase' };
+  if (pr.behind) return { doing: `${pr.base} requires it up to date`, waiting: 'waiting on you to rebase' };
   if (pr.mergeBy === MergeBy.APPROVAL) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
   if (pr.mergeBy === MergeBy.ADMIN) return { doing: 'Not approved', waiting: 'you can force it in as an admin', forceable: true };
   return undefined;
