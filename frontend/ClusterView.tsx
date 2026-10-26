@@ -77,7 +77,7 @@ export function ClusterView({
               : 'Every pull request is approved and its checks pass.'}
           </Text>
           <Button
-              label={merging ? 'Starting an agent…' : admin ? 'Force merge as admin' : 'Merge cluster'}
+              label={merging ? 'Starting an agent…' : admin ? 'Force-merge with agent' : 'Merge with agent'}
               variant="default"
               large={phone}
               disabled={restarting || merging}
