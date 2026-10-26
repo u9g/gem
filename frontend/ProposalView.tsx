@@ -40,8 +40,8 @@ export function bySubject(list: Proposal[]): Proposal[][] {
 function anchorDiff(path: string, hunk: string, lines = 6): string {
   const [header, ...body] = hunk.split('\n');
   const kept = body.slice(-lines);
-  // The new side's start moves past every dropped line but deletions.
-  const start = Number(/\+(\d+)/.exec(header)?.[1] ?? 1) + body.slice(0, -lines).filter((l) => !l.startsWith('-')).length;
+  // The new side's start moves past every dropped line the new file has: context and additions.
+  const start = Number(/\+(\d+)/.exec(header)?.[1] ?? 1) + body.slice(0, -lines).filter((l) => /^[ +]/.test(l)).length;
   return `--- a/${path}\n+++ b/${path}\n@@ -0,0 +${start} @@\n${kept.join('\n')}`;
 }
 
