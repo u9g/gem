@@ -83,10 +83,12 @@ pub async fn graphql(query: &str, variables: &[(&str, &str)]) -> Result<Vec<u8>,
     command("gh", &args, None).await
 }
 
-// Fails with the command's stderr, which is what the user sees on a failed approval.
+// Fails with the command's stderr, which is what the user sees on a failed approval. A caller that
+// stops waiting stops the command too.
 pub async fn command(program: &str, args: &[&str], stdin: Option<&str>) -> Result<Vec<u8>, String> {
     let mut child = Command::new(program)
         .args(args)
+        .kill_on_drop(true)
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
