@@ -43,7 +43,11 @@ function label(path: string): string {
 
 const MAIN = 'cluster-review-file';
 
-type Props = Parameters<typeof ClusterView>[0];
+type Props = Parameters<typeof ClusterView>[0] & {
+  // Starts an agent on the message, which reads the cluster through gem's MCP server. Resolves
+  // once the agent started.
+  onMessage?: (message: string) => Promise<unknown>;
+};
 
 // The open cluster on a wide screen, as a code review: a sidebar of the cluster's PRs and the files
 // their conversations are on, and the chosen file's diff with each conversation inside it, after
