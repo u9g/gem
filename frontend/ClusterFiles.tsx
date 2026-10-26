@@ -3,7 +3,7 @@ import { FileCode, MessagesSquare } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type ClusterView, MergeBanner, timeAgo } from './ClusterView';
+import { type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
 import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
@@ -53,7 +53,7 @@ type Props = Parameters<typeof ClusterView>[0] & {
 // their conversations are on, and the chosen file's diff with each conversation inside it, after
 // the line its review comment is on.
 export function ClusterReview(props: Props) {
-  const { cluster, busy, onRestart, onRebase, onMerge, onMessage } = props;
+  const { cluster, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
   const sections = cluster.pullRequests.flatMap(sectionsOf);
   const [chosen, setChosen] = useState<string>();
   // Approving or dismissing the last conversation on a file removes its section.
@@ -72,10 +72,11 @@ export function ClusterReview(props: Props) {
         >
           {cluster.name}
         </Text>
+        <Text style={styles.meta}>
+          {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+        </Text>
         <View style={styles.row}>
-          <Text style={[styles.meta, { flex: 1 }]}>
-            {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
-          </Text>
+          <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
           <Button
             label={restarting ? 'Restarting…' : 'Restart investigation'}
             disabled={restarting || merging}

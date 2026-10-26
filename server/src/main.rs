@@ -26,8 +26,9 @@ use proto::{
     InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
     ListOpenPullRequestsResponse, MergeBy, MergeClusterRequest, MergeClusterResponse,
     MessageClusterRequest, MessageClusterResponse, MessageInvestigationRequest,
-    MessageInvestigationResponse, PullRequest, PullRequestCluster, RebasePullRequestRequest,
-    RebasePullRequestResponse, Repository, RestartClusterRequest, RestartClusterResponse,
+    MessageInvestigationResponse, PullRequest, PullRequestCluster, RebaseClusterRequest,
+    RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse, Repository,
+    RestartClusterRequest, RestartClusterResponse,
 };
 
 mod conversations;
@@ -384,6 +385,20 @@ async fn run_server() {
                 merges::start(cluster)
                     .await
                     .map(|()| Json(MergeClusterResponse {}))
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
+            })
+        })
+        .route("/clusters/rebase", {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            post(|Json(request): Json<RebaseClusterRequest>| async move {
+                let response = filled(&prs, &names, &conversations).await;
+                let first = request.pull_request_urls.first();
+                let cluster = (response.iter().flat_map(|r| &r.clusters))
+                    .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
+                    .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                rebases::start_cluster(cluster)
+                    .await
+                    .map(|()| Json(RebaseClusterResponse {}))
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })

@@ -33,6 +33,7 @@ import {
   MessageClusterRequestSchema,
   MessageClusterResponseSchema,
   MessageInvestigationRequestSchema,
+  RebaseClusterRequestSchema,
   RebasePullRequestRequestSchema,
   RestartClusterRequestSchema,
   type PullRequestCluster,
@@ -90,8 +91,9 @@ export default function App() {
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Each request in flight: proposals being approved, dismissed or investigated, the oldest PR's URL
-  // of clusters being restarted, `merge` and that URL for ones whose merge is starting, the URLs of
-  // PRs whose rebase is starting, and investigations being closed.
+  // of clusters being restarted, `merge` and that URL for ones whose merge is starting, `rebase` and
+  // that URL for clusters whose rebase is starting, the URLs of PRs whose rebase is starting, and
+  // investigations being closed.
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
 
@@ -198,6 +200,15 @@ export default function App() {
   // Starts an agent rebasing the PR, without opening its thread.
   function rebase(url: string) {
     track(url, post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url }))));
+  }
+
+  // Starts one agent rebasing every PR of the cluster, without opening its thread.
+  function rebaseCluster(cluster: PullRequestCluster) {
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
+    track(
+      `rebase ${cluster.pullRequests[0].url}`,
+      post('/clusters/rebase', toJson(RebaseClusterRequestSchema, create(RebaseClusterRequestSchema, { pullRequestUrls }))),
+    );
   }
 
   function investigate(proposalId: string) {
@@ -358,6 +369,7 @@ export default function App() {
                     onDismiss={dismiss}
                     onRestart={restart}
                     onRebase={rebase}
+                    onRebaseCluster={rebaseCluster}
                     onMerge={merge}
                     onInvestigate={investigate}
                   />
@@ -430,6 +442,7 @@ export default function App() {
                 onDismiss={dismiss}
                 onRestart={restart}
                 onRebase={rebase}
+                onRebaseCluster={rebaseCluster}
                 onMerge={merge}
                 onInvestigate={investigate}
                 onMessage={(message) => messageCluster(opened, message)}

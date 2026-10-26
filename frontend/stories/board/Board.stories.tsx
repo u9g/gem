@@ -60,6 +60,7 @@ const needsYou = cluster('Retry TTS once on a dropped stream', 5, [
 ]);
 const behind = cluster('Close idle data channels', 12, [
   pullRequest('client-sdk-swift', 611, 'Close data channels idle for 30 s', { checksPassing: true, behind: true }),
+  pullRequest('client-sdk-android', 742, 'Close data channels idle for 30 s', { checksPassing: true, behind: true }),
 ]);
 const ready1 = cluster('Respect the configured S3 region', 180, [
   pullRequest('protocol', 1103, 'Add region to S3 upload options', passing),
@@ -126,6 +127,7 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
               onDismiss={noop}
               onRestart={noop}
               onRebase={noop}
+              onRebaseCluster={noop}
               onMerge={noop}
               onInvestigate={noop}
               onMessage={() => Promise.resolve()}
@@ -144,3 +146,4 @@ export const Clusters: StoryObj = { render: () => <Desktop /> };
 export const WithAgents: StoryObj = { render: () => <Desktop agents /> };
 export const ReadyToMergeOpen: StoryObj = { render: () => <Desktop initial={ready1} /> };
 export const NeedsYouOpen: StoryObj = { render: () => <Desktop initial={needsYou} /> };
+export const BehindOpen: StoryObj = { render: () => <Desktop initial={behind} /> };

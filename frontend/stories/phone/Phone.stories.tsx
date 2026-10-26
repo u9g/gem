@@ -111,6 +111,7 @@ function Cluster({ cluster }: { cluster: PullRequestCluster }) {
         onDismiss={() => {}}
         onRestart={() => {}}
         onRebase={() => {}}
+        onRebaseCluster={() => {}}
         onMerge={() => {}}
         onInvestigate={() => {}}
       />

@@ -16,7 +16,7 @@ export function timeAgo(date: Date): string {
   return relativeTime.format(Math.trunc(seconds / size), unit);
 }
 
-// A cluster's title, its PRs, a button to merge them once the server says they can (forcing the
+// A cluster's title, a button to rebase it, its PRs, a button to merge them once the server says they can (forcing the
 // unapproved ones in as an admin, said plainly, when that is how), the
 // conversations waiting on u9g. The phone docks the box to ask an agent about it below.
 export function ClusterView({
@@ -26,6 +26,7 @@ export function ClusterView({
   onDismiss,
   onRestart,
   onRebase,
+  onRebaseCluster,
   onMerge,
   onInvestigate,
 }: {
@@ -35,6 +36,7 @@ export function ClusterView({
   onDismiss: (id: string) => void;
   onRestart: (cluster: PullRequestCluster) => void;
   onRebase: (url: string) => void;
+  onRebaseCluster: (cluster: PullRequestCluster) => void;
   // `admin`: the user chose to force the unapproved pull requests in as an admin.
   onMerge: (cluster: PullRequestCluster, admin: boolean) => void;
   onInvestigate: (id: string) => void;
@@ -52,6 +54,7 @@ export function ClusterView({
             {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
           </Text>
         </View>
+        <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
         <Button
           label={restarting ? 'Restarting…' : 'Restart investigation'}
           disabled={restarting || merging}
@@ -73,6 +76,28 @@ export function ClusterView({
         />
       ))}
     </View>
+  );
+}
+
+// Starts one agent rebasing every PR of the cluster, shown while one of them waits on a rebase or is
+// being rebased.
+export function RebaseClusterButton({
+  cluster,
+  busy,
+  onRebaseCluster,
+}: {
+  cluster: PullRequestCluster;
+  busy?: ReadonlySet<string>;
+  onRebaseCluster: (cluster: PullRequestCluster) => void;
+}) {
+  const starting = busy?.has(`rebase ${cluster.pullRequests[0].url}`);
+  if (!cluster.pullRequests.some((pr) => pr.behind || pr.rebase)) return null;
+  return (
+    <Button
+      label={starting ? 'Starting an agent…' : 'Rebase cluster'}
+      disabled={starting || cluster.pullRequests.some((pr) => pr.rebase || busy?.has(pr.url))}
+      onPress={() => onRebaseCluster(cluster)}
+    />
   );
 }
 

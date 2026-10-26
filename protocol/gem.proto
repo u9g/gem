@@ -320,6 +320,14 @@ message RebasePullRequestRequest {
 
 message RebasePullRequestResponse {}
 
+// Starts one T3 Code agent rebasing each of the cluster's pull requests onto its base branch,
+// stacked ones after those they stack on. Its progress shows in each pull request's `rebase`.
+message RebaseClusterRequest {
+  repeated string pull_request_urls = 1;
+}
+
+message RebaseClusterResponse {}
+
 // Starts a T3 Code agent merging the cluster's pull requests, in an order that keeps each one's
 // base. Its progress shows in each pull request's `merge`.
 message MergeClusterRequest {
