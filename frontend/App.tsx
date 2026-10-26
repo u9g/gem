@@ -2,7 +2,7 @@ import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from './Board';
@@ -53,19 +53,26 @@ function repositoryValue(repository: Repository): string {
 // opened and a link reopens it. An investigation is shown in place of the cluster while both are set.
 type Place = { cluster?: string; investigation?: string };
 
-// A cluster is written as its oldest PR's owner/repo/number, which needs no escaping in a query.
+const GITHUB = 'https://github.com/';
+
+// A cluster on github.com is written as its oldest PR's owner/repo/number, which needs no escaping
+// in a query; one on any other host is written as its whole escaped URL.
 function currentPlace(): Place {
   const params = new URLSearchParams(location.search);
-  const [owner, repo, number] = params.get('cluster')?.split('/') ?? [];
+  const cluster = params.get('cluster') ?? undefined;
+  const [owner, repo, number] = cluster?.split('/') ?? [];
   return {
-    cluster: number && `https://github.com/${owner}/${repo}/pull/${number}`,
+    cluster: cluster?.includes('://') ? cluster : number && `${GITHUB}${owner}/${repo}/pull/${number}`,
     investigation: params.get('investigation') ?? undefined,
   };
 }
 
 function placeSearch(place: Place): string {
+  const cluster = place.cluster?.startsWith(GITHUB)
+    ? place.cluster.slice(GITHUB.length).replace('/pull/', '/')
+    : place.cluster && encodeURIComponent(place.cluster);
   const params = [
-    place.cluster && `cluster=${place.cluster.replace('https://github.com/', '').replace('/pull/', '/')}`,
+    cluster && `cluster=${cluster}`,
     place.investigation && `investigation=${place.investigation}`,
   ].filter(Boolean);
   return params.length > 0 ? `?${params.join('&')}` : '';
@@ -104,27 +111,33 @@ export default function App() {
     [post, show],
   );
 
-  // Another profile is another server: nothing shown belongs to it.
-  const profileId = profile?.id;
-  useEffect(() => {
-    setClusters([]);
-    setInvestigations([]);
-    setLogin('');
-    setRepoFilter(undefined);
-  }, [profileId]);
 
   // The server sends a snapshot whenever this frontend or the server joins, and on every change.
   useEffect(() => {
     if (snapshot) show(snapshot);
   }, [snapshot, show]);
 
-  const go = useCallback((to: Place) => {
+  // `replace` overwrites the current entry, for a place that can no longer be returned to.
+  const go = useCallback((to: Place, replace = false) => {
     const search = placeSearch(to);
-    if (search !== location.search) history.pushState(null, '', search || location.pathname);
+    if (search !== location.search) history[replace ? 'replaceState' : 'pushState'](null, '', search || location.pathname);
     setPlace(to);
   }, []);
 
   const closeDrawer = useCallback(() => go({}), [go]);
+
+  // Another profile is another server: nothing shown belongs to it. The place a page was loaded
+  // with is kept, since it was opened for the profile selected then.
+  const profileId = profile?.id;
+  const shownProfile = useRef(profileId);
+  useEffect(() => {
+    setClusters([]);
+    setInvestigations([]);
+    setLogin('');
+    setRepoFilter(undefined);
+    if (shownProfile.current !== profileId) go({}, true);
+    shownProfile.current = profileId;
+  }, [profileId, go]);
 
   useEffect(() => {
     const restore = () => setPlace(currentPlace());
@@ -211,7 +224,11 @@ export default function App() {
     track(
       id,
       post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id }))).then(
-        () => go({ cluster: place.cluster }),
+        () => {
+          // The investigation is gone, so its entry is replaced, unless something else was opened meanwhile.
+          const now = currentPlace();
+          if (now.investigation === id) go({ cluster: now.cluster }, true);
+        },
       ),
     );
   }
@@ -237,7 +254,7 @@ export default function App() {
     ? clusters.filter((cluster) => cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
     : clusters;
   // A cluster is identified by its oldest PR, which stays put as the cluster grows.
-  const opened = visible.find((cluster) => cluster.pullRequests[0].url === place.cluster);
+  const opened = clusters.find((cluster) => cluster.pullRequests[0].url === place.cluster);
 
   const filters = (
     <View style={styles.filters}>
