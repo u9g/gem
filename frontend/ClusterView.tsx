@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { units } from './ClusterRow';
 import { MergeBy, type PullRequestCluster } from './gen/gem_pb';
-import { bySubject, ProposalGroup } from './ProposalView';
+import { ThreadCards } from './PhoneThreads';
 import { PullRequestList } from './PullRequestList';
 import { Button, t3, usePhone } from './t3';
 
@@ -18,7 +18,8 @@ export function timeAgo(date: Date): string {
 
 // A cluster's title, its PRs, a button to merge them once the server says they can (forcing the
 // unapproved ones in as an admin, said plainly, when that is how), the
-// conversations waiting on u9g. The phone docks the box to ask an agent about it below.
+// conversations waiting on u9g as cards that open into their code. The phone docks the box to ask
+// an agent about it below.
 export function ClusterView({
   cluster,
   busy,
@@ -62,16 +63,13 @@ export function ClusterView({
         <PullRequestList pullRequests={cluster.pullRequests} busy={busy} onRebase={onRebase} />
       </View>
       <MergeBanner cluster={cluster} busy={busy} onMerge={onMerge} />
-      {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
-        <ProposalGroup
-          key={group[0].id}
-          proposals={group}
-          busy={busy}
-          onApprove={onApprove}
-          onDismiss={onDismiss}
-          onInvestigate={onInvestigate}
-        />
-      ))}
+      <ThreadCards
+        cluster={cluster}
+        busy={busy}
+        onApprove={onApprove}
+        onDismiss={onDismiss}
+        onInvestigate={onInvestigate}
+      />
     </View>
   );
 }

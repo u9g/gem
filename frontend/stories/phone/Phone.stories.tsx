@@ -6,7 +6,7 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
 import { type Proposal, type PullRequest, type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
-import { clusterMergeBy, mergeBy, proposals } from '../fixtures';
+import { clusterMergeBy, mergeBy, prFiles, proposals } from '../fixtures';
 
 // Made-up clusters, one in each place a phone lists them. Stories render at the window's width,
 // so view them at a phone's.
@@ -23,6 +23,7 @@ type Fields = {
   proposals?: Proposal[];
   agents?: { threadUrl: string }[];
   merge?: { threadUrl: string };
+  files?: { path: string; patch: string }[];
 };
 
 const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields) =>
@@ -51,6 +52,7 @@ const needsYou = cluster('Retry TTS once on a dropped stream', 5, [
     checksFailing: true,
     checks: { total: 14, done: 14, failed: 2 },
     proposals,
+    files: prFiles,
   }),
   pullRequest('agents-js', 1290, 'feat(voice): retry TTS once on a dropped stream', passing),
 ]);
@@ -124,6 +126,8 @@ export default meta;
 export const ClusterList: StoryObj = {
   render: () => <Home clusters={[needsYou, ready, working, running, reviewing]} />,
 };
+
+export const NeedsYou: StoryObj = { render: () => <Cluster cluster={needsYou} /> };
 
 export const ReadyToMerge: StoryObj = { render: () => <Cluster cluster={ready} /> };
 
