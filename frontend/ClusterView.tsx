@@ -1,6 +1,7 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { FileSections } from './ClusterFiles';
 import { units } from './ClusterRow';
 import { MergeBy, type PullRequestCluster } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
@@ -20,7 +21,7 @@ export function timeAgo(date: Date): string {
 // A cluster's title, its PRs, a button to merge them once the server says they can (forcing the
 // unapproved ones in as an admin, said plainly, when that is how), the
 // conversations waiting on u9g, and a box to ask an agent about it unless the phone docks that box
-// below.
+// below. Wider than a phone, the conversations sit under the file each is on.
 export function ClusterView({
   cluster,
   busy,
@@ -85,7 +86,16 @@ export function ClusterView({
             />
         </View>
       )}
-      {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
+      {!phone && (
+        <FileSections
+          cluster={cluster}
+          busy={busy}
+          onApprove={onApprove}
+          onDismiss={onDismiss}
+          onInvestigate={onInvestigate}
+        />
+      )}
+      {phone && bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
         <ProposalGroup
           key={group[0].id}
           proposals={group}
@@ -103,6 +113,8 @@ export function ClusterView({
 const styles = StyleSheet.create({
   column: {
     width: '100%',
+    flexShrink: 1,
+    minWidth: 0,
     maxWidth: 1240,
     gap: 12,
   },

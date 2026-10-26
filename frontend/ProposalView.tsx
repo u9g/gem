@@ -36,17 +36,28 @@ export function bySubject(list: Proposal[]): Proposal[][] {
   return [...groups.values()];
 }
 
+// The last lines of a review comment's diff hunk, ending at the line it is on, as a one-file diff.
+function anchorDiff(path: string, hunk: string, lines = 6): string {
+  const [header, ...body] = hunk.split('\n');
+  const kept = body.slice(-lines);
+  // The new side's start moves past every dropped line but deletions.
+  const start = Number(/\+(\d+)/.exec(header)?.[1] ?? 1) + body.slice(0, -lines).filter((l) => !l.startsWith('-')).length;
+  return `--- a/${path}\n+++ b/${path}\n@@ -0,0 +${start} @@\n${kept.join('\n')}`;
+}
+
 // One conversation waiting on the user as a band: the proposal's summary and actions on top, then
 // three columns cut to a few lines each: their thread, the user's reply, and the change. Arrows step
-// through alternatives.
+// through alternatives. `anchored` stacks them in full instead, under the code the comment is on.
 export function ProposalGroup({
   proposals,
+  anchored = false,
   busy,
   onApprove,
   onDismiss,
   onInvestigate,
 }: {
   proposals: Proposal[];
+  anchored?: boolean;
   // Proposals being approved or dismissed.
   busy?: ReadonlySet<string>;
   // Called with the user's rewrites of the reply and follow-up prompt where that version is showing,
@@ -64,6 +75,7 @@ export function ProposalGroup({
     <ProposalView
       key={proposal.id}
       proposal={proposal}
+      anchored={anchored}
       stepper={
         proposals.length > 1 && (
           <View style={styles.stepper}>
@@ -94,6 +106,7 @@ export function ProposalGroup({
 
 function ProposalView({
   proposal,
+  anchored,
   stepper,
   busy,
   disabled,
@@ -102,6 +115,7 @@ function ProposalView({
   onInvestigate,
 }: {
   proposal: Proposal;
+  anchored: boolean;
   stepper: ReactNode;
   busy: boolean;
   disabled: boolean;
@@ -118,6 +132,8 @@ function ProposalView({
   const files = diffFiles(diff);
   const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
   const comment = proposal.comment;
+  const stacked = phone || anchored;
+  const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
   const quote =
     proposal.threadId || !comment
       ? undefined
@@ -162,8 +178,8 @@ function ProposalView({
           <Text style={styles.error}>{proposal.error}</Text>
         </View>
       )}
-      <View style={[styles.columns, phone && styles.stacked]}>
-        <View style={[styles.column, phone && styles.columnStacked]}>
+      <View style={[styles.columns, stacked && styles.stacked]}>
+        <View style={[styles.column, stacked && styles.columnStacked]}>
           <Text style={styles.where}>
             {repository}#{number} ·{' '}
             {comment
@@ -174,13 +190,19 @@ function ProposalView({
                 ? 'checks'
                 : 'investigation'}
           </Text>
+          {anchored && comment?.diffHunk && (
+            <DiffSurface
+              diff={anchorDiff(comment.path, comment.diffHunk)}
+              header={<Text style={styles.meta}>line {comment.line}</Text>}
+            />
+          )}
           {proposal.earlierComments.map((earlier) => (
-            <Theirs key={earlier.id} comment={earlier} max={110} />
+            <Theirs key={earlier.id} comment={earlier} max={anchored ? undefined : 110} />
           ))}
           {comment && (
             <Theirs
               comment={comment}
-              max={110}
+              max={anchored ? undefined : 110}
               trailing={
                 <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
                   <Icon icon={ExternalLink} size={12} />
@@ -191,7 +213,7 @@ function ProposalView({
           {proposal.checkFailure && <FailedChecks failure={proposal.checkFailure} />}
         </View>
         {comment && (
-          <View style={[styles.column, phone && styles.columnStacked]}>
+          <View style={[styles.column, stacked && styles.columnStacked]}>
             {proposal.reply ? (
               <>
                 <Text style={[styles.meta, styles.author]}>{login}</Text>
@@ -200,9 +222,7 @@ function ProposalView({
                 ) : (
                   <Bubble side="right">
                     {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
-                    <Clamp max={110}>
-                      <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />
-                    </Clamp>
+                    {clamp(110, <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />)}
                   </Bubble>
                 )}
               </>
@@ -217,7 +237,7 @@ function ProposalView({
             )}
           </View>
         )}
-        <View style={[styles.column, phone && styles.columnStacked]}>
+        <View style={[styles.column, stacked && styles.columnStacked]}>
           {proposal.followUp !== '' && (
             <FollowUpCard
               suggested={proposal.followUp}
@@ -236,9 +256,7 @@ function ProposalView({
                   removed={files.reduce((n, f) => n + f.removed, 0)}
                 />
               </Text>
-              <Clamp max={130}>
-                <DiffSurface diff={diff} suggested={proposal.patch.diff} onChange={setDiff} />
-              </Clamp>
+              {clamp(130, <DiffSurface diff={diff} suggested={proposal.patch.diff} onChange={setDiff} />)}
             </>
           ) : proposal.requestedTool ? (
             <ToolRequestBanner proposal={proposal} />

@@ -49,19 +49,39 @@ index 3d723da..c883a61 100644
 `;
 
 // bodyHtml and replyHtml are what GitHub's markdown API renders for body and reply.
-const comment = (author: string, body: string, bodyHtml: string, anchor: string) => ({
+const comment = (author: string, body: string, bodyHtml: string, anchor: string, line = 0) => ({
   id: `comment-${anchor}`,
   author,
   body,
   bodyHtml,
   url: `${pr.url}#${anchor}`,
+  // Review comments sit on a line of the PR's diff, ending GitHub's hunk.
+  ...(line && {
+    path: 'livekit-agents/livekit/agents/voice/tts_retry.py',
+    line,
+    diffHunk: prHunk.split('\n').slice(0, line - 32).join('\n'),
+  }),
 });
+
+// The PR's own hunk the review comments are on, from line 34 of the new file.
+const prHunk = `@@ -30,6 +34,14 @@ from .errors import APIConnectionError
+ 
+ async def synthesize_with_retry(tts, text, *, conn_options, attempt=0):
++    \"\"\"Synthesizes text, retrying once when the stream drops.\"\"\"
++    try:
++        return await tts.synthesize(text, conn_options=conn_options)
++    except APIConnectionError:
++        if attempt > 0:
++            raise
++        await asyncio.sleep(0.1)
++        return await synthesize_with_retry(tts, text, conn_options=conn_options, attempt=attempt + 1)`;
 
 const reviewQuestion = comment(
   'theo',
   "Should this retry honor `conn_options.max_retry`? It always retries exactly once.\n\nAsking because the STT path uses the options, so these two would behave differently.",
   '<p dir="auto">Should this retry honor <code class="notranslate">conn_options.max_retry</code>? It always retries exactly once.</p>\n<p dir="auto">Asking because the STT path uses the options, so these two would behave differently.</p>',
   'discussion_r1',
+  40,
 );
 
 export const proposals: Proposal[] = [
@@ -75,6 +95,7 @@ export const proposals: Proposal[] = [
       '<!-- devin-review-comment {"id": "BUG_0001"} -->\n🟡 **Retry ignores the configured interval**\n\nThe retry in [`synthesize_with_retry`](https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/voice/tts_retry.py) sleeps a fixed 100 ms instead of `conn_options.retry_interval`.\n\n<details>\n<summary>Learn more</summary>\n\n`conn_options.retry_interval` defaults to 2 s, so a dropped stream retries 20× faster than configured.\n</details>',
       '\n<p dir="auto">🟡 <strong>Retry ignores the configured interval</strong></p>\n<p dir="auto">The retry in <a href="https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/voice/tts_retry.py"><code class="notranslate">synthesize_with_retry</code></a> sleeps a fixed 100 ms instead of <code class="notranslate">conn_options.retry_interval</code>.</p>\n<details>\n<summary>Learn more</summary>\n<p dir="auto"><code class="notranslate">conn_options.retry_interval</code> defaults to 2 s, so a dropped stream retries 20× faster than configured.</p>\n</details>',
       'discussion_r0',
+      42,
     ),
     threadId: 'thread-0',
     patch: { diff, commitMessage: 'fix(voice): retry TTS with the configured interval' },
@@ -157,6 +178,7 @@ export const proposals: Proposal[] = [
       'Consider logging retries so they show up in traces.',
       '<p dir="auto">Consider logging retries so they show up in traces.</p>',
       'discussion_r2',
+      43,
     ),
     threadId: 'thread-2',
     patch: { diff, commitMessage: 'chore(voice): log TTS retries' },
