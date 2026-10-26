@@ -27,7 +27,7 @@ query($ids: [ID!]!) {
     ... on PullRequest {
       url
       reviewThreads(first: 100) {
-        nodes { id isResolved comments(last: 1) { nodes { id body url authorAssociation author { login __typename } } } }
+        nodes { id isResolved comments(last: 1) { nodes { id body url authorAssociation author { login __typename } path line diffHunk } } }
       }
       comments(last: 1) { nodes { id body url authorAssociation author { login __typename } } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
@@ -58,7 +58,7 @@ const CONVERSATIONS_JQ: &str = r#".data.nodes[]
     (.reviewThreads.nodes[] | select(.isResolved | not) | {thread_id: .id, comment: .comments.nodes[0]}),
     (.comments.nodes[] | {thread_id: null, comment: .})
     | select(.comment.author.__typename == "Bot" or .comment.authorAssociation == "MEMBER" or .comment.authorAssociation == "OWNER")
-    | .comment |= {id, body, url, author: (.author.login // "ghost")}
+    | .comment |= {id, body, url, author: (.author.login // "ghost"), path: (.path // ""), line: (.line // 0), diffHunk: (.diffHunk // "")}
   ] + [
     select(($failed | length) > 0 and all($checks[]; .done))
     | {check_failure: {id: ([$head] + ([$failed[].id] | sort) | join(",")), head_oid: $head, checks: $failed}}
@@ -201,11 +201,18 @@ impl Conversations {
         }
     }
 
-    // IDs of every conversation waiting on the user.
-    pub async fn waiting(&self) -> HashSet<String> {
+    // Every conversation waiting on the user by ID, with its comment as last fetched when it is one:
+    // where in the PR's current diff a review comment now sits.
+    pub async fn waiting(&self) -> HashMap<String, Option<Comment>> {
         let prs = self.0.prs.read().await;
-        prs.values()
-            .flat_map(|known| known.waiting.iter().map(|c| c.id().to_string()))
+        (prs.values().flat_map(|known| &known.waiting))
+            .map(|c| {
+                let comment = match c {
+                    Conversation::Comment { comment, .. } => Some(comment.clone()),
+                    Conversation::Checks { .. } => None,
+                };
+                (c.id().to_string(), comment)
+            })
             .collect()
     }
 

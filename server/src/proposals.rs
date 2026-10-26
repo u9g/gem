@@ -62,15 +62,22 @@ pub async fn remove_of_investigation(id: &str) {
     }
 }
 
-pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashSet<String>) {
+// A proposal's review comment takes where it now sits from `waiting`, so a push since the
+// proposal was made moves or outdates it.
+pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashMap<String, Option<Comment>>) {
     let mut by_pr: HashMap<String, Vec<Proposal>> = HashMap::new();
-    for (_, proposal) in load(Path::new(DIR)).await {
-        if subject(&proposal).is_some_and(|id| waiting.contains(id)) {
-            by_pr
-                .entry(proposal.pull_request_url.clone())
-                .or_default()
-                .push(proposal);
+    for (_, mut proposal) in load(Path::new(DIR)).await {
+        let Some(current) = subject(&proposal).and_then(|id| waiting.get(id)) else {
+            continue;
+        };
+        if let (Some(comment), Some(current)) = (&mut proposal.comment, current) {
+            comment.line = current.line;
+            comment.diff_hunk = current.diff_hunk.clone();
         }
+        by_pr
+            .entry(proposal.pull_request_url.clone())
+            .or_default()
+            .push(proposal);
     }
     for pr in clusters.iter_mut().flat_map(|c| c.pull_requests.iter_mut()) {
         pr.proposals = by_pr.remove(&pr.url).unwrap_or_default();
