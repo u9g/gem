@@ -448,28 +448,31 @@ function EditableMarkdown({
       current = false;
     };
   }, [editing, stale, render, pr, markdown]);
-  const shownHtml = draft.showing === 'yours' ? rendered.html : html;
-  const empty = markdown.trim() === '' || (!stale && shownHtml.trim() === '');
-  const shown =
-    editing || empty ? (
-      <TextInput
-        multiline
-        autoFocus={editing}
-        value={markdown}
-        onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
-        onFocus={() => onEditing(true)}
-        onBlur={() => onEditing(false)}
-        style={styles.input}
-      />
-    ) : stale ? (
-      <Pressable onPress={() => onEditing(true)}>
-        <Text style={styles.input}>{markdown}</Text>
-      </Pressable>
-    ) : (
-      <Html html={shownHtml} onPress={() => onEditing(true)} />
-    );
+  const shown = editing ? (
+    <TextInput
+      multiline
+      autoFocus
+      value={markdown}
+      onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
+      onBlur={() => onEditing(false)}
+      style={styles.input}
+    />
+  ) : stale ? (
+    <Pressable onPress={() => onEditing(true)} style={{ minHeight: line }}>
+      <Text style={styles.input}>{markdown}</Text>
+    </Pressable>
+  ) : (
+    <Html
+      html={draft.showing === 'yours' ? rendered.html : html}
+      onPress={() => onEditing(true)}
+      style={{ minHeight: line }}
+    />
+  );
   return max === undefined ? shown : <Clamp max={max}>{shown}</Clamp>;
 }
+
+// One line of `styles.input`.
+const line = 20;
 
 // The prompt approving hands to a new T3 Code agent, as GitHub would render it. Clicking it edits
 // the prompt, with the same Suggested / Yours switch as replies.
