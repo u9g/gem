@@ -72,10 +72,10 @@ export function ClusterReview(props: Props) {
         >
           {cluster.name}
         </Text>
+        <Text style={styles.meta}>
+          {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+        </Text>
         <View style={styles.row}>
-          <Text style={[styles.meta, { flex: 1 }]}>
-            {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
-          </Text>
           <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
           <Button
             label={restarting ? 'Restarting…' : 'Restart investigation'}
