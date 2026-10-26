@@ -8,12 +8,13 @@ use std::{
 use serde::Deserialize;
 use tracing::Instrument;
 
-use crate::proto::{Comment, Patch, Proposal, PullRequestCluster};
+use crate::proto::{CheckFailure, Comment, Patch, Proposal, PullRequestCluster};
+use crate::tokens::Subject;
 use crate::{conversations, investigations};
 use gem_github::{apply_patch, command, graphql, render, repository};
 
-// One `<id>.json` file per proposal, relative to the server's working directory. Agents write
-// them with `server propose`, which checks them first.
+// One `<id>.json` file per proposal, relative to the server's working directory. Agents make
+// them with the `propose` tool of the `gem-agent` MCP server, which checks them first.
 pub const DIR: &str = "proposals";
 
 // The conversation or investigation a proposal answers.
@@ -313,177 +314,233 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
     Ok(())
 }
 
-// `server propose --dir <dir> --pr <url> (--comment <id> [--thread <id>] | --check-failure <id> |
-// --investigation <id>)
-// --summary <text> [--patch <diff file> --message <text>] [--reply <markdown file>]
-// [--resolve-thread] [--follow-up <markdown file>] [--rerun] [--close-pull-request]
-// [--excerpt <check id> <file>]... [--request-tool <markdown file>]`
-pub async fn propose(args: &[String]) -> Result<String, String> {
-    let mut flags: HashMap<&str, &str> = HashMap::new();
-    let mut resolve_thread = false;
-    let mut rerun = false;
-    let mut close_pull_request = false;
-    let mut excerpts = Vec::new();
-    let mut args = args.iter();
-    while let Some(flag) = args.next() {
-        if flag == "--resolve-thread" {
-            resolve_thread = true;
-            continue;
-        }
-        if flag == "--excerpt" {
-            let (Some(check), Some(file)) = (args.next(), args.next()) else {
-                return Err("--excerpt needs a check ID and a file".into());
-            };
-            excerpts.push((check, file));
-            continue;
-        }
-        if flag == "--rerun" {
-            rerun = true;
-            continue;
-        }
-        if flag == "--close-pull-request" {
-            close_pull_request = true;
-            continue;
-        }
-        let name = flag
-            .strip_prefix("--")
-            .ok_or(format!("unexpected argument {flag}"))?;
-        let value = args.next().ok_or(format!("{flag} needs a value"))?;
-        flags.insert(name, value);
-    }
-    let required = |name: &str| {
-        flags
-            .get(name)
-            .copied()
-            .ok_or(format!("--{name} is required"))
-    };
-    let dir = PathBuf::from(required("dir")?);
-    let pr = required("pr")?;
-    let summary = required("summary")?;
-    let thread_id = flags.get("thread").copied().unwrap_or_default();
+// What an agent proposes, as the `propose` tool of the `gem-agent` MCP server takes it. The
+// subject it answers comes from the agent's token, not from here.
+#[derive(Deserialize, Default, Debug)]
+#[serde(default, deny_unknown_fields)]
+pub struct Request {
+    pub pr: String,
+    pub summary: String,
+    // A diff, and the message to commit it with.
+    pub patch: String,
+    pub message: String,
+    // Markdown, as are the follow-up and the requested tool.
+    pub reply: String,
+    pub follow_up: String,
+    pub resolve_thread: bool,
+    pub rerun: bool,
+    pub close_pull_request: bool,
+    pub excerpts: Vec<Excerpt>,
+    pub request_tool: String,
+}
 
-    let investigation_id = flags.get("investigation").copied().unwrap_or_default();
-    let subjects = ["comment", "check-failure", "investigation"];
-    if subjects.iter().filter(|s| flags.contains_key(*s)).count() != 1 {
-        return Err("propose for one of --comment, --check-failure or --investigation".into());
+// The log lines that show why a failed check failed.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Excerpt {
+    pub check: String,
+    pub lines: String,
+}
+
+// What checking a proposal asks of GitHub, so tests can answer without it.
+pub trait GitHub: Send + Sync + 'static {
+    fn comment(&self, id: &str) -> impl Future<Output = Result<FetchedComment, String>> + Send;
+    // The failed checks on the PR at `pr` while `id` is still their ID.
+    fn check_failure(
+        &self,
+        pr: &str,
+        id: &str,
+    ) -> impl Future<Output = Result<CheckFailure, String>> + Send;
+    // The review thread's PR URL and its comments, oldest first.
+    fn review_thread(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = Result<(String, Vec<Comment>), String>> + Send;
+    // Checks that the diff applies to the PR's head. Returns that head commit.
+    fn check_patch(
+        &self,
+        pr: &str,
+        diff: &str,
+    ) -> impl Future<Output = Result<String, String>> + Send;
+    fn render(
+        &self,
+        pr: &str,
+        markdown: &str,
+    ) -> impl Future<Output = Result<String, String>> + Send;
+}
+
+pub struct Live;
+
+impl GitHub for Live {
+    async fn comment(&self, id: &str) -> Result<FetchedComment, String> {
+        fetch_comment(id).await
     }
-    let (comment, check_failure) = match (flags.get("comment"), flags.get("check-failure")) {
-        (None, None) => (None, None),
-        (Some(id), None) => {
-            let comment = fetch_comment(id).await?;
-            if comment.pull_request != pr {
-                return Err(format!("comment is on {}, not {pr}", comment.pull_request));
-            }
-            (Some(comment.comment), None)
-        }
-        (None, Some(id)) => {
-            let node = command(
-                "gh",
-                &["pr", "view", pr, "--json", "id", "--jq", ".id"],
-                None,
-            )
-            .await?;
-            let mut failure =
-                conversations::check_failure(String::from_utf8_lossy(&node).trim(), id)
-                    .await
-                    .ok_or(format!("{id} is not the failed checks on {pr}"))?;
-            for (check, file) in &excerpts {
-                let check = (failure.checks.iter_mut())
-                    .find(|c| c.id == **check)
-                    .ok_or(format!("{check} is not one of the failed checks"))?;
-                check.excerpt = read(file).await?;
-            }
-            failure
-                .checks
-                .retain(|c| excerpts.iter().any(|(check, _)| c.id == **check));
-            if failure.checks.is_empty() {
-                return Err("--check-failure needs --excerpt for each check it answers".into());
-            }
-            (None, Some(failure))
-        }
-        _ => unreachable!(),
-    };
-    let mut earlier_comments = Vec::new();
-    if !thread_id.is_empty() {
+
+    async fn check_failure(&self, pr: &str, id: &str) -> Result<CheckFailure, String> {
+        let node = command(
+            "gh",
+            &["pr", "view", pr, "--json", "id", "--jq", ".id"],
+            None,
+        )
+        .await?;
+        conversations::check_failure(String::from_utf8_lossy(&node).trim(), id)
+            .await
+            .ok_or(format!("{id} is not the failed checks on {pr}"))
+    }
+
+    async fn review_thread(&self, id: &str) -> Result<(String, Vec<Comment>), String> {
         let value: serde_json::Value = serde_json::from_slice(
             &graphql(
                 "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } comments(first: 100) { nodes { id body bodyHTML url author { login } } } } } }",
-                &[("id", thread_id)],
+                &[("id", id)],
             )
             .await?,
         )
         .map_err(|e| e.to_string())?;
         let node = &value["data"]["node"];
-        let on = node["pullRequest"]["url"]
+        let pr = node["pullRequest"]["url"]
             .as_str()
-            .ok_or(format!("{thread_id} is not a review thread"))?;
-        if on != pr {
-            return Err(format!("thread is on {on}, not {pr}"));
-        }
-        for c in node["comments"]["nodes"].as_array().into_iter().flatten() {
-            if comment
-                .as_ref()
-                .is_some_and(|comment| c["id"] == comment.id.as_str())
-            {
-                break;
-            }
-            earlier_comments.push(Comment {
+            .ok_or(format!("{id} is not a review thread"))?;
+        let comments = (node["comments"]["nodes"].as_array().into_iter().flatten())
+            .map(|c| Comment {
                 id: c["id"].as_str().unwrap_or_default().to_string(),
                 author: c["author"]["login"].as_str().unwrap_or("ghost").to_string(),
                 body: c["body"].as_str().unwrap_or_default().to_string(),
                 url: c["url"].as_str().unwrap_or_default().to_string(),
                 body_html: c["bodyHTML"].as_str().unwrap_or_default().to_string(),
-            });
+            })
+            .collect();
+        Ok((pr.to_string(), comments))
+    }
+
+    async fn check_patch(&self, pr: &str, diff: &str) -> Result<String, String> {
+        apply_patch(pr, diff, None).await
+    }
+
+    async fn render(&self, pr: &str, markdown: &str) -> Result<String, String> {
+        render(pr, markdown).await
+    }
+}
+
+// Checks what an agent answering `subject` proposes and saves it in `dir`. Returns the
+// proposal's ID, or why it cannot be approved, for the agent to fix and propose again.
+pub async fn propose(
+    github: &impl GitHub,
+    dir: &Path,
+    subject: &Subject,
+    request: Request,
+) -> Result<String, String> {
+    let Request {
+        pr,
+        summary,
+        patch,
+        message,
+        reply,
+        follow_up,
+        resolve_thread,
+        rerun,
+        close_pull_request,
+        excerpts,
+        request_tool,
+    } = request;
+    let pr = pr.trim().trim_end_matches('/');
+    if pr.is_empty() {
+        return Err("`pr` is required: the URL of the pull request the proposal is about".into());
+    }
+    if summary.trim().is_empty() {
+        return Err("`summary` is required".into());
+    }
+    if !subject.prs().iter().any(|p| p == pr) {
+        return Err(format!(
+            "{pr} is not a pull request this thread answers on; propose on {}",
+            subject.prs().join(" or ")
+        ));
+    }
+
+    let (comment, check_failure, thread_id, investigation_id) = match subject {
+        Subject::Comment {
+            comment, thread, ..
+        } => {
+            let comment = github.comment(comment).await?;
+            if comment.pull_request != pr {
+                return Err(format!("comment is on {}, not {pr}", comment.pull_request));
+            }
+            (Some(comment.comment), None, thread.clone(), "")
         }
+        Subject::CheckFailure { id, .. } => {
+            let mut failure = github.check_failure(pr, id).await?;
+            for excerpt in &excerpts {
+                let check = (failure.checks.iter_mut())
+                    .find(|c| c.id == excerpt.check)
+                    .ok_or(format!("{} is not one of the failed checks", excerpt.check))?;
+                check.excerpt = excerpt.lines.clone();
+            }
+            failure
+                .checks
+                .retain(|c| excerpts.iter().any(|excerpt| c.id == excerpt.check));
+            if failure.checks.is_empty() {
+                return Err(
+                    "`excerpts` needs an excerpt for each check the proposal answers".into(),
+                );
+            }
+            (None, Some(failure), None, "")
+        }
+        Subject::Investigation { id, .. } => (None, None, None, id.as_str()),
+    };
+    if !excerpts.is_empty() && check_failure.is_none() {
+        return Err("`excerpts` is only for proposals that answer failed checks".into());
+    }
+    let thread_id = thread_id.unwrap_or_default();
+    let mut earlier_comments = Vec::new();
+    if !thread_id.is_empty() {
+        let (on, comments) = github.review_thread(&thread_id).await?;
+        if on != pr {
+            return Err(format!("thread is on {on}, not {pr}"));
+        }
+        earlier_comments = comments
+            .into_iter()
+            .take_while(|c| comment.as_ref().is_none_or(|comment| c.id != comment.id))
+            .collect();
     }
     if resolve_thread && thread_id.is_empty() {
-        return Err("--resolve-thread needs --thread".into());
+        return Err(
+            "`resolve_thread` needs a review thread, and this comment is not in one".into(),
+        );
     }
     let reruns = (check_failure.iter()).any(|f| f.checks.iter().any(|c| c.workflow_run_id != 0));
     if rerun && !reruns {
-        return Err("--rerun needs --check-failure with a GitHub Actions run".into());
+        return Err("`rerun` needs failed checks with a GitHub Actions run".into());
     }
 
-    let patch = match flags.get("patch") {
-        Some(file) => {
-            let diff = read(file).await?;
-            let head_oid = apply_patch(pr, &diff, None).await?;
-            let commit_message = required("message")?.to_string();
-            Some(Patch {
-                diff,
-                commit_message,
-                head_oid,
-            })
-        }
-        None => None,
-    };
-    let reply = match flags.get("reply") {
-        Some(file) => read(file).await?,
-        None => String::new(),
-    };
-    let summary_html = render(pr, summary).await?;
-    let reply_html = render(pr, &reply).await?;
-    let follow_up = match flags.get("follow-up") {
-        Some(file) => read(file).await?,
-        None => String::new(),
-    };
-    let follow_up_html = render(pr, &follow_up).await?;
-    let requested_tool = match flags.get("request-tool") {
-        Some(file) => read(file).await?,
-        None => String::new(),
-    };
-    let steps = patch.is_some()
+    let steps = !patch.is_empty()
         || !reply.trim().is_empty()
         || resolve_thread
         || !follow_up.trim().is_empty()
         || rerun
         || close_pull_request;
-    if steps == !requested_tool.trim().is_empty() {
+    if steps != request_tool.trim().is_empty() {
         return Err(
-            "propose either steps (--patch, --reply, --resolve-thread, --follow-up, --rerun, --close-pull-request) or --request-tool"
+            "propose either steps (`patch`, `reply`, `resolve_thread`, `follow_up`, `rerun`, `close_pull_request`) or `request_tool`"
                 .into(),
         );
     }
+    let patch = match patch.as_str() {
+        "" => None,
+        diff => {
+            if message.trim().is_empty() {
+                return Err("`message` is required with `patch`".into());
+            }
+            let head_oid = github.check_patch(pr, diff).await?;
+            Some(Patch {
+                diff: diff.to_string(),
+                commit_message: message,
+                head_oid,
+            })
+        }
+    };
+    let summary_html = github.render(pr, &summary).await?;
+    let reply_html = github.render(pr, &reply).await?;
+    let follow_up_html = github.render(pr, &follow_up).await?;
 
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -491,15 +548,15 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         .as_nanos();
     let proposal = Proposal {
         id: format!("{nanos:x}"),
-        summary: summary.to_string(),
+        summary,
         pull_request_url: pr.to_string(),
         comment,
-        thread_id: thread_id.to_string(),
+        thread_id,
         patch,
         reply,
         resolve_thread,
         error: String::new(),
-        requested_tool,
+        requested_tool: request_tool,
         earlier_comments,
         reply_html,
         follow_up,
@@ -510,16 +567,16 @@ pub async fn propose(args: &[String]) -> Result<String, String> {
         summary_html,
         investigation_id: investigation_id.to_string(),
     };
-    tokio::fs::create_dir_all(&dir)
+    tokio::fs::create_dir_all(dir)
         .await
         .map_err(|e| e.to_string())?;
     save(&dir.join(format!("{}.json", proposal.id)), &proposal).await;
     Ok(proposal.id)
 }
 
-struct FetchedComment {
-    comment: Comment,
-    pull_request: String,
+pub struct FetchedComment {
+    pub comment: Comment,
+    pub pull_request: String,
 }
 
 async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
@@ -561,12 +618,6 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
             body_html: node.body_html,
         },
     })
-}
-
-async fn read(file: &str) -> Result<String, String> {
-    tokio::fs::read_to_string(file)
-        .await
-        .map_err(|e| format!("{file}: {e}"))
 }
 
 async fn load(dir: &Path) -> Vec<(PathBuf, Proposal)> {

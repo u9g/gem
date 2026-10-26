@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    env,
     sync::Arc,
 };
 
@@ -9,9 +8,10 @@ use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
-    SearchedPullRequest, gh, login, proposals,
+    SearchedPullRequest, gh, login, mcp, proposals,
     proto::{Agent, CheckFailure, Comment, PullRequestCluster},
     t3,
+    tokens::{Subject, Tokens},
 };
 
 // Relative to the server's working directory, like the cluster names.
@@ -92,6 +92,21 @@ impl Conversation {
         match self {
             Conversation::Comment { comment, .. } => &comment.id,
             Conversation::Checks { check_failure } => &check_failure.id,
+        }
+    }
+
+    // What the agent answering it on the PR at `pr` proposes on.
+    fn subject(&self, pr: &str) -> Subject {
+        match self {
+            Conversation::Comment { thread_id, comment } => Subject::Comment {
+                pr: pr.to_string(),
+                comment: comment.id.clone(),
+                thread: thread_id.clone(),
+            },
+            Conversation::Checks { check_failure } => Subject::CheckFailure {
+                pr: pr.to_string(),
+                id: check_failure.id.clone(),
+            },
         }
     }
 }
@@ -254,6 +269,19 @@ impl Conversations {
                     );
                 }
             }
+            // An agent's token goes once what it answers no longer waits on the user, when its
+            // proposals no longer show. A PR whose fetch failed keeps its agents' tokens.
+            Tokens::here()
+                .retain(|subject| match subject {
+                    Subject::Investigation { .. } => true,
+                    Subject::Comment { pr, .. } | Subject::CheckFailure { pr, .. } => {
+                        prs.iter().any(|open| open.url == *pr)
+                            && known.get(pr).is_none_or(|known| {
+                                known.waiting.iter().any(|c| c.id() == subject.id())
+                            })
+                    }
+                })
+                .await;
         }
 
         let heads = prs
@@ -311,7 +339,12 @@ impl Conversations {
                         }
                         Conversation::Checks { check_failure } => fix(&pr, check_failure),
                     };
-                    match t3::start(&title, &prompt).await {
+                    let subject = conversation.subject(&pr.url);
+                    let started = match mcp::agent_config(&subject).await {
+                        Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                        Err(error) => Err(error),
+                    };
+                    match started {
                         Ok(thread_id) => {
                             if let Some((_, agent)) = this.0.answering.lock().await.get_mut(id) {
                                 agent.thread_url = t3::url(&thread_id).unwrap_or_default();
@@ -349,24 +382,12 @@ impl Target {
 
 // The title and prompt of the agent answering `comment`.
 fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String, String) {
-    let exe = env::current_exe().unwrap();
-    let dir = env::current_dir().unwrap().join(proposals::DIR);
-    let mut propose = format!(
-        "{} propose --dir {} --pr {} --comment {}",
-        exe.display(),
-        dir.display(),
-        pr.url,
-        comment.id
-    );
     let (where_, reply_kind, resolve) = match thread_id {
-        Some(thread) => {
-            propose += &format!(" --thread {thread}");
-            (
-                format!("in the review thread {thread}"),
-                "a reply in the review thread",
-                "\n- resolve the review thread, with --resolve-thread.",
-            )
-        }
+        Some(thread) => (
+            format!("in the review thread {thread}"),
+            "a reply in the review thread",
+            "\n- resolve the review thread, with `resolve_thread`.",
+        ),
         None => (
             "in the pull request's top-level comments".to_string(),
             "a top-level comment that quotes their comment above it",
@@ -386,38 +407,34 @@ comment ({comment_url}):
 {quoted}
 Read the whole conversation and the pull request with `gh`, then work out how {login} should answer \
 and propose it. A proposal can:
-- change the code, with --patch and --message: clone {full_name} into a temporary directory, run \
-`gh pr checkout {number}` in it, edit, and save `git diff` to a file. Never commit or push.
-- reply as {login}, in the first person, with --reply: write the markdown to a file. It is posted as \
-{reply_kind}. Open with what {login} is doing about the comment, then why: {login} reads only the \
-first lines before approving, and they must not concede a suggestion the reply goes on to decline. \
-Pin each link to the commit you read the lines at, so the lines it highlights are the ones you \
+- change the code, with `patch` and `message`: clone {full_name} into a temporary directory, run \
+`gh pr checkout {number}` in it, edit, and pass what `git diff` prints as `patch`. Never commit or \
+push.
+- reply as {login}, in the first person, with `reply`: the markdown is posted as {reply_kind}. \
+Open with what {login} is doing about the comment, then why: {login} reads only the first lines \
+before approving, and they must not concede a suggestion the reply goes on to decline. Pin each \
+link to the commit you read the lines at, so the lines it highlights are the ones you \
 describe.{resolve}
-- hand the work to another agent, with --follow-up: when the right fix is too big to review as \
+- hand the work to another agent, with `follow_up`: when the right fix is too big to review as \
 one patch on this pull request, such as matching changes in other repositories, write a prompt \
-for a T3 Code agent to a markdown file. It must stand alone: the repositories (checked out under \
-~/code), the branches or pull requests to build on, what to change, and how to verify it. \
-Approving starts that agent, so pair it with a reply saying the work follows. Prefer --patch \
-when the change fits this pull request. The agent must be able to finish without anyone else \
-reviewing, merging or releasing something first: when the fix waits on that, reply saying what \
-it waits on instead.
-- close the pull request without merging it, with --close-pull-request: when the conversation \
+for a T3 Code agent. It must stand alone: the repositories (checked out under ~/code), the \
+branches or pull requests to build on, what to change, and how to verify it. Approving starts \
+that agent, so pair it with a reply saying the work follows. Prefer `patch` when the change fits \
+this pull request. The agent must be able to finish without anyone else reviewing, merging or \
+releasing something first: when the fix waits on that, reply saying what it waits on instead.
+- close the pull request without merging it, with `close_pull_request`: when the conversation \
 settles that it should not land, such as being superseded or no longer wanted. Pair it with a \
 reply saying why.
 
-Record each proposal with:
+Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {url}, \
+a `summary` of one line saying what approving does, and its steps. Approving a proposal runs all \
+its steps. Call it once per alternative when more than one answer is reasonable. It checks the \
+proposal and returns an error with the reason when something is wrong: fix it and call it again. \
+If the comment needs nothing from {login}, propose nothing.
 
-{propose} --summary \"<one line saying what approving does>\" [--patch <diff file> --message \"<commit message>\"] [--reply <markdown file>] [--follow-up <markdown file>]{resolve_flag} [--close-pull-request]
-
-Approving a proposal runs its steps in that order. Run the command once per alternative when more \
-than one answer is reasonable. It checks the proposal and exits non-zero with the reason when \
-something is wrong: fix it and run it again. If the comment needs nothing from {login}, propose \
-nothing.
-
-If answering well needs something these steps cannot do, describe the missing tool in a markdown \
-file (what it would do and why this conversation needs it) and record it with:
-
-{propose} --summary \"<tool name: one line>\" --request-tool <markdown file>
+If answering well needs something these steps cannot do, call `propose` with `request_tool` \
+instead of steps: markdown describing the missing tool (what it would do and why this \
+conversation needs it), with a `summary` of \"<tool name>: <one line>\".
 
 Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
@@ -430,7 +447,7 @@ settle this thread. Then reply with one line saying what you proposed.",
         comment_url = comment.url,
         full_name = pr.full_name,
         number = pr.number,
-        resolve_flag = if resolve.is_empty() { "" } else { " [--resolve-thread]" },
+        server = mcp::AGENT_NAME,
     );
     let title = format!(
         "Answer {} on {}#{}",
@@ -441,15 +458,6 @@ settle this thread. Then reply with one line saying what you proposed.",
 
 // The title and prompt of the agent answering `failure`.
 fn fix(pr: &Target, failure: &CheckFailure) -> (String, String) {
-    let exe = env::current_exe().unwrap();
-    let dir = env::current_dir().unwrap().join(proposals::DIR);
-    let propose = format!(
-        "{} propose --dir {} --pr {} --check-failure {}",
-        exe.display(),
-        dir.display(),
-        pr.url,
-        failure.id
-    );
     let checks: String = failure
         .checks
         .iter()
@@ -482,39 +490,34 @@ Read the failed ones to see whether they fail the same test in the same way.
 it runs.
 Then work out what {login} should do about it and propose it.
 
-A proposal answers the checks you pass --excerpt <check> <file> for, with the log lines that show \
-why that check failed (the error itself, at most 10, no setup or timestamps) saved to the file: \
-{login} reads your answer next to them. Answer checks together when they fail for the same \
-reason, and separately when they need different answers, such as a fix for one and a rerun for \
-another. A proposal can:
-- fix the code, with --patch and --message: clone {full_name} into a temporary directory, run \
-`gh pr checkout {number}` in it, edit, and save `git diff` to a file. Run the failing check's \
-command locally when you can, to show the fix works. Never commit or push.
-- rerun the failed jobs, with --rerun: when the failure is flaky or comes from outside the pull \
+A proposal answers the checks you give `excerpts` for, each with the check's ID and the log lines \
+that show why it failed (the error itself, at most 10, no setup or timestamps): {login} reads your \
+answer next to them. Answer checks together when they fail for the same reason, and separately \
+when they need different answers, such as a fix for one and a rerun for another. A proposal can:
+- fix the code, with `patch` and `message`: clone {full_name} into a temporary directory, run \
+`gh pr checkout {number}` in it, edit, and pass what `git diff` prints as `patch`. Run the failing \
+check's command locally when you can, to show the fix works. Never commit or push.
+- rerun the failed jobs, with `rerun`: when the failure is flaky or comes from outside the pull \
 request, such as a network error, a broken runner or a test that fails the same way on the base \
 branch, and running it again is likely to pass. Only GitHub Actions runs can be rerun.
-- hand the work to another agent, with --follow-up: when the right fix is too big to review as \
+- hand the work to another agent, with `follow_up`: when the right fix is too big to review as \
 one patch on this pull request, such as matching changes in other repositories, or when the base \
 branch already fixed it and the pull request needs a rebase onto it. Write a prompt for a T3 Code \
-agent to a markdown file. It must stand alone: the repositories (checked out under ~/code), the \
-branches or pull requests to build on, what to change and why (such as the commit that fixed it), \
-and how to verify it. The agent must be able to finish without anyone else reviewing, merging \
-or releasing something first: when the fix waits on that, such as another pull request that \
-needs review or a dependency that has not been released, propose nothing for that check.
+agent. It must stand alone: the repositories (checked out under ~/code), the branches or pull \
+requests to build on, what to change and why (such as the commit that fixed it), and how to \
+verify it. The agent must be able to finish without anyone else reviewing, merging or releasing \
+something first: when the fix waits on that, such as another pull request that needs review or a \
+dependency that has not been released, propose nothing for that check.
 
-Record each proposal with:
+Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {url}, \
+a `summary` of one line saying what approving does, its `excerpts`, and its steps. Call it once \
+per answer, and once per alternative when more than one answer is reasonable. It checks the \
+proposal and returns an error with the reason when something is wrong: fix it and call it again. \
+If the failure needs nothing from {login}, propose nothing.
 
-{propose} --summary \"<one line saying what approving does>\" --excerpt <check> <file>... [--patch <diff file> --message \"<commit message>\"] [--follow-up <markdown file>] [--rerun]
-
-Run the command once per answer, and once per alternative when more than one answer is \
-reasonable. It checks the \
-proposal and exits non-zero with the reason when something is wrong: fix it and run it again. If \
-the failure needs nothing from {login}, propose nothing.
-
-If answering well needs something these steps cannot do, describe the missing tool in a markdown \
-file (what it would do and why this failure needs it) and record it with:
-
-{propose} --summary \"<tool name: one line>\" --excerpt <check> <file>... --request-tool <markdown file>
+If answering well needs something these steps cannot do, call `propose` with its `excerpts` and \
+`request_tool` instead of steps: markdown describing the missing tool (what it would do and why \
+this failure needs it), with a `summary` of \"<tool name>: <one line>\".
 
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals later.
 
@@ -526,6 +529,7 @@ settle this thread. Then reply with one line saying what you proposed.",
         title = pr.title,
         full_name = pr.full_name,
         number = pr.number,
+        server = mcp::AGENT_NAME,
     );
     let title = format!("Fix checks on {}#{}", pr.full_name, pr.number);
     (title, prompt)

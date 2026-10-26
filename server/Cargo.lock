@@ -2583,10 +2583,12 @@ dependencies = [
  "gem-rebases",
  "gem-room",
  "gem-t3",
+ "getrandom 0.3.4",
  "pbjson-types",
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

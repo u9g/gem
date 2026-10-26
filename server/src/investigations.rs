@@ -1,5 +1,4 @@
 use std::{
-    env,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -8,6 +7,7 @@ use pbjson_types::Timestamp;
 use tokio::sync::Mutex;
 
 use crate::proto::{CheckFailure, Investigation, ListOpenPullRequestsResponse, PullRequestCluster};
+use crate::tokens::{Subject, Tokens};
 use crate::{login, mcp, proposals, t3};
 use gem_github::short;
 
@@ -35,8 +35,12 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
     let checks: Vec<&str> = failure.checks.iter().map(|c| c.name.as_str()).collect();
     let title = format!("Investigate {} on {repository}#{number}", checks.join(", "));
     let nanos = now();
-    let prompt = prompt(&id(nanos), pr, &failure, &proposal.summary);
-    let thread_id = t3::start(&title, &prompt).await?;
+    let prompt = prompt(pr, &failure, &proposal.summary);
+    let subject = Subject::Investigation {
+        id: id(nanos),
+        prs: vec![pr.clone()],
+    };
+    let thread_id = start_proposing(&title, &prompt, &subject).await?;
     track(nanos, title, pr, Some(failure), proposal.summary, thread_id).await;
     Ok(())
 }
@@ -54,15 +58,16 @@ with where things stand, such as a link to the pull request you opened. {login} 
 afterwards in this thread.",
         login = login(),
     );
-    let thread_id = t3::start(title, &prompt).await?;
+    let thread_id = t3::start(title, &prompt, None).await?;
     track(now(), title.to_string(), pr, None, String::new(), thread_id).await;
     Ok(())
 }
 
 // Starts an agent on the user's message about a cluster, and follows it like an investigation.
-// The prompt carries the cluster, as the agent may run out of reach of gem's MCP server, such as
-// in Claude Cloud. Returns the investigation's id.
+// The prompt carries the cluster as gem showed it when the user sent the message. The agent
+// proposes what to do on GitHub rather than do it. Returns the investigation's id.
 pub async fn ask(cluster: &PullRequestCluster, message: &str) -> Result<String, String> {
+    let nanos = now();
     let first = cluster
         .pull_requests
         .first()
@@ -88,9 +93,9 @@ requests linked by stacking or mentions, and sent you a message about it. The cl
 {pull_requests}
 Here it is as gem showed it when {login} sent the message, with each pull request's review and \
 check state, and the conversations on them still waiting on {login}, with what other agents \
-propose answering. Where gem's MCP server is available, its `get_cluster` tool, passed any of \
-those URLs, has the cluster as gem shows it now. Use `gh` for anything more, such as diffs, \
-comments and check logs.
+propose answering. The `get_cluster` tool of the `{server}` MCP server, passed any of those URLs, \
+has the cluster as gem shows it now. Use `gh` for anything more, such as diffs, comments and check \
+logs.
 
 ```json
 {snapshot}
@@ -100,14 +105,46 @@ comments and check logs.
 
 {message}
 
+Read and investigate freely, but never push, comment, review, merge, close or rerun anything on \
+GitHub yourself, even when {login} asks you to handle something: propose it, and {login} approves \
+it in gem. A proposal is about one of the cluster's pull requests, and can:
+- change its code, with `patch` and `message`: clone its repository into a temporary directory, \
+run `gh pr checkout <number>` in it, edit, and pass what `git diff` prints as `patch`. Never \
+commit or push.
+- reply as {login}, in the first person, with `reply`: the markdown is posted as a top-level \
+comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
+first lines before approving.
+- hand the work to another agent, with `follow_up`: when the work is too big to review as one \
+patch, such as matching changes in other repositories, write a prompt for a T3 Code agent. It \
+must stand alone: the repositories (checked out under ~/code), the branches or pull requests to \
+build on, what to change and why, and how to verify it. The agent must be able to finish without \
+anyone else reviewing, merging or releasing something first.
+- close the pull request without merging it, with `close_pull_request`. Pair it with a reply \
+saying why.
+
+Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` the \
+pull request it is about, a `summary` of one line saying what approving does, and its steps. It \
+checks the proposal and returns an error with the reason when something is wrong: fix it and call \
+it again. gem merges and rebases pull requests itself, so when one should be merged or brought up \
+to date with its base branch, say so in your reply. If the message only asks something, answer it \
+and propose nothing.
+
 {login} follows this thread in an app that shows only your latest reply, so end each reply with \
-where things stand, such as a link to anything you opened. {login} may message you afterwards in \
-this thread.",
+where things stand, such as what you proposed. {login} may message you afterwards in this \
+thread, and you can record more proposals the same way.",
         login = login(),
         snapshot = mcp::cluster_json(cluster),
+        server = mcp::AGENT_NAME,
     );
-    let thread_id = t3::start(&title, &prompt).await?;
-    let nanos = now();
+    let subject = Subject::Investigation {
+        id: id(nanos),
+        prs: cluster
+            .pull_requests
+            .iter()
+            .map(|pr| pr.url.clone())
+            .collect(),
+    };
+    let thread_id = start_proposing(&title, &prompt, &subject).await?;
     track(nanos, title, &first.url, None, String::new(), thread_id).await;
     Ok(id(nanos))
 }
@@ -131,6 +168,7 @@ pub async fn close(id: &str) {
     let _files = FILES.lock().await;
     let _ = tokio::fs::remove_file(path(id)).await;
     proposals::remove_of_investigation(id).await;
+    Tokens::here().revoke(id).await;
 }
 
 pub async fn fill(response: &mut ListOpenPullRequestsResponse) {
@@ -177,6 +215,16 @@ pub fn watch() {
     });
 }
 
+// Starts an agent that proposes on `subject` through `gem-agent`. Returns the thread's id.
+async fn start_proposing(title: &str, prompt: &str, subject: &Subject) -> Result<String, String> {
+    let config = mcp::agent_config(subject).await?;
+    let started = t3::start(title, prompt, Some(&config)).await;
+    if started.is_err() {
+        Tokens::here().revoke(subject.id()).await;
+    }
+    started
+}
+
 fn now() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -218,14 +266,7 @@ async fn track(
     .await;
 }
 
-fn prompt(id: &str, pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
-    let exe = env::current_exe().unwrap();
-    let dir = env::current_dir().unwrap().join(proposals::DIR);
-    let propose = format!(
-        "{} propose --dir {} --pr {pr} --investigation {id}",
-        exe.display(),
-        dir.display(),
-    );
+fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
     let checks: String = failure
         .checks
         .iter()
@@ -266,36 +307,33 @@ reply: say what the root cause is and the evidence for it, such as links to the 
 same way, in a few short paragraphs of markdown.
 
 Then propose what {login} should do about it. A proposal can:
-- hand the fix to another agent, with --follow-up: such as a pull request that fixes the test or \
-the code on the base branch. Write a prompt for a T3 Code agent to a markdown file. It must stand \
-alone: the repositories (checked out under ~/code), the branch to build on, what to change and \
+- hand the fix to another agent, with `follow_up`: such as a pull request that fixes the test or \
+the code on the base branch. Write a prompt for a T3 Code agent. It must stand alone: the \
+repositories (checked out under ~/code), the branch to build on, what to change and \
 why, how to verify it, and that it opens a pull request with the fix whose description links \
 {pr}, where the test failed. The agent must be able to finish without anyone else reviewing, \
 merging or releasing something first.
-- change the code of {pr}, with --patch and --message, when the pull request itself causes it: \
+- change the code of {pr}, with `patch` and `message`, when the pull request itself causes it: \
 clone the repository into a temporary directory, run `gh pr checkout <number>` in it, edit, and \
-save `git diff` to a file. Never commit or push.
+pass what `git diff` prints as `patch`. Never commit or push.
 
-Record each proposal with:
+Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {pr}, a \
+`summary` of one line saying what approving does, and its steps. It checks the proposal and \
+returns an error with the reason when something is wrong: fix it and call it again. Call it once \
+per proposal. If the failure needs nothing from {login}, propose nothing and say why in your reply.
 
-{propose} --summary \"<one line saying what approving does>\" [--follow-up <markdown file>] [--patch <diff file> --message \"<commit message>\"]
-
-It checks the proposal and exits non-zero with the reason when something is wrong: fix it and run \
-it again. Run it once per proposal. If the failure needs nothing from {login}, propose nothing and \
-say why in your reply.
-
-If answering well needs something these steps cannot do, describe the missing tool in a markdown \
-file (what it would do and why this failure needs it) and record it with:
-
-{propose} --summary \"<tool name: one line>\" --request-tool <markdown file>
+If answering well needs something these steps cannot do, call `propose` with `request_tool` \
+instead of steps: markdown describing the missing tool (what it would do and why this failure \
+needs it), with a `summary` of \"<tool name>: <one line>\".
 
 {login} may message you afterwards in this thread. Answer them the same way: your latest reply \
-says where things stand, and you can record more proposals with the same command.
+says where things stand, and you can record more proposals the same way.
 
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals \
 later.",
         head = failure.head_oid,
         login = login(),
+        server = mcp::AGENT_NAME,
     )
 }
 
