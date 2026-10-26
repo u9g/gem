@@ -106,8 +106,9 @@ Merge each with `gh pr merge`, using a merge method its repository allows, in an
 every base: a pull request whose base branch is another's head branch merges after that one, \
 retargeted with `gh pr edit --base` onto the base it merged into if GitHub did not do it. Merge \
 the rest in the order listed. Before each merge, check that the pull request is still approved, \
-its checks pass and it merges cleanly. If one does not, stop and say why, without merging the ones \
-after it.
+or that you are an admin of its repository, and that its checks pass and it merges cleanly. If one \
+does not, stop and say why, without merging the ones after it. Merge one that is not approved with \
+`gh pr merge --admin`.
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread."

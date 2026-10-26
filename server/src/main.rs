@@ -63,7 +63,7 @@ query($endCursor: String, $q: String!) {
           checkRunCount checkRunCountsByState { state count }
           statusContextCount statusContextCountsByState { state count }
         } } } } }
-        repository { nameWithOwner name owner { login } }
+        repository { nameWithOwner name owner { login } viewerPermission }
         headRepository { nameWithOwner }
         timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], first: 100) {
           nodes { ... on CrossReferencedEvent { source { ... on PullRequest { url } } } }
@@ -85,6 +85,7 @@ const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
   created_at: .createdAt,
   updated_at: .updatedAt,
   approved: (.reviewDecision == "APPROVED"),
+  admin: (.repository.viewerPermission == "ADMIN"),
   checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
   checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
   checks: (.commits.nodes[0].commit.statusCheckRollup.contexts
@@ -114,6 +115,7 @@ struct SearchedPullRequest {
     created_at: Timestamp,
     updated_at: Timestamp,
     approved: bool,
+    admin: bool,
     checks_passing: bool,
     checks_failing: bool,
     checks: Checks,
@@ -621,6 +623,7 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         title: pr.title.clone(),
                         url: pr.url.clone(),
                         approved: pr.approved,
+                        admin: pr.admin,
                         checks_passing: pr.checks_passing,
                         checks_failing: pr.checks_failing,
                         proposals: Vec::new(),

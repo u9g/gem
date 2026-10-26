@@ -1,6 +1,7 @@
 import { Check, CircleCheck, CircleDashed, CircleX, MessageCircleQuestionMark } from 'lucide-react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { mergeable } from './ClusterRow';
 import type { PullRequest } from './gen/gem_pb';
 import { Button, Icon, t3, usePhone } from './t3';
 
@@ -123,7 +124,7 @@ function status(pr: PullRequest): Status | undefined {
   }
   if (checks.failed > 0) return { doing: checksFailed, waiting: 'no proposal for them' };
   if (pr.behind) return { doing: 'Behind its base branch', waiting: 'waiting on you to rebase' };
-  if (pr.approved && pr.checksPassing) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
+  if (mergeable(pr)) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
   return undefined;
 }
 

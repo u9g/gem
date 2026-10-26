@@ -22,8 +22,13 @@ function shortAgo(date: Date): string {
   return `${Math.trunc(seconds / size)}${unit === 'month' ? 'mo' : unit[0]}`;
 }
 
+// Approved, or in a repository the user administers, so can merge without an approval.
+export function mergeable(pr: PullRequest): boolean {
+  return (pr.approved || pr.admin) && pr.checksPassing;
+}
+
 export function ready(cluster: PullRequestCluster): boolean {
-  return cluster.pullRequests.every((pr) => pr.approved && pr.checksPassing);
+  return cluster.pullRequests.every(mergeable);
 }
 
 // Where a cluster sits on a phone's list, by what it waits on: the user first, then its agents, then

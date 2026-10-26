@@ -17,7 +17,8 @@ export function timeAgo(date: Date): string {
   return relativeTime.format(Math.trunc(seconds / size), unit);
 }
 
-// A cluster's title, its PRs, a button to merge them once every one is approved and passing, the
+// A cluster's title, its PRs, a button to merge them once every one is approved, or the user
+// administers its repository, and passing, the
 // conversations waiting on u9g, and a box to ask an agent about it unless the phone docks that box
 // below.
 export function ClusterView({
@@ -66,7 +67,7 @@ export function ClusterView({
       </View>
       {ready(cluster) && !cluster.pullRequests.some((pr) => pr.merge) && (
         <View style={[styles.merge, phone && styles.mergeStacked]}>
-          <Text style={[styles.mergeText, phone && styles.mergeTextStacked]}>Every pull request is approved and its checks pass.</Text>
+          <Text style={[styles.mergeText, phone && styles.mergeTextStacked]}>Every pull request is approved or yours to merge as an admin, and its checks pass.</Text>
           <Button
               label={merging ? 'Starting an agent…' : 'Merge cluster'}
               variant="default"
