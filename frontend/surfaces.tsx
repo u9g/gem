@@ -26,14 +26,18 @@ export function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
     const inHunk = oldLeft > 0 || newLeft > 0;
     // A file's header is a `--- ` line then a `+++ ` line, between hunks.
     if (!inHunk && line.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) continue;
-    if (!inHunk && line.startsWith('+++ ') && lines[i - 1]?.startsWith('--- ')) files.push({ path: line.slice(6), lines: [] });
+    if (!inHunk && line.startsWith('+++ ') && lines[i - 1]?.startsWith('--- ')) {
+      // A deleted file's new side is /dev/null; its path is on the old side.
+      files.push({ path: (line === '+++ /dev/null' ? lines[i - 1] : line).slice(6), lines: [] });
+    }
     else if (!inHunk && line.startsWith('@@')) {
       const [, from, fromCount, to, toCount] = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?/.exec(line) ?? [];
       [old, next] = [Number(from ?? 0), Number(to ?? 0)];
       [oldLeft, newLeft] = [Number(fromCount ?? 1), Number(toCount ?? 1)];
       files[files.length - 1].lines.push({ kind: 'hunk', text: line.replace(/^@@[^@]*@@ ?/, '') });
-    // Inside a hunk, an empty line is an empty context line whose leading space was stripped.
-    } else if (!files.length || (line === '' && !inHunk) || line.startsWith('\\')) continue;
+    // Between hunks every other line is header; inside one, an empty line is an empty context line
+    // whose leading space was stripped.
+    } else if (!files.length || !inHunk || line.startsWith('\\')) continue;
     else if (line.startsWith('+')) {
       newLeft--;
       files[files.length - 1].lines.push({ kind: 'add', text: line.slice(1), number: next++ });

@@ -3,7 +3,6 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { units } from './ClusterRow';
 import { MergeBy, type PullRequestCluster } from './gen/gem_pb';
-import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
 import { Button, t3, usePhone } from './t3';
@@ -19,8 +18,7 @@ export function timeAgo(date: Date): string {
 
 // A cluster's title, its PRs, a button to merge them once the server says they can (forcing the
 // unapproved ones in as an admin, said plainly, when that is how), the
-// conversations waiting on u9g, and a box to ask an agent about it unless the phone docks that box
-// below.
+// conversations waiting on u9g. The phone docks the box to ask an agent about it below.
 export function ClusterView({
   cluster,
   busy,
@@ -30,7 +28,6 @@ export function ClusterView({
   onRebase,
   onMerge,
   onInvestigate,
-  onMessage,
 }: {
   cluster: PullRequestCluster;
   busy?: ReadonlySet<string>;
@@ -41,9 +38,6 @@ export function ClusterView({
   // `admin`: the user chose to force the unapproved pull requests in as an admin.
   onMerge: (cluster: PullRequestCluster, admin: boolean) => void;
   onInvestigate: (id: string) => void;
-  // Starts an agent on the message, which reads the cluster through gem's MCP server. Resolves
-  // once the agent started.
-  onMessage?: (message: string) => Promise<unknown>;
 }) {
   const phone = usePhone();
   const restarting = busy?.has(cluster.pullRequests[0].url);
@@ -78,7 +72,6 @@ export function ClusterView({
           onInvestigate={onInvestigate}
         />
       ))}
-      {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
     </View>
   );
 }

@@ -95,6 +95,8 @@ message PullRequest {
   // The PR's diff of each file a proposal on it is about: the file a review
   // comment is on, and the files a patch changes.
   repeated FileDiff files = 16;
+  // The branch it merges into.
+  string base = 17;
 }
 
 // How a pull request can merge, decided by the server.
