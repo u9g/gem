@@ -8,7 +8,7 @@ import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
-import { parseDiff } from './surfaces';
+import { type DiffLine, parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
@@ -135,21 +135,33 @@ export function ClusterReview(props: Props) {
   );
 }
 
+// A file's diff on its PR; empty when GitHub has none for it.
+export function fileLines(pr: PullRequest, path: string): DiffLine[] {
+  const patch = pr.files.find((f) => f.path === path)?.patch ?? '';
+  // GitHub's hunks for the file come without a file header.
+  return parseDiff(`--- a/${path}\n+++ b/${path}\n${patch}`)[0]?.lines ?? [];
+}
+
+// The index in `lines` of the line a conversation's comment is on: the line its own hunk ends on.
+// -1 for a conversation on no line of the diff, or on a deleted one.
+export function lineOf(lines: DiffLine[], proposal: Proposal): number {
+  const comment = proposal.comment;
+  // The commented line ends the hunk, after which only "\ No newline" markers can follow.
+  const last = comment?.diffHunk.split('\n').filter((l) => !l.startsWith('\\')).at(-1) ?? '';
+  if (!comment?.line || last.startsWith('-')) return -1;
+  return lines.findIndex((l) => l.kind !== 'del' && l.number === comment.line && l.text === last.slice(1));
+}
+
 // One file's diff on its PR with the section's conversations inside it, each after the line its
 // comment's own hunk ends on. Conversations on no line of the diff, or on a deleted one, come before
 // it; without a diff, they are all there is.
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
-  const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
-  // GitHub's hunks for the file come without a file header.
-  const lines = parseDiff(`--- a/${section.path}\n+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
+  const lines = fileLines(section.pr, section.path);
   const placed = new Map<number, Proposal[][]>();
   const unplaced: Proposal[][] = [];
   for (const group of section.groups) {
-    const comment = group[0].comment;
-    // The commented line ends the hunk, after which only "\ No newline" markers can follow.
-    const last = comment?.diffHunk.split('\n').filter((l) => !l.startsWith('\\')).at(-1) ?? '';
-    const at = lines.findIndex((l) => l.kind !== 'del' && l.number === comment?.line && l.text === last.slice(1));
-    if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
+    const at = lineOf(lines, group[0]);
+    if (at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
     else unplaced.push(group);
   }
   const thread = (group: Proposal[], inline: boolean) => (
