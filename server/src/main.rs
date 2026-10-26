@@ -41,7 +41,7 @@ mod rebases;
 mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{command, gh, gh_json, login};
+use gem_github::{command, gh, gh_json, graphql, login};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -613,10 +613,10 @@ async fn merge_states(prs: &mut [SearchedPullRequest]) {
     for chunk in prs.chunks(MERGE_STATES_CHUNK) {
         let ids = json!(chunk.iter().map(|pr| &pr.id).collect::<Vec<_>>());
         let query = format!(
-            "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
+            "{{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
         );
         requests.spawn(async move {
-            let data = command("gh", &["api", "graphql", "-f", &query], None).await;
+            let data = graphql(&query, &[]).await;
             data.and_then(|data| {
                 serde_json::from_slice::<Value>(&data).map_err(|error| error.to_string())
             })
@@ -624,13 +624,12 @@ async fn merge_states(prs: &mut [SearchedPullRequest]) {
     }
     let mut states = HashMap::new();
     while let Some(result) = requests.join_next().await {
-        let mut data = match result {
-            Ok(Ok(data)) => data,
-            Ok(Err(error)) => {
+        let mut data = match result.map_err(|error| error.to_string()).flatten() {
+            Ok(data) => data,
+            Err(error) => {
                 tracing::warn!(%error, "cannot read merge states");
                 continue;
             }
-            Err(_) => continue,
         };
         for node in data["data"]["nodes"].as_array_mut().into_iter().flatten() {
             let id = node["id"].as_str().unwrap_or_default().to_string();
