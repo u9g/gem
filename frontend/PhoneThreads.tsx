@@ -5,9 +5,9 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { fileLines, lineOf, type Section, sectionsOf } from './ClusterFiles';
 import type { Proposal, PullRequestCluster } from './gen/gem_pb';
-import { approval, ProposalGroup } from './ProposalView';
+import { approval, ProposalGroup, subjectOf } from './ProposalView';
 import type { DiffLine } from './surfaces';
-import { Icon, t3, visibleMarkdown } from './t3';
+import { Icon, t3 } from './t3';
 
 type Thread = { section: Section; group: Proposal[] };
 
@@ -21,27 +21,31 @@ type Handlers = {
 // The conversations waiting on the user, as a phone shows them: a card each, in file and line
 // order, with where it is, who wrote what, the lines of code it is on, and Dismiss / Approve when
 // approving needs no choice between alternatives. A card opens its thread in a sheet over its file.
-// The open sheet is a history entry holding its conversation's proposal IDs, marked `open` like the
+// The open sheet is a history entry holding its cluster and conversation, marked `open` like the
 // cluster's own, so back and forward close and reopen it, and it survives a remount.
 export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestCluster } & Handlers) {
   const threads: Thread[] = cluster.pullRequests
     .flatMap(sectionsOf)
     .flatMap((section) => section.groups.map((group) => ({ section, group })));
-  // The open conversation's proposals: it stays open while any of them is left.
-  const [open, setOpen] = useState<string[] | undefined>(() => history.state?.thread);
-  const index = open ? threads.findIndex((t) => t.group.some((p) => open.includes(p.id))) : -1;
-  const ids = (thread: Thread) => thread.group.map((p) => p.id);
+  const url = cluster.pullRequests[0].url;
+  // The open conversation's subject, from an entry of this cluster's: it stays open while any
+  // proposal answers it.
+  const ours = (state: { cluster?: string; thread?: string } | null) =>
+    state?.cluster === url ? state.thread : undefined;
+  const [open, setOpen] = useState(() => ours(history.state));
+  const index = open ? threads.findIndex((t) => subjectOf(t.group[0]) === open) : -1;
+  const entry = (thread: Thread) => ({ open: true, cluster: url, thread: subjectOf(thread.group[0]) });
   // Set from leaving a vanished thread's entry until the browser lands on the one below it.
   const leaving = useRef(false);
   useEffect(() => {
     const land = (event: PopStateEvent) => {
       leaving.current = false;
-      setOpen(event.state?.thread);
+      setOpen(ours(event.state));
     };
     addEventListener('popstate', land);
     return () => removeEventListener('popstate', land);
-  }, []);
-  // Approving or dismissing the open conversation's last proposal removes it, and its entry.
+  }, [url]);
+  // Approving or dismissing the open conversation's last proposal removes it; back leaves its entry.
   useEffect(() => {
     if (open && index < 0 && !leaving.current) {
       leaving.current = true;
@@ -55,8 +59,8 @@ export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestClus
           key={thread.group[0].id}
           thread={thread}
           onOpen={() => {
-            history.pushState({ open: true, thread: ids(thread) }, '');
-            setOpen(ids(thread));
+            history.pushState(entry(thread), '');
+            setOpen(entry(thread).thread);
           }}
           {...handlers}
         />
@@ -68,8 +72,8 @@ export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestClus
             threads={threads}
             index={index}
             onMove={(i) => {
-              history.replaceState({ open: true, thread: ids(threads[i]) }, '');
-              setOpen(ids(threads[i]));
+              history.replaceState(entry(threads[i]), '');
+              setOpen(entry(threads[i]).thread);
             }}
             onClose={() => history.back()}
             {...handlers}
@@ -88,21 +92,15 @@ function where({ section, group }: Thread): string {
   return `${ref} · ${subject ? 'checks' : 'conversation'}`;
 }
 
-// The first line of markdown's visible text: no HTML, comments, link targets or emphasis marks.
-function plain(markdown: string): string {
-  return (
-    visibleMarkdown(markdown)
-      .replace(/<[^>]+>/g, '')
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .split('\n')
-      .map((l) => l.replace(/[#*`>]/g, '').trim())
-      .find(Boolean) ?? ''
-  );
+// The first line of the text GitHub's rendering of some markdown shows.
+function plain(html: string): string {
+  const text = new DOMParser().parseFromString(html, 'text/html').body.textContent ?? '';
+  return text.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 }
 
 // What the conversation is about: its comment, else what approving does.
 function gist(proposal: Proposal): string {
-  return (proposal.comment && plain(proposal.comment.body)) || plain(proposal.summary);
+  return (proposal.comment && plain(proposal.comment.bodyHtml)) || plain(proposal.summaryHtml);
 }
 
 function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; onOpen: () => void } & Handlers) {
@@ -149,7 +147,7 @@ function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; 
       </Text>
       {group.length === 1 && proposal.comment && (
         <Text numberOfLines={1} style={styles.meta}>
-          → {plain(proposal.summary)}
+          → {plain(proposal.summaryHtml)}
         </Text>
       )}
       {failed && (
