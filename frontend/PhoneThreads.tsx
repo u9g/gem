@@ -1,5 +1,6 @@
 import { Check, ChevronLeft, ChevronRight, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { type ComponentRef, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { fileLines, lineOf, type Section, sectionsOf } from './ClusterFiles';
@@ -17,32 +18,52 @@ type Handlers = {
   onInvestigate: (id: string) => void;
 };
 
-const HIGHLIGHT = 'thread-sheet-line';
-
 // The conversations waiting on the user, as a phone shows them: a card each, in file and line
 // order, with where it is, who wrote what, the lines of code it is on, and Dismiss / Approve when
-// approving needs no choice between alternatives. A card opens its thread in a sheet over its file.
+// approving needs no choice between alternatives. A card opens its thread in a sheet over its file;
+// the open sheet is a history entry, so the browser's back closes it.
 export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestCluster } & Handlers) {
   const threads: Thread[] = cluster.pullRequests
     .flatMap(sectionsOf)
     .flatMap((section) => section.groups.map((group) => ({ section, group })));
-  const [open, setOpen] = useState<string>();
-  // Approving or dismissing the open thread removes it, which closes the sheet.
-  const index = threads.findIndex((t) => t.group[0].id === open);
+  // The open conversation's proposals: it stays open while any of them is left.
+  const [open, setOpen] = useState<string[]>();
+  const index = open ? threads.findIndex((t) => t.group.some((p) => open.includes(p.id))) : -1;
+  const ids = (thread: Thread) => thread.group.map((p) => p.id);
+  useEffect(() => {
+    const close = () => setOpen(undefined);
+    addEventListener('popstate', close);
+    return () => removeEventListener('popstate', close);
+  }, []);
+  // Approving or dismissing the open conversation's last proposal removes it, and its entry.
+  useEffect(() => {
+    if (open && index < 0) history.back();
+  }, [open, index]);
   return (
     <View style={styles.cards}>
       {threads.map((thread) => (
-        <Card key={thread.group[0].id} thread={thread} onOpen={() => setOpen(thread.group[0].id)} {...handlers} />
-      ))}
-      {index >= 0 && (
-        <ThreadSheet
-          threads={threads}
-          index={index}
-          onMove={(i) => setOpen(threads[i].group[0].id)}
-          onClose={() => setOpen(undefined)}
+        <Card
+          key={thread.group[0].id}
+          thread={thread}
+          onOpen={() => {
+            history.pushState({ thread: true }, '');
+            setOpen(ids(thread));
+          }}
           {...handlers}
         />
-      )}
+      ))}
+      {index >= 0 &&
+        // Out of the cluster's ScrollView, whose transform would make it the sheet's frame.
+        createPortal(
+          <ThreadSheet
+            threads={threads}
+            index={index}
+            onMove={(i) => setOpen(ids(threads[i]))}
+            onClose={() => history.back()}
+            {...handlers}
+          />,
+          document.body,
+        )}
     </View>
   );
 }
@@ -67,6 +88,7 @@ function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; 
   const lines = fileLines(section.pr, section.path);
   const at = lineOf(lines, proposal);
   const disabled = group.some((p) => busy?.has(p.id));
+  const failed = group.find((p) => p.error);
   return (
     <Pressable style={styles.card} onPress={onOpen}>
       <View style={styles.cardHead}>
@@ -87,7 +109,7 @@ function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; 
             </Pressable>
             {!proposal.requestedTool && (
               <Pressable
-                accessibilityLabel="Approve"
+                accessibilityLabel={proposal.error ? 'Retry' : 'Approve'}
                 disabled={disabled}
                 style={[styles.icon, styles.approve, disabled && styles.off]}
                 onPress={() => onApprove(proposal.id, ...approval(proposal))}
@@ -102,6 +124,16 @@ function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; 
         {proposal.comment && <Text style={styles.meta}>{proposal.comment.author} </Text>}
         {gist(proposal)}
       </Text>
+      {group.length === 1 && proposal.comment && (
+        <Text numberOfLines={1} style={styles.meta}>
+          → {proposal.summary}
+        </Text>
+      )}
+      {failed && (
+        <Text numberOfLines={2} style={styles.error}>
+          {failed.error}
+        </Text>
+      )}
       {at >= 0 && <Code lines={lines.slice(Math.max(0, at - 3), at + 2)} highlight={Math.min(at, 3)} />}
     </Pressable>
   );
@@ -118,9 +150,6 @@ function ThreadSheet({
   const { section, group } = threads[index];
   const lines = fileLines(section.pr, section.path);
   const at = lineOf(lines, group[0]);
-  useEffect(() => {
-    document.getElementById(HIGHLIGHT)?.scrollIntoView({ block: 'center' });
-  }, [group]);
   return (
     <View style={styles.overlay}>
       <View style={styles.bar}>
@@ -155,23 +184,29 @@ function ThreadSheet({
           <Icon icon={ChevronRight} size={18} />
         </Pressable>
       </View>
-      {lines.length > 0 && (
+      {at >= 0 && (
         <ScrollView style={styles.file}>
-          <Code lines={lines} highlight={at} />
+          <Code key={group[0].id} lines={lines} highlight={at} full />
         </ScrollView>
       )}
-      <View style={[styles.sheet, lines.length === 0 && styles.sheetFull]}>
+      <View style={[styles.sheet, at < 0 && styles.sheetFull]}>
         <View style={styles.grab} />
         <ScrollView contentContainerStyle={styles.sheetContent}>
-          <ProposalGroup proposals={group} inline {...handlers} />
+          {/* Off the diff, the thread shows its comment's own hunk instead. */}
+          <ProposalGroup key={group[0].id} proposals={group} anchored inline={at >= 0} {...handlers} />
         </ScrollView>
       </View>
     </View>
   );
 }
 
-// Diff lines, dense and unwrapped, with the new side's line numbers; `highlight` marks one.
-function Code({ lines, highlight }: { lines: DiffLine[]; highlight: number }) {
+// Diff lines, dense, with the new side's line numbers; `highlight` marks one. `full` wraps long
+// lines and scrolls the marked one into view; otherwise lines are cut to one.
+function Code({ lines, highlight, full = false }: { lines: DiffLine[]; highlight: number; full?: boolean }) {
+  const marked = useRef<ComponentRef<typeof View>>(null);
+  useEffect(() => {
+    if (full) (marked.current as unknown as HTMLElement | null)?.scrollIntoView({ block: 'center' });
+  }, [full]);
   return (
     <View style={styles.code}>
       {lines.map((line, i) =>
@@ -182,7 +217,7 @@ function Code({ lines, highlight }: { lines: DiffLine[]; highlight: number }) {
         ) : (
           <View
             key={i}
-            nativeID={i === highlight ? HIGHLIGHT : undefined}
+            ref={i === highlight ? marked : undefined}
             style={[
               styles.line,
               line.kind === 'add' && styles.add,
@@ -192,9 +227,10 @@ function Code({ lines, highlight }: { lines: DiffLine[]; highlight: number }) {
           >
             <Text style={styles.number}>{line.kind === 'del' ? '' : line.number}</Text>
             <Text
-              numberOfLines={1}
+              numberOfLines={full ? undefined : 1}
               style={[
                 styles.text,
+                full && styles.wrap,
                 line.kind === 'add' && { color: '#B7F5D8' },
                 line.kind === 'del' && { color: '#FFC9C9' },
               ]}
@@ -249,6 +285,11 @@ const styles = StyleSheet.create({
   off: {
     opacity: 0.4,
   },
+  error: {
+    color: t3.deletion,
+    fontFamily: t3.mono,
+    fontSize: 11,
+  },
   gist: {
     color: t3.foreground,
     fontSize: 13,
@@ -297,6 +338,10 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
     whiteSpace: 'pre',
+  } as object,
+  wrap: {
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
   } as object,
   // Covers the cluster, under the browser's own bars.
   overlay: {

@@ -105,11 +105,12 @@ export default function App() {
     setSelectedInvestigation(undefined);
   }, []);
 
-  // On a phone an open cluster or investigation is a history entry, so the browser's back returns
-  // to the list.
+  // On a phone an open cluster or investigation is a history entry marked `open`, so the browser's
+  // back returns to the list. Entries above it, such as an open thread, close themselves.
   useEffect(() => {
-    addEventListener('popstate', closeDrawer);
-    return () => removeEventListener('popstate', closeDrawer);
+    const back = (event: PopStateEvent) => event.state?.open || closeDrawer();
+    addEventListener('popstate', back);
+    return () => removeEventListener('popstate', back);
   }, [closeDrawer]);
 
   // Marks `key` busy until the request and the reload after it settle.
@@ -301,7 +302,7 @@ export default function App() {
       .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
     const open = (cluster: PullRequestCluster) => {
-      history.pushState(null, '');
+      history.pushState({ open: true }, '');
       setSelectedUrl(cluster.pullRequests[0].url);
     };
     return (
@@ -350,7 +351,7 @@ export default function App() {
                       key={i.id}
                       investigation={i}
                       onPress={() => {
-                        history.pushState(null, '');
+                        history.pushState({ open: true }, '');
                         setSelectedInvestigation(i.id);
                       }}
                     />
