@@ -95,9 +95,11 @@ export default function App() {
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
 
+  // The server updates itself under an open page, so its responses can carry fields this page's
+  // schema does not know yet.
   const show = useCallback(
     (json: JsonValue) => {
-      const response = fromJson(ListOpenPullRequestsResponseSchema, json);
+      const response = fromJson(ListOpenPullRequestsResponseSchema, json, { ignoreUnknownFields: true });
       setClusters(response.clusters);
       setInvestigations(response.investigations);
       setLogin(response.login);
@@ -214,7 +216,7 @@ export default function App() {
       '/clusters/message',
       toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
     )
-      .then((json) => fromJson(MessageClusterResponseSchema, json).investigationId)
+      .then((json) => fromJson(MessageClusterResponseSchema, json, { ignoreUnknownFields: true }).investigationId)
       .then((id) => load().then(() => go({ cluster: place.cluster, investigation: id })));
   }
 
