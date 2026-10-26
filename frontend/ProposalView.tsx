@@ -24,13 +24,18 @@ import {
 } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, usePhone, visibleMarkdown } from './t3';
 
+// What a proposal answers: its conversation, else its failed checks, else itself.
+export function subjectOf(proposal: Proposal): string {
+  const checks = proposal.checkFailure?.checks.map((c) => c.id).sort().join(',');
+  return proposal.comment?.id ?? checks ?? proposal.id;
+}
+
 // Proposals answering the same conversation, or the same failed checks, are alternatives: approving
 // one clears the rest.
 export function bySubject(list: Proposal[]): Proposal[][] {
   const groups = new Map<string, Proposal[]>();
   for (const proposal of list) {
-    const checks = proposal.checkFailure?.checks.map((c) => c.id).sort().join(',');
-    const id = proposal.comment?.id ?? checks ?? proposal.id;
+    const id = subjectOf(proposal);
     groups.set(id, [...(groups.get(id) ?? []), proposal]);
   }
   return [...groups.values()];
