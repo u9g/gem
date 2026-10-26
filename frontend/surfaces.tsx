@@ -410,7 +410,8 @@ export function FollowUpCard({
   draft: ReplyDraft;
   onChange: (draft: ReplyDraft) => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  // A rewrite outlives the card, so a new card shows it rather than the suggestion it replaced.
+  const [editing, setEditing] = useState(draft.showing === 'yours');
   return (
     <View style={styles.followUp}>
       <View style={styles.followUpHeader}>
