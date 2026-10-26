@@ -41,7 +41,7 @@ mod rebases;
 mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{gh, gh_json, login};
+use gem_github::{command, gh, gh_json, login};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -565,21 +565,28 @@ async fn open_pull_requests(
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
     let search = std::env::var("GEM_SEARCH").unwrap_or_default();
-    let stdout = gh(&[
-        "api",
-        "graphql",
-        "--paginate",
-        "-f",
-        &format!("query={PRS_QUERY}"),
-        "-f",
-        &format!("q=is:pr is:open author:{} {search}", login()),
-        "--jq",
-        PRS_JQ,
-    ])
-    .await?;
+    let stdout = command(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "--paginate",
+            "-f",
+            &format!("query={PRS_QUERY}"),
+            "-f",
+            &format!("q=is:pr is:open author:{} {search}", login()),
+            "--jq",
+            PRS_JQ,
+        ],
+        None,
+    )
+    .await
+    .inspect_err(|error| tracing::warn!(%error, "cannot list open pull requests"))
+    .ok()?;
     let mut prs = serde_json::Deserializer::from_slice(&stdout)
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
+        .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
         .ok()?;
     merge_states(&mut prs).await;
     changes.watch(watched(&prs)).await;
@@ -608,12 +615,22 @@ async fn merge_states(prs: &mut [SearchedPullRequest]) {
         let query = format!(
             "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
         );
-        requests.spawn(async move { gh_json::<Value>(&["api", "graphql", "-f", &query]).await });
+        requests.spawn(async move {
+            let data = command("gh", &["api", "graphql", "-f", &query], None).await;
+            data.and_then(|data| {
+                serde_json::from_slice::<Value>(&data).map_err(|error| error.to_string())
+            })
+        });
     }
     let mut states = HashMap::new();
     while let Some(result) = requests.join_next().await {
-        let Ok(Some(mut data)) = result else {
-            continue;
+        let mut data = match result {
+            Ok(Ok(data)) => data,
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "cannot read merge states");
+                continue;
+            }
+            Err(_) => continue,
         };
         for node in data["data"]["nodes"].as_array_mut().into_iter().flatten() {
             let id = node["id"].as_str().unwrap_or_default().to_string();
