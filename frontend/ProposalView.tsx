@@ -41,9 +41,10 @@ function anchorDiff(path: string, hunk: string, lines = 6): string {
   const [header, ...body] = hunk.split('\n');
   const kept = body.slice(-lines);
   // The new side's start moves past every dropped line the new file has: context and additions.
-  const start = Number(/\+(\d+)/.exec(header)?.[1] ?? 1) + body.slice(0, -lines).filter((l) => /^[ +]/.test(l)).length;
+  // An empty line is context whose leading space was stripped.
+  const start = Number(/\+(\d+)/.exec(header)?.[1] ?? 1) + body.slice(0, -lines).filter((l) => /^([ +]|$)/.test(l)).length;
   const count = (side: RegExp) => kept.filter((l) => side.test(l)).length;
-  return `--- a/${path}\n+++ b/${path}\n@@ -0,${count(/^[ -]/)} +${start},${count(/^[ +]/)} @@\n${kept.join('\n')}`;
+  return `--- a/${path}\n+++ b/${path}\n@@ -0,${count(/^([ -]|$)/)} +${start},${count(/^([ +]|$)/)} @@\n${kept.join('\n')}`;
 }
 
 // One conversation waiting on the user as a band: the proposal's summary and actions on top, then

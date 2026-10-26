@@ -32,7 +32,8 @@ export function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
       [old, next] = [Number(from ?? 0), Number(to ?? 0)];
       [oldLeft, newLeft] = [Number(fromCount ?? 1), Number(toCount ?? 1)];
       files[files.length - 1].lines.push({ kind: 'hunk', text: line.replace(/^@@[^@]*@@ ?/, '') });
-    } else if (!files.length || line === '' || line.startsWith('\\')) continue;
+    // Inside a hunk, an empty line is an empty context line whose leading space was stripped.
+    } else if (!files.length || (line === '' && !inHunk) || line.startsWith('\\')) continue;
     else if (line.startsWith('+')) {
       newLeft--;
       files[files.length - 1].lines.push({ kind: 'add', text: line.slice(1), number: next++ });
