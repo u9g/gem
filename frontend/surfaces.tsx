@@ -411,9 +411,9 @@ function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: Re
 }
 
 // The version showing, as GitHub renders it until pressed, then its markdown until left. Yours
-// renders only once left, and shows as plain text until it has. Markdown that renders to nothing
-// stays a text box, as there would be nothing to press. The Clamp spans both, so leaving does not collapse what is
-// under the pointer.
+// renders only once left, and shows as plain text until it has. Either keeps at least a line to
+// press, even when the markdown renders to nothing. The Clamp spans both, so leaving does not
+// collapse what is under the pointer.
 function EditableMarkdown({
   pr,
   suggested,
