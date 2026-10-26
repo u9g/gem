@@ -76,7 +76,8 @@ message PullRequest {
   bool checks_failing = 7;
   // Proposed answers to conversations on this PR that still wait on the user.
   repeated Proposal proposals = 8;
-  // The head commit lacks commits on the base branch.
+  // GitHub will not merge it until the head branch is rebased onto the base branch: the base
+  // branch requires it up to date, or it conflicts.
   bool behind = 9;
   // Set while a T3 Code agent rebases the head branch onto the base branch.
   Rebase rebase = 10;
@@ -97,6 +98,8 @@ message PullRequest {
   repeated FileDiff files = 16;
   // The branch it merges into.
   string base = 17;
+  // It conflicts with the base branch. Implies behind.
+  bool conflicts = 18;
 }
 
 // How a pull request can merge, decided by the server.

@@ -41,7 +41,7 @@ mod rebases;
 mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{Head, gh, gh_json, login};
+use gem_github::{gh, gh_json, login};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -59,7 +59,7 @@ query($endCursor: String, $q: String!) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        id number state title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
+        id number state title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision mergeStateStatus mergeable
         commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 0) {
           checkRunCount checkRunCountsByState { state count }
           statusContextCount statusContextCountsByState { state count }
@@ -86,6 +86,8 @@ const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
   created_at: .createdAt,
   updated_at: .updatedAt,
   approved: (.reviewDecision == "APPROVED"),
+  behind: (.mergeStateStatus == "BEHIND" or .mergeable == "CONFLICTING"),
+  conflicts: (.mergeable == "CONFLICTING"),
   admin: (.repository.viewerPermission == "ADMIN"),
   checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
   checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
@@ -116,6 +118,8 @@ struct SearchedPullRequest {
     created_at: Timestamp,
     updated_at: Timestamp,
     approved: bool,
+    behind: bool,
+    conflicts: bool,
     admin: bool,
     checks_passing: bool,
     checks_failing: bool,
@@ -577,7 +581,7 @@ async fn open_pull_requests(
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
     changes.watch(watched(&prs)).await;
-    let clusters = cluster(&prs, &behind(&prs).await);
+    let clusters = cluster(&prs);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
     Some(ListOpenPullRequestsResponse {
@@ -590,7 +594,7 @@ async fn open_pull_requests(
 
 // What `changes` asks GitHub about each PR. Its own response changes with pushes, its title,
 // comments, reviews and closing; its head commit's check runs and statuses with its checks; and its
-// base branch with `behind`.
+// base branch with whether it is behind or conflicts.
 fn watched(prs: &[SearchedPullRequest]) -> Vec<String> {
     (prs.iter())
         .flat_map(|pr| {
@@ -608,7 +612,7 @@ fn watched(prs: &[SearchedPullRequest]) -> Vec<String> {
 // Two PRs are linked when one is stacked on the other (its base branch is the other's head
 // branch in the same repository) or one mentions the other. A cluster is every PR linked through
 // any chain of links, not only direct ones.
-fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullRequestCluster> {
+fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
     let by_url: HashMap<&str, usize> = prs
         .iter()
         .enumerate()
@@ -656,7 +660,8 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         checks_passing: pr.checks_passing,
                         checks_failing: pr.checks_failing,
                         proposals: Vec::new(),
-                        behind: behind.contains(pr.url.as_str()),
+                        behind: pr.behind,
+                        conflicts: pr.conflicts,
                         rebase: None,
                         checks: Some(pr.checks),
                         head_oid: pr.head_oid.clone(),
@@ -677,21 +682,4 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
         .collect();
     clusters.sort_by_key(|c| Reverse(c.updated_at.as_ref().map(|t| (t.seconds, t.nanos))));
     clusters
-}
-
-// The URLs of the PRs whose head commit lacks commits on their base branch.
-async fn behind(prs: &[SearchedPullRequest]) -> HashSet<&str> {
-    let heads: Vec<Head> = (prs.iter())
-        .map(|pr| Head {
-            owner: &pr.repository.owner,
-            name: &pr.repository.name,
-            base: &pr.base,
-            oid: &pr.head_oid,
-        })
-        .collect();
-    let behind = gem_github::behind(&heads).await;
-    (prs.iter().enumerate())
-        .filter(|(i, _)| behind.contains(i))
-        .map(|(_, pr)| pr.url.as_str())
-        .collect()
 }

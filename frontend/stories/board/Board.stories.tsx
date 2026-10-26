@@ -33,6 +33,7 @@ const pullRequest = (name: string, number: number, title: string, fields: Fields
     number,
     title,
     url: `https://github.com/livekit/${name}/pull/${number}`,
+    base: 'main',
     checks: { total: 14, done: 14, failed: 0 },
     mergeBy: mergeBy(fields),
     ...fields,

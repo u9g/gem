@@ -2,10 +2,9 @@
 
 mod patch;
 
-use std::{collections::HashSet, process::Stdio, sync::OnceLock};
+use std::{process::Stdio, sync::OnceLock};
 
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 use tokio::{io::AsyncWriteExt, process::Command};
 
 pub use patch::apply_patch;
@@ -112,48 +111,4 @@ pub async fn command(program: &str, args: &[&str], stdin: Option<&str>) -> Resul
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
-}
-
-// A pull request's head commit, and the branch it targets.
-pub struct Head<'a> {
-    pub owner: &'a str,
-    pub name: &'a str,
-    pub base: &'a str,
-    pub oid: &'a str,
-}
-
-// The indices of the heads that lack commits on their base branch, in one request. A field's
-// arguments cannot come from another field, so search cannot compare them itself.
-pub async fn behind(heads: &[Head<'_>]) -> HashSet<usize> {
-    let fields: String = (heads.iter().enumerate())
-        .map(|(i, head)| {
-            format!(
-                "pr{i}: repository(owner: {}, name: {}) {{ ref(qualifiedName: {}) {{ compare(headRef: {}) {{ behindBy }} }} }}
-",
-                json!(head.owner),
-                json!(head.name),
-                json!(head.base),
-                json!(head.oid),
-            )
-        })
-        .collect();
-    if fields.is_empty() {
-        return HashSet::new();
-    }
-    let Some(data) = gh_json::<Value>(&[
-        "api",
-        "graphql",
-        "-f",
-        &format!(
-            "query={{
-{fields}}}"
-        ),
-    ])
-    .await
-    else {
-        return HashSet::new();
-    };
-    (0..heads.len())
-        .filter(|i| data["data"][format!("pr{i}")]["ref"]["compare"]["behindBy"].as_u64() > Some(0))
-        .collect()
 }
