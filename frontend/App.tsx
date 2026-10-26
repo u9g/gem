@@ -18,6 +18,7 @@ import {
 import { ClusterView, timeAgo } from './ClusterView';
 import { Composer, InvestigationView } from './InvestigationView';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
+import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
 import { Login } from './surfaces';
 import { usePhone } from './t3';
@@ -96,6 +97,7 @@ export default function App() {
   // investigations being closed.
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
+  const search = useSearch(post);
 
   const show = useCallback(
     (json: JsonValue) => {
@@ -267,9 +269,9 @@ export default function App() {
     .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => (pr.repository ? [pr.repository] : [])))
     .filter((repository, i, all) => all.findIndex((other) => sameRepository(other, repository)) === i)
     .sort((a, b) => a.name.localeCompare(b.name));
-  const visible = repoFilter
-    ? clusters.filter((cluster) => cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
-    : clusters;
+  const visible = clusters
+    .filter((cluster) => !repoFilter || cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
+    .filter((cluster) => !search.matches || cluster.pullRequests.some((pr) => search.matches!.has(pr.url)));
   // A cluster is identified by its oldest PR, which stays put as the cluster grows.
   const opened = clusters.find((cluster) => cluster.pullRequests[0].url === place.cluster);
 
@@ -320,6 +322,13 @@ export default function App() {
           </Select.Content>
         </Select.Portal>
       </Select.Root>
+      <SearchBox
+        value={search.query}
+        onChange={search.setQuery}
+        status={search.status}
+        matched={visible.length}
+        error={search.error}
+      />
     </View>
   );
 

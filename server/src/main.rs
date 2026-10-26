@@ -28,7 +28,8 @@ use proto::{
     MessageClusterRequest, MessageClusterResponse, MessageInvestigationRequest,
     MessageInvestigationResponse, PullRequest, PullRequestCluster, RebaseClusterRequest,
     RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse, Repository,
-    RestartClusterRequest, RestartClusterResponse,
+    RestartClusterRequest, RestartClusterResponse, SearchPullRequestsRequest,
+    SearchPullRequestsResponse,
 };
 
 mod conversations;
@@ -39,6 +40,7 @@ mod merges;
 mod names;
 mod proposals;
 mod rebases;
+mod search;
 mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
@@ -61,7 +63,7 @@ query($endCursor: String, $q: String!) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        id number state title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
+        id number state title body url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
         commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 0) {
           checkRunCount checkRunCountsByState { state count }
           statusContextCount statusContextCountsByState { state count }
@@ -81,7 +83,7 @@ query($endCursor: String, $q: String!) {
 // same-repository heads can have dependents. Search keeps matching `is:open` for a while after a
 // merge or close, but each node's state is current.
 const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
-  id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
+  id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, body, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   head_oid: .headRefOid,
   base: .baseRefName,
@@ -110,6 +112,8 @@ struct SearchedPullRequest {
     repository: Repository,
     number: u32,
     title: String,
+    // Description, in markdown.
+    body: String,
     url: String,
     head: Option<String>,
     // Commit at the tip of the head branch.
@@ -159,7 +163,7 @@ const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(2);
 // `serve` runs the server, `mcp` serves its clusters to agents over MCP, and no command runs the
 // launcher, which runs `serve` and keeps it up to date.
 fn main() {
-    // GEM_SEARCH, GEM_T3_PROVIDER, GEM_MCP_PORT and GEM_OP_ITEM, or LIVEKIT_URL,
+    // GEM_SEARCH, GEM_T3_PROVIDER, GEM_MCP_PORT, GEM_OP_ITEM and GEM_TYPESAFE_OP_ITEM, or LIVEKIT_URL,
     // LIVEKIT_API_KEY, LIVEKIT_API_SECRET and GEM_ROOM themselves, can live in .env in the working
     // directory, next to the server's other state. The real environment wins.
     let dotenv = load_dotenv();
@@ -168,13 +172,13 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("serve") => {
             init_logging();
-            load_op_item().unwrap_or_else(|error| panic!("{error}"));
+            (load_op_item().and_then(|()| load_typesafe_key())).unwrap_or_else(|error| panic!("{error}"));
             runtime().block_on(run_server())
         }
         Some("mcp") => mcp::serve(&args[1..]),
         _ => {
             // Nothing restarts the launcher, so it asks again rather than exit.
-            while let Err(error) = load_op_item() {
+            while let Err(error) = load_op_item().and_then(|()| load_typesafe_key()) {
                 eprintln!("launcher: {error}; asking again in {OP_RETRY_DELAY:?}");
                 std::thread::sleep(OP_RETRY_DELAY);
             }
@@ -276,6 +280,32 @@ fn load_op_item() -> Result<(), String> {
             unsafe { std::env::set_var(name, value) };
         }
     }
+    Ok(())
+}
+
+// Sets TYPESAFE_API_KEY, which search decides with, from the credential of the 1Password API
+// credential GEM_TYPESAFE_OP_ITEM names, as op://<vault>/<item>. Read once, like GEM_OP_ITEM, so
+// servers inherit it and ask 1Password nothing. TYPESAFE_API_KEY already set wins.
+fn load_typesafe_key() -> Result<(), String> {
+    let Ok(reference) = std::env::var("GEM_TYPESAFE_OP_ITEM") else {
+        return Ok(());
+    };
+    if std::env::var_os("TYPESAFE_API_KEY").is_some() {
+        return Ok(());
+    }
+    let output = std::process::Command::new("op")
+        .args(["read", &format!("{}/credential", reference.trim_end_matches('/'))])
+        .output()
+        .map_err(|error| format!("cannot run op: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot read {reference}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // SAFETY: main calls this before starting any other thread.
+    unsafe { std::env::set_var("TYPESAFE_API_KEY", key) };
     Ok(())
 }
 
@@ -408,6 +438,15 @@ async fn run_server() {
                 serve_prs(prs, names, conversations)
             })
         })
+        .route(
+            "/prs/search",
+            post(|Json(request): Json<SearchPullRequestsRequest>| async move {
+                search::matching(&request.query)
+                    .await
+                    .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
+                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
+            }),
+        )
         .route(
             "/prs/rebase",
             post(|Json(request): Json<RebasePullRequestRequest>| async move {
@@ -600,6 +639,7 @@ async fn open_pull_requests(
         .ok()?;
     merge_states(&mut prs).await;
     changes.watch(watched(&prs)).await;
+    search::index(&prs).await;
     let clusters = cluster(&prs);
     names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
