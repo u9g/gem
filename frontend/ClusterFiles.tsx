@@ -144,7 +144,8 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
   const unplaced: Proposal[][] = [];
   for (const group of section.groups) {
     const comment = group[0].comment;
-    const last = comment?.diffHunk.split('\n').at(-1) ?? '';
+    // The commented line ends the hunk, after which only "\ No newline" markers can follow.
+    const last = comment?.diffHunk.split('\n').filter((l) => l && !l.startsWith('\\')).at(-1) ?? '';
     const at = lines.findIndex((l) => l.kind !== 'del' && l.number === comment?.line && l.text === last.slice(1));
     if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
     else unplaced.push(group);
