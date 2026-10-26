@@ -182,7 +182,8 @@ pub async fn fill(response: &mut ListOpenPullRequestsResponse) {
     response.investigations = investigations;
 }
 
-// Keeps each investigation's `working` and reply up to date with its thread.
+// Keeps each investigation's `working` and reply up to date with its thread. An investigation is
+// open only while its agent works or its proposals wait on the user.
 pub fn watch() {
     tokio::spawn(async move {
         loop {
@@ -190,6 +191,16 @@ pub fn watch() {
                 let Some((working, reply)) = t3::show(&investigation.thread_id).await else {
                     continue;
                 };
+                // Read after `show`: an agent records its proposals before it stops working.
+                if !working
+                    && !proposals::of_investigations()
+                        .await
+                        .contains_key(&investigation.id)
+                {
+                    close(&investigation.id).await;
+                    tracing::info!(investigation = %investigation.id, "finished investigation closed");
+                    continue;
+                }
                 if working == investigation.working && reply == investigation.reply {
                     continue;
                 }
