@@ -41,6 +41,8 @@ function label(path: string): string {
   return path ? path.split('/').slice(-2).join('/') : 'Conversation';
 }
 
+const MAIN = 'cluster-review-file';
+
 type Props = Parameters<typeof ClusterView>[0];
 
 // The open cluster on a wide screen, as a code review: a sidebar of the cluster's PRs and the files
@@ -100,7 +102,11 @@ export function ClusterReview(props: Props) {
                 <Pressable
                   key={s.path}
                   style={[styles.file, section && anchor(s) === anchor(section) && styles.fileOn]}
-                  onPress={() => setChosen(anchor(s))}
+                  onPress={() => {
+                    setChosen(anchor(s));
+                    // A file opens at its top, not where the last one was scrolled to.
+                    document.getElementById(MAIN)?.scrollIntoView({ block: 'start' });
+                  }}
                 >
                   <Icon icon={s.path ? FileCode : MessagesSquare} size={12} />
                   <Text numberOfLines={1} style={styles.path}>
@@ -114,12 +120,14 @@ export function ClusterReview(props: Props) {
         </View>
         {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
       </View>
-      <View style={styles.main}>
-        {section ? (
-          <FileView key={anchor(section)} section={section} {...props} />
-        ) : (
-          <Text style={styles.meta}>Nothing waits on you.</Text>
-        )}
+      <View nativeID={MAIN} style={styles.main}>
+        {/* Every file stays mounted, so switching files keeps the drafts in each. */}
+        {sections.map((s) => (
+          <View key={anchor(s)} style={anchor(s) !== anchor(section) && styles.hidden}>
+            <FileView section={s} {...props} />
+          </View>
+        ))}
+        {!section && <Text style={styles.meta}>Nothing waits on you.</Text>}
       </View>
     </View>
   );
@@ -228,6 +236,9 @@ const styles = StyleSheet.create({
   main: {
     flex: 1,
     minWidth: 0,
+  },
+  hidden: {
+    display: 'none',
   },
   title: {
     color: t3.foreground,
