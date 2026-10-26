@@ -139,7 +139,7 @@ async fn fetch(ids: &[&str]) -> Vec<Fetched> {
             args.extend(["-f".to_string(), format!("ids[]={id}")]);
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let Some(stdout) = gh(&args).await else {
+        let Some(stdout) = gh("conversations", &args).await else {
             continue;
         };
         for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {

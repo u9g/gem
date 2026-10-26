@@ -295,7 +295,7 @@ async fn run_server() {
     login();
 
     // Nothing watches the repositories for changes.
-    let repos: Cache<Value> = cached(|| gh_json(REPOS), Changes::default());
+    let repos: Cache<Value> = cached(|| gh_json("repositories", REPOS), Changes::default());
     let names = Names::load().await;
     let conversations = Conversations::load().await;
     let changes = Changes::default();
@@ -565,7 +565,7 @@ async fn open_pull_requests(
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
     let search = std::env::var("GEM_SEARCH").unwrap_or_default();
-    let stdout = gh(&[
+    let stdout = gh("open pull requests", &[
         "api",
         "graphql",
         "--paginate",
@@ -580,6 +580,7 @@ async fn open_pull_requests(
     let mut prs = serde_json::Deserializer::from_slice(&stdout)
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
+        .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
         .ok()?;
     merge_states(&mut prs).await;
     changes.watch(watched(&prs)).await;
@@ -608,7 +609,7 @@ async fn merge_states(prs: &mut [SearchedPullRequest]) {
         let query = format!(
             "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
         );
-        requests.spawn(async move { gh_json::<Value>(&["api", "graphql", "-f", &query]).await });
+        requests.spawn(async move { gh_json::<Value>("merge states", &["api", "graphql", "-f", &query]).await });
     }
     let mut states = HashMap::new();
     while let Some(result) = requests.join_next().await {

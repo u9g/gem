@@ -17,7 +17,7 @@ struct Server {
 
 impl Host for Server {
     async fn refs(&self, url: &str) -> Option<Refs> {
-        let refs = gh(&[
+        let refs = gh("refs", &[
             "pr",
             "view",
             url,
