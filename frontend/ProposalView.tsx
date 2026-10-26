@@ -125,6 +125,20 @@ function useDraft<T>(key: string, initial: T): [T, (value: T) => void] {
   ];
 }
 
+// What approving `proposal` sends, from what the user last wrote in it: their rewrites of the reply
+// and follow-up prompt where that version is showing, and of the patch's diff where it differs,
+// and '' otherwise.
+export function approval(proposal: Proposal): [reply: string, followUp: string, diff: string] {
+  const reply = drafts.get(`${proposal.id} reply`) as ReplyDraft | undefined;
+  const followUp = drafts.get(`${proposal.id} follow-up`) as ReplyDraft | undefined;
+  const diff = (drafts.get(`${proposal.id} diff`) as string | undefined) ?? proposal.patch?.diff;
+  return [
+    reply?.showing === 'yours' ? reply.yours : '',
+    followUp?.showing === 'yours' ? followUp.yours : '',
+    diff === proposal.patch?.diff ? '' : diff ?? '',
+  ];
+}
+
 function ProposalView({
   proposal,
   anchored,
@@ -178,11 +192,7 @@ function ProposalView({
           large={phone}
           disabled={disabled}
           onPress={() =>
-            onApprove(
-              draft.showing === 'yours' ? draft.yours : '',
-              followUp.showing === 'yours' ? followUp.yours : '',
-              diff === proposal.patch?.diff ? '' : diff,
-            )
+            onApprove(...approval(proposal))
           }
         />
       )}
