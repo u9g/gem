@@ -15,7 +15,8 @@ const TYPING_PAUSE_MS = 800;
 export type SearchStatus = 'idle' | 'typing' | 'searching' | 'done' | 'failed';
 
 // The PR URLs matching the query once its search finished. Until then the previous query's
-// matches are kept; there are none while the query is empty or after a search failed.
+// matches are kept while it is a prefix of the query; there are none otherwise, while the query is
+// empty, or after a search failed.
 export function useSearch(post: (path: string, body: JsonValue) => Promise<JsonValue>) {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState<string>();
@@ -48,7 +49,8 @@ export function useSearch(post: (path: string, body: JsonValue) => Promise<JsonV
         : result.error
           ? 'failed'
           : 'done';
-  return { query, setQuery, status, matches: trimmed ? result?.urls : undefined, error: result?.error };
+  const matches = trimmed && result && trimmed.startsWith(result.query) ? result.urls : undefined;
+  return { query, setQuery, status, matches, error: result?.error };
 }
 
 export function SearchBox({
