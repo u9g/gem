@@ -110,6 +110,21 @@ export function ProposalGroup({
   );
 }
 
+// What the user is writing in each proposal, by proposal ID and field, outliving the view showing
+// it: a thread that moves, e.g. inline once its file's diff arrives, keeps it.
+const drafts = new Map<string, unknown>();
+
+function useDraft<T>(key: string, initial: T): [T, (value: T) => void] {
+  const [value, setValue] = useState<T>(() => (drafts.has(key) ? (drafts.get(key) as T) : initial));
+  return [
+    value,
+    (next) => {
+      drafts.set(key, next);
+      setValue(next);
+    },
+  ];
+}
+
 function ProposalView({
   proposal,
   anchored,
@@ -133,10 +148,13 @@ function ProposalView({
 }) {
   const login = useContext(Login);
   const phone = usePhone();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
-  const [followUp, setFollowUp] = useState<ReplyDraft>({ yours: proposal.followUp, showing: 'suggested' });
-  const [diff, setDiff] = useState(proposal.patch?.diff ?? '');
+  const [editing, setEditing] = useDraft(`${proposal.id} editing`, false);
+  const [draft, setDraft] = useDraft<ReplyDraft>(`${proposal.id} reply`, { yours: proposal.reply, showing: 'suggested' });
+  const [followUp, setFollowUp] = useDraft<ReplyDraft>(`${proposal.id} follow-up`, {
+    yours: proposal.followUp,
+    showing: 'suggested',
+  });
+  const [diff, setDiff] = useDraft(`${proposal.id} diff`, proposal.patch?.diff ?? '');
   const files = diffFiles(diff);
   const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
   const comment = proposal.comment;

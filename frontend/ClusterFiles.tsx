@@ -125,13 +125,11 @@ export function ClusterReview(props: Props) {
         {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
       </View>
       <View nativeID={MAIN} style={styles.main}>
-        {/* Every file stays mounted, so switching files keeps the drafts in each. */}
-        {sections.map((s) => (
-          <View key={anchor(s)} style={anchor(s) !== anchor(section) && styles.hidden}>
-            <FileView section={s} {...props} />
-          </View>
-        ))}
-        {!section && <Text style={styles.meta}>Nothing waits on you.</Text>}
+        {section ? (
+          <FileView key={anchor(section)} section={section} {...props} />
+        ) : (
+          <Text style={styles.meta}>Nothing waits on you.</Text>
+        )}
       </View>
     </View>
   );
@@ -241,9 +239,6 @@ const styles = StyleSheet.create({
   main: {
     flex: 1,
     minWidth: 0,
-  },
-  hidden: {
-    display: 'none',
   },
   title: {
     color: t3.foreground,
