@@ -5,11 +5,10 @@ import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Board } from '../../Board';
-import { WithFiles } from '../../ClusterFiles';
-import { ClusterView } from '../../ClusterView';
+import { ClusterReview } from '../../ClusterFiles';
 import { type Proposal, type PullRequest, type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { InvestigationView } from '../../InvestigationView';
-import { clusterMergeBy, investigations, mergeBy, proposals } from '../fixtures';
+import { clusterMergeBy, investigations, mergeBy, prFiles, proposals } from '../fixtures';
 
 // Made-up clusters, at least one in each column. Stories render at the window's width, so view
 // them at a laptop's.
@@ -25,6 +24,7 @@ type Fields = {
   proposals?: Proposal[];
   agents?: { threadUrl: string }[];
   merge?: { threadUrl: string };
+  files?: { path: string; patch: string }[];
 };
 
 const pullRequest = (name: string, number: number, title: string, fields: Fields) =>
@@ -53,6 +53,7 @@ const needsYou = cluster('Retry TTS once on a dropped stream', 5, [
     checksFailing: true,
     checks: { total: 14, done: 14, failed: 2 },
     proposals,
+    files: prFiles,
   }),
   pullRequest('agents-js', 1290, 'feat(voice): retry TTS once on a dropped stream', passing),
 ]);
@@ -118,18 +119,16 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
           />
         ) : (
           opened && (
-            <WithFiles cluster={opened}>
-              <ClusterView
-                cluster={opened}
-                onApprove={noop}
-                onDismiss={noop}
-                onRestart={noop}
-                onRebase={noop}
-                onMerge={noop}
-                onInvestigate={noop}
-                onMessage={() => Promise.resolve()}
-              />
-            </WithFiles>
+            <ClusterReview
+              cluster={opened}
+              onApprove={noop}
+              onDismiss={noop}
+              onRestart={noop}
+              onRebase={noop}
+              onMerge={noop}
+              onInvestigate={noop}
+              onMessage={() => Promise.resolve()}
+            />
           )
         )}
       </Board>

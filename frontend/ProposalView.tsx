@@ -47,10 +47,12 @@ function anchorDiff(path: string, hunk: string, lines = 6): string {
 
 // One conversation waiting on the user as a band: the proposal's summary and actions on top, then
 // three columns cut to a few lines each: their thread, the user's reply, and the change. Arrows step
-// through alternatives. `anchored` stacks them in full instead, under the code the comment is on.
+// through alternatives. `anchored` stacks them in full instead, under the code the comment is on;
+// `inline` stacks them in full as a thread placed inside that code.
 export function ProposalGroup({
   proposals,
   anchored = false,
+  inline = false,
   busy,
   onApprove,
   onDismiss,
@@ -58,6 +60,7 @@ export function ProposalGroup({
 }: {
   proposals: Proposal[];
   anchored?: boolean;
+  inline?: boolean;
   // Proposals being approved or dismissed.
   busy?: ReadonlySet<string>;
   // Called with the user's rewrites of the reply and follow-up prompt where that version is showing,
@@ -75,7 +78,8 @@ export function ProposalGroup({
     <ProposalView
       key={proposal.id}
       proposal={proposal}
-      anchored={anchored}
+      anchored={anchored || inline}
+      inline={inline}
       stepper={
         proposals.length > 1 && (
           <View style={styles.stepper}>
@@ -107,6 +111,7 @@ export function ProposalGroup({
 function ProposalView({
   proposal,
   anchored,
+  inline,
   stepper,
   busy,
   disabled,
@@ -116,6 +121,7 @@ function ProposalView({
 }: {
   proposal: Proposal;
   anchored: boolean;
+  inline: boolean;
   stepper: ReactNode;
   busy: boolean;
   disabled: boolean;
@@ -163,7 +169,7 @@ function ProposalView({
     </>
   );
   return (
-    <View style={[styles.band, proposal.error !== '' && styles.bandError]}>
+    <View style={[styles.band, inline && styles.bandInline, proposal.error !== '' && styles.bandError]}>
       <View style={styles.header}>
         <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
         <View style={styles.summary}>
@@ -190,7 +196,7 @@ function ProposalView({
                 ? 'checks'
                 : 'investigation'}
           </Text>
-          {anchored && comment?.diffHunk && (
+          {anchored && !inline && comment?.diffHunk && (
             <DiffSurface
               diff={anchorDiff(comment.path, comment.diffHunk)}
               header={<Text style={styles.meta}>line {comment.line}</Text>}
@@ -285,6 +291,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: t3.border,
     backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  bandInline: {
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: '#1A2129',
   },
   bandError: {
     borderColor: 'rgba(242, 109, 109, 0.28)',
