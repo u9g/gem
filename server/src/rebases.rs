@@ -71,7 +71,7 @@ pub fn init(db: Db, prs: Cache<ListOpenPullRequestsResponse>) -> Result<(), Stri
 pub async fn start(url: &str) -> Result<(), String> {
     let (repository, number) = gem_github::short(url);
     let rebases = REBASES.get().ok_or("rebases are not ready")?;
-    rebases.start(url, &format!("{repository}#{number}")).await
+    rebases.start(&[url.to_string()], &format!("{repository}#{number}")).await
 }
 
 pub async fn fill(clusters: &mut [PullRequestCluster]) {
