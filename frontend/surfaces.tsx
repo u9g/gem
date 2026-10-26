@@ -1,5 +1,5 @@
 import { Bot, CheckCheck, CircleX, ExternalLink, FileCode, GitPullRequestClosed, Hammer, RotateCcw, Undo2 } from 'lucide-react';
-import { createContext, type CSSProperties, type ReactNode, useContext, useState } from 'react';
+import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
@@ -12,6 +12,10 @@ import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // GitHub login of the user the server runs as.
 export const Login = createContext('');
+
+// Markdown as GitHub renders it in a comment on the pull request at `pr`. Without it, the user's
+// rewrites show as plain text.
+export const RenderMarkdown = createContext<((pr: string, markdown: string) => Promise<string>) | undefined>(undefined);
 
 // `number` is the line's number in the new file, `old` in the old one.
 export type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string; number?: number; old?: number };
@@ -338,36 +342,45 @@ const markdownBody = {
 // A reply as both versions: the agent's suggestion and the user's rewrite of it.
 export type ReplyDraft = { yours: string; showing: 'suggested' | 'yours' };
 
-// The reply's bubble, always editable. Once the text differs from the suggestion, a Suggested /
-// Yours switch under it keeps both versions one click away; editing always edits Yours.
+// The reply's bubble, rendered as it will look on GitHub until pressed, then editable until left.
+// Once the text differs from the suggestion, a Suggested / Yours switch under it keeps both
+// versions one click away; editing always edits Yours.
 export function EditableReply({
+  pr,
   suggested,
+  html,
   draft,
   onChange,
   quote,
+  max,
 }: {
+  pr: string;
   suggested: string;
+  // The suggestion as GitHub renders it.
+  html: string;
   draft: ReplyDraft;
   onChange: (draft: ReplyDraft) => void;
   // Shown above the reply, for a reply that quotes the comment it answers.
   quote?: string;
+  // Cuts the rendered reply to `max` pixels when given.
+  max?: number;
 }) {
-  const [focused, setFocused] = useState(false);
+  const [editing, setEditing] = useState(false);
   const hasYours = draft.yours.trim() !== suggested.trim();
   return (
     <View>
       <View style={{ alignItems: 'flex-end' }}>
-        <View
-          style={[styles.bubble, styles.editableBubble, focused && styles.bubbleFocused]}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-        >
+        <View style={[styles.bubble, styles.editableBubble, editing && styles.bubbleFocused]}>
           {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
-          <TextInput
-            multiline
-            value={draft.showing === 'yours' ? draft.yours : suggested.trim()}
-            onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
-            style={styles.input}
+          <EditableMarkdown
+            pr={pr}
+            suggested={suggested}
+            html={html}
+            draft={draft}
+            onChange={onChange}
+            editing={editing}
+            onEditing={setEditing}
+            max={max}
           />
         </View>
       </View>
@@ -397,14 +410,80 @@ function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: Re
   );
 }
 
+// The version showing, as GitHub renders it until pressed, then its markdown until left. Yours
+// renders only once left, and shows as plain text until it has. Either keeps at least a line to
+// press, even when the markdown renders to nothing. The Clamp spans both, so leaving does not
+// collapse what is under the pointer.
+function EditableMarkdown({
+  pr,
+  suggested,
+  html,
+  draft,
+  onChange,
+  editing,
+  onEditing,
+  max,
+}: {
+  pr: string;
+  suggested: string;
+  html: string;
+  draft: ReplyDraft;
+  onChange: (draft: ReplyDraft) => void;
+  editing: boolean;
+  onEditing: (editing: boolean) => void;
+  max?: number;
+}) {
+  const render = useContext(RenderMarkdown);
+  const [rendered, setRendered] = useState({ markdown: '', html: '' });
+  const markdown = draft.showing === 'yours' ? draft.yours : suggested.trim();
+  const stale = draft.showing === 'yours' && rendered.markdown !== markdown;
+  useEffect(() => {
+    if (editing || !stale || !render) return;
+    let current = true;
+    render(pr, markdown).then(
+      (html) => current && setRendered({ markdown, html }),
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [editing, stale, render, pr, markdown]);
+  const shown = editing ? (
+    <TextInput
+      multiline
+      autoFocus
+      value={markdown}
+      onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
+      onBlur={() => onEditing(false)}
+      style={styles.input}
+    />
+  ) : stale ? (
+    <Pressable onPress={() => onEditing(true)} style={{ minHeight: line }}>
+      <Text style={styles.input}>{markdown}</Text>
+    </Pressable>
+  ) : (
+    <Html
+      html={draft.showing === 'yours' ? rendered.html : html}
+      onPress={() => onEditing(true)}
+      style={{ minHeight: line }}
+    />
+  );
+  return max === undefined ? shown : <Clamp max={max}>{shown}</Clamp>;
+}
+
+// One line of `styles.input`.
+const line = 20;
+
 // The prompt approving hands to a new T3 Code agent, as GitHub would render it. Clicking it edits
 // the prompt, with the same Suggested / Yours switch as replies.
 export function FollowUpCard({
+  pr,
   suggested,
   html,
   draft,
   onChange,
 }: {
+  pr: string;
   suggested: string;
   html: string;
   draft: ReplyDraft;
@@ -420,19 +499,16 @@ export function FollowUpCard({
           {'  '}starts in T3 Code when approved
         </Text>
       </View>
-      {editing ? (
-        <TextInput
-          multiline
-          autoFocus
-          value={draft.showing === 'yours' ? draft.yours : suggested.trim()}
-          onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
-          style={styles.input}
-        />
-      ) : (
-        <Clamp max={130}>
-          <Html html={html} onPress={() => setEditing(true)} />
-        </Clamp>
-      )}
+      <EditableMarkdown
+        pr={pr}
+        suggested={suggested}
+        html={html}
+        draft={draft}
+        onChange={onChange}
+        editing={editing}
+        onEditing={setEditing}
+        max={130}
+      />
       {draft.yours.trim() !== suggested.trim() && <Versions draft={draft} onChange={onChange} />}
     </View>
   );

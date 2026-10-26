@@ -27,9 +27,9 @@ use proto::{
     ListOpenPullRequestsResponse, MergeBy, MergeClusterRequest, MergeClusterResponse,
     MessageClusterRequest, MessageClusterResponse, MessageInvestigationRequest,
     MessageInvestigationResponse, PullRequest, PullRequestCluster, RebaseClusterRequest,
-    RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse, Repository,
-    RestartClusterRequest, RestartClusterResponse, SearchPullRequestsRequest,
-    SearchPullRequestsResponse,
+    RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse,
+    RenderMarkdownRequest, RenderMarkdownResponse, Repository, RestartClusterRequest,
+    RestartClusterResponse, SearchPullRequestsRequest, SearchPullRequestsResponse,
 };
 
 mod conversations;
@@ -44,7 +44,7 @@ mod search;
 mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{gh, gh_json, login};
+use gem_github::{gh, gh_json, login, render};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -515,6 +515,15 @@ async fn run_server() {
                     Json(CloseInvestigationResponse {})
                 },
             ),
+        )
+        .route(
+            "/markdown/render",
+            post(|Json(request): Json<RenderMarkdownRequest>| async move {
+                render(&request.pull_request_url, &request.markdown)
+                    .await
+                    .map(|html| Json(RenderMarkdownResponse { html }))
+                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
+            }),
         )
         .route(
             "/proposals/dismiss",

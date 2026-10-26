@@ -136,7 +136,7 @@ function Composer({ quote = false, edited, editing: startEditing = false }: { qu
 // ---------- C: two versions ----------
 
 // Once edited, a small Suggested / Yours switch sits under the bubble, so both versions stay one
-// click away; reverting is picking Suggested. The bubble is always editable.
+// click away; reverting is picking Suggested. Clicking the bubble edits it; leaving renders it.
 function TwoVersions({ quote = false, edited }: { quote?: boolean; edited?: string }) {
   const proposal = quote ? quoteReply : threadReply;
   const [draft, setDraft] = useState<ReplyDraft>(
@@ -145,7 +145,9 @@ function TwoVersions({ quote = false, edited }: { quote?: boolean; edited?: stri
   return (
     <Conversation quote={quote}>
       <EditableReply
+        pr={proposal.pullRequestUrl}
         suggested={proposal.reply}
+        html={proposal.replyHtml}
         draft={draft}
         onChange={setDraft}
         quote={quote ? quoted() : undefined}
