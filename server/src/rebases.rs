@@ -74,6 +74,18 @@ pub async fn start(url: &str) -> Result<(), String> {
     rebases.start(&[url.to_string()], &format!("{repository}#{number}")).await
 }
 
+pub async fn start_cluster(cluster: &PullRequestCluster) -> Result<(), String> {
+    let urls: Vec<String> = (cluster.pull_requests.iter())
+        .map(|pr| pr.url.clone())
+        .collect();
+    let name = match cluster.name.as_str() {
+        "" => cluster.pull_requests[0].title.as_str(),
+        name => name,
+    };
+    let rebases = REBASES.get().ok_or("rebases are not ready")?;
+    rebases.start(&urls, name).await
+}
+
 pub async fn fill(clusters: &mut [PullRequestCluster]) {
     let Some(rebases) = REBASES.get() else { return };
     let rebases = rebases.all().unwrap_or_else(|error| {
