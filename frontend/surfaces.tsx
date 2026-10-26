@@ -13,20 +13,37 @@ import { DiffStat, diffFiles, Icon, t3 } from './t3';
 // GitHub login of the user the server runs as.
 export const Login = createContext('');
 
-type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string; number?: number };
+// `number` is the line's number in the new file, `old` in the old one.
+export type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string; number?: number; old?: number };
 
-function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
+export function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
   const files: { path: string; lines: DiffLine[] }[] = [];
-  let next = 0;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+++ ')) files.push({ path: line.slice(6), lines: [] });
-    else if (line.startsWith('@@')) {
-      next = Number(/\+(\d+)/.exec(line)?.[1] ?? 0);
+  let [old, next] = [0, 0];
+  // Lines left in the current hunk on each side, from its header; within them, every line is code.
+  let [oldLeft, newLeft] = [0, 0];
+  const lines = diff.split('\n');
+  for (const [i, line] of lines.entries()) {
+    const inHunk = oldLeft > 0 || newLeft > 0;
+    // A file's header is a `--- ` line then a `+++ ` line, between hunks.
+    if (!inHunk && line.startsWith('--- ') && lines[i + 1]?.startsWith('+++ ')) continue;
+    if (!inHunk && line.startsWith('+++ ') && lines[i - 1]?.startsWith('--- ')) files.push({ path: line.slice(6), lines: [] });
+    else if (!inHunk && line.startsWith('@@')) {
+      const [, from, fromCount, to, toCount] = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?/.exec(line) ?? [];
+      [old, next] = [Number(from ?? 0), Number(to ?? 0)];
+      [oldLeft, newLeft] = [Number(fromCount ?? 1), Number(toCount ?? 1)];
       files[files.length - 1].lines.push({ kind: 'hunk', text: line.replace(/^@@[^@]*@@ ?/, '') });
-    } else if (!files.length || line.startsWith('---') || line === '') continue;
-    else if (line.startsWith('+')) files[files.length - 1].lines.push({ kind: 'add', text: line.slice(1), number: next++ });
-    else if (line.startsWith('-')) files[files.length - 1].lines.push({ kind: 'del', text: line.slice(1) });
-    else files[files.length - 1].lines.push({ kind: 'ctx', text: line.slice(1), number: next++ });
+    // Inside a hunk, an empty line is an empty context line whose leading space was stripped.
+    } else if (!files.length || (line === '' && !inHunk) || line.startsWith('\\')) continue;
+    else if (line.startsWith('+')) {
+      newLeft--;
+      files[files.length - 1].lines.push({ kind: 'add', text: line.slice(1), number: next++ });
+    } else if (line.startsWith('-')) {
+      oldLeft--;
+      files[files.length - 1].lines.push({ kind: 'del', text: line.slice(1), old: old++ });
+    } else {
+      [oldLeft, newLeft] = [oldLeft - 1, newLeft - 1];
+      files[files.length - 1].lines.push({ kind: 'ctx', text: line.slice(1), number: next++, old: old++ });
+    }
   }
   return files;
 }

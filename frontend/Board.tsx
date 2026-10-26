@@ -11,8 +11,8 @@ const DRAWER_WIDTH = 640;
 
 // The wide layout: one column per place a phone lists a cluster, left to right by what each waits
 // on, after a column of agents when any run. The open cluster or agent, `children`, slides over the
-// right edge, or over the whole board when `wide`; clicking beside it, its close button or pressing
-// Escape closes it.
+// right edge, or over the whole board when `wide`; clicking beside it, the wide drawer's close
+// button or pressing Escape closes it.
 export function Board({
   clusters,
   investigations,
@@ -79,9 +79,12 @@ export function Board({
           <Pressable accessibilityLabel="Close" style={styles.scrim} onPress={onClose} />
           <View style={[styles.drawer, wide && styles.wide]}>
             <ScrollView contentContainerStyle={styles.drawerContent}>{children}</ScrollView>
-            <Pressable accessibilityLabel="Close" style={styles.close} onPress={onClose}>
-              <Icon icon={X} size={16} />
-            </Pressable>
+            {/* Only a wide drawer covers the space beside it that closes it. */}
+            {wide && (
+              <Pressable accessibilityLabel="Close" style={styles.close} onPress={onClose}>
+                <Icon icon={X} size={16} />
+              </Pressable>
+            )}
           </View>
         </>
       )}

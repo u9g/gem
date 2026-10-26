@@ -9,3 +9,4 @@
 /clusters.json.partial
 /gem.sqlite
 /gem.sqlite-journal
+/server.log

@@ -128,7 +128,7 @@ function status(pr: PullRequest): Status | undefined {
   return undefined;
 }
 
-function StatusLine({ pr }: { pr: PullRequest }) {
+export function StatusLine({ pr }: { pr: PullRequest }) {
   const line = status(pr);
   if (!line) return null;
   return (

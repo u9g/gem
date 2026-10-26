@@ -11,8 +11,9 @@ use tokio::{io::AsyncWriteExt, process::Command};
 pub use patch::apply_patch;
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
+// A caller that stops waiting, e.g. on a timeout, stops gh too.
 pub async fn gh(args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("gh").args(args).output().await.ok()?;
+    let output = Command::new("gh").args(args).kill_on_drop(true).output().await.ok()?;
     output.status.success().then_some(output.stdout)
 }
 

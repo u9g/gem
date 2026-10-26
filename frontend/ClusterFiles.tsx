@@ -7,7 +7,8 @@ import { type ClusterView, MergeBanner, timeAgo } from './ClusterView';
 import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
-import { ChecksIcon } from './PullRequestList';
+import { ChecksIcon, StatusLine } from './PullRequestList';
+import { parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
@@ -40,24 +41,7 @@ function label(path: string): string {
   return path ? path.split('/').slice(-2).join('/') : 'Conversation';
 }
 
-type Line = { kind: 'hunk' | 'ctx' | 'add' | 'del'; text: string; old?: number; new?: number };
-
-// GitHub's hunks for one file, numbered on both sides.
-function parseHunks(patch: string): Line[] {
-  const lines: Line[] = [];
-  let [old, next] = [0, 0];
-  for (const line of patch.split('\n')) {
-    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-    if (header) {
-      [old, next] = [Number(header[1]), Number(header[2])];
-      lines.push({ kind: 'hunk', text: line });
-    } else if (!lines.length || line.startsWith('\\')) continue;
-    else if (line.startsWith('+')) lines.push({ kind: 'add', text: line.slice(1), new: next++ });
-    else if (line.startsWith('-')) lines.push({ kind: 'del', text: line.slice(1), old: old++ });
-    else lines.push({ kind: 'ctx', text: line.slice(1), old: old++, new: next++ });
-  }
-  return lines;
-}
+const MAIN = 'cluster-review-file';
 
 type Props = Parameters<typeof ClusterView>[0];
 
@@ -71,6 +55,7 @@ export function ClusterReview(props: Props) {
   // Approving or dismissing the last conversation on a file removes its section.
   const section = sections.find((s) => anchor(s) === chosen) ?? sections[0];
   const restarting = busy?.has(cluster.pullRequests[0].url);
+  const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
   return (
     <View style={styles.page}>
       <View style={styles.sidebar}>
@@ -89,7 +74,7 @@ export function ClusterReview(props: Props) {
           </Text>
           <Button
             label={restarting ? 'Restarting…' : 'Restart investigation'}
-            disabled={restarting}
+            disabled={restarting || merging}
             onPress={() => onRestart(cluster)}
           />
         </View>
@@ -112,11 +97,16 @@ export function ClusterReview(props: Props) {
                 )}
                 {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
               </Pressable>
-              {sectionsOf(pr).map((s) => (
+              <StatusLine pr={pr} />
+              {sections.filter((s) => s.pr === pr).map((s) => (
                 <Pressable
                   key={s.path}
                   style={[styles.file, section && anchor(s) === anchor(section) && styles.fileOn]}
-                  onPress={() => setChosen(anchor(s))}
+                  onPress={() => {
+                    setChosen(anchor(s));
+                    // A file opens at its top, not where the last one was scrolled to.
+                    document.getElementById(MAIN)?.scrollIntoView({ block: 'start' });
+                  }}
                 >
                   <Icon icon={s.path ? FileCode : MessagesSquare} size={12} />
                   <Text numberOfLines={1} style={styles.path}>
@@ -130,28 +120,34 @@ export function ClusterReview(props: Props) {
         </View>
         {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
       </View>
-      <View style={styles.main}>
-        {section ? (
-          <FileView key={anchor(section)} section={section} {...props} />
-        ) : (
-          <Text style={styles.meta}>Nothing waits on you.</Text>
-        )}
+      <View nativeID={MAIN} style={styles.main}>
+        {/* Every file stays mounted, so switching files keeps the drafts in each. */}
+        {sections.map((s) => (
+          <View key={anchor(s)} style={anchor(s) !== anchor(section) && styles.hidden}>
+            <FileView section={s} {...props} />
+          </View>
+        ))}
+        {!section && <Text style={styles.meta}>Nothing waits on you.</Text>}
       </View>
     </View>
   );
 }
 
-// One file's diff on its PR with the section's conversations inside it. Conversations on no line of
-// the diff come before it; without a diff, they are all there is.
+// One file's diff on its PR with the section's conversations inside it, each after the line its
+// comment's own hunk ends on. Conversations on no line of the diff, or on a deleted one, come before
+// it; without a diff, they are all there is.
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
   const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
-  const lines = parseHunks(patch);
+  // GitHub's hunks for the file come without a file header.
+  const lines = parseDiff(`--- a/${section.path}\n+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
   const placed = new Map<number, Proposal[][]>();
   const unplaced: Proposal[][] = [];
   for (const group of section.groups) {
-    const line = group[0].comment?.line;
-    const at = lines.findIndex((l) => l.kind !== 'del' && l.new === line);
-    if (line && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
+    const comment = group[0].comment;
+    // The commented line ends the hunk, after which only "\ No newline" markers can follow.
+    const last = comment?.diffHunk.split('\n').filter((l) => !l.startsWith('\\')).at(-1) ?? '';
+    const at = lines.findIndex((l) => l.kind !== 'del' && l.number === comment?.line && l.text === last.slice(1));
+    if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
     else unplaced.push(group);
   }
   const thread = (group: Proposal[], inline: boolean) => (
@@ -192,11 +188,14 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
           {lines.map((line, i) => (
             <Fragment key={i}>
               {line.kind === 'hunk' ? (
-                <Text style={styles.hunk}>{line.text}</Text>
+                <Text style={styles.hunk}>
+                  {'  ⋯  '}
+                  {line.text}
+                </Text>
               ) : (
                 <View style={[styles.line, line.kind === 'add' && styles.add, line.kind === 'del' && styles.del]}>
                   <Text style={styles.number}>{line.old ?? ''}</Text>
-                  <Text style={styles.number}>{line.new ?? ''}</Text>
+                  <Text style={styles.number}>{line.number ?? ''}</Text>
                   <Text
                     style={[
                       styles.text,
@@ -238,6 +237,9 @@ const styles = StyleSheet.create({
   main: {
     flex: 1,
     minWidth: 0,
+  },
+  hidden: {
+    display: 'none',
   },
   title: {
     color: t3.foreground,

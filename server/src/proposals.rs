@@ -594,8 +594,6 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
         #[serde(default)]
         path: String,
         line: Option<u32>,
-        #[serde(rename = "originalLine")]
-        original_line: Option<u32>,
         #[serde(rename = "diffHunk", default)]
         diff_hunk: String,
     }
@@ -609,7 +607,7 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     }
     let fields = "id body bodyHTML url author { login } pullRequest { url }";
     let output = graphql(
-        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line originalLine diffHunk }} }} }}"),
+        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line diffHunk }} }} }}"),
         &[("id", id)],
     )
     .await?;
@@ -625,7 +623,7 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
             url: node.url,
             body_html: node.body_html,
             path: node.path,
-            line: node.line.or(node.original_line).unwrap_or_default(),
+            line: node.line.unwrap_or_default(),
             diff_hunk: node.diff_hunk,
         },
     })

@@ -192,7 +192,7 @@ fn call(state: &Path, tool: &str, arguments: &Value) -> Result<String, String> {
         .map_err(|_| "gem has not listed any clusters yet; is its server running?".to_string())?;
     let mut snapshot: Value = serde_json::from_slice(&snapshot).map_err(|e| e.to_string())?;
     // Rendered HTML repeats the markdown next to it.
-    strip_html(&mut snapshot);
+    strip_view(&mut snapshot);
     let clusters = snapshot["clusters"].as_array().cloned().unwrap_or_default();
     match tool {
         "get_cluster" => {
@@ -232,17 +232,18 @@ fn call(state: &Path, tool: &str, arguments: &Value) -> Result<String, String> {
 // A cluster as `get_cluster` returns it, for prompts of agents that may not reach this server.
 pub fn cluster_json(cluster: &PullRequestCluster) -> String {
     let mut cluster = serde_json::to_value(cluster).unwrap();
-    strip_html(&mut cluster);
+    strip_view(&mut cluster);
     serde_json::to_string_pretty(&cluster).unwrap()
 }
 
-fn strip_html(value: &mut Value) {
+// Drops what only gem's own view shows: rendered HTML, and PRs' file diffs.
+fn strip_view(value: &mut Value) {
     match value {
         Value::Object(object) => {
-            object.retain(|key, _| !key.ends_with("Html"));
-            object.values_mut().for_each(strip_html);
+            object.retain(|key, _| !key.ends_with("Html") && key != "files");
+            object.values_mut().for_each(strip_view);
         }
-        Value::Array(values) => values.iter_mut().for_each(strip_html),
+        Value::Array(values) => values.iter_mut().for_each(strip_view),
         _ => {}
     }
 }
