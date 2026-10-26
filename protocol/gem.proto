@@ -340,6 +340,16 @@ message MergeClusterRequest {
 
 message MergeClusterResponse {}
 
+// Asks a model, for each open pull request, whether its title and description match the query.
+message SearchPullRequestsRequest {
+  string query = 1;
+}
+
+message SearchPullRequestsResponse {
+  // The pull requests that match. A cluster matches when any of its pull requests does.
+  repeated string pull_request_urls = 1;
+}
+
 // Starts an agent on the user's message about a cluster, followed like an investigation. The
 // agent reads the cluster and its pull requests through gem's MCP server.
 message MessageClusterRequest {
