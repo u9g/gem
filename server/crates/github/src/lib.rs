@@ -19,8 +19,9 @@ pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T
     parse(what, &gh(what, args).await?)
 }
 
-// Asks up to `tries` times while GitHub times the request out, which it answers with a 502 or 504,
-// sometimes as an HTML page gh cannot read. Any other failure, e.g. a rate limit, is not retried.
+// Asks up to `tries` times while GitHub times the request out. It answers with a 502 or 504,
+// sometimes as an HTML page gh cannot read, or with a GraphQL error naming the timeout, which gh
+// reports without the status. Any other failure, e.g. a rate limit, is not retried.
 pub async fn gh_json_retrying_timeouts<T: DeserializeOwned>(
     what: &str,
     args: &[&str],
@@ -37,9 +38,15 @@ pub async fn gh_json_retrying_timeouts<T: DeserializeOwned>(
 }
 
 fn timed_out(stderr: &str) -> bool {
-    ["HTTP 502", "HTTP 504", "invalid character '<'"]
-        .iter()
-        .any(|timeout| stderr.contains(timeout))
+    [
+        "HTTP 502",
+        "HTTP 504",
+        "invalid character '<'",
+        "timed out",
+        "timeout",
+    ]
+    .iter()
+    .any(|timeout| stderr.contains(timeout))
 }
 
 fn parse<T: DeserializeOwned>(what: &str, stdout: &[u8]) -> Option<T> {
