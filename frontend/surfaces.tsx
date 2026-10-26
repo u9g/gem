@@ -411,7 +411,9 @@ function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: Re
 }
 
 // The version showing, as GitHub renders it until pressed, then its markdown until left. Yours
-// renders only once left, and shows as plain text until it has.
+// renders only once left, and shows as plain text until it has. Markdown that renders to nothing
+// stays a text box, as there would be nothing to press. The Clamp spans both, so leaving does not collapse what is
+// under the pointer.
 function EditableMarkdown({
   pr,
   suggested,
@@ -446,25 +448,26 @@ function EditableMarkdown({
       current = false;
     };
   }, [editing, stale, render, pr, markdown]);
-  if (editing) {
-    return (
+  const shownHtml = draft.showing === 'yours' ? rendered.html : html;
+  const empty = markdown.trim() === '' || (!stale && shownHtml.trim() === '');
+  const shown =
+    editing || empty ? (
       <TextInput
         multiline
-        autoFocus
+        autoFocus={editing}
         value={markdown}
         onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
+        onFocus={() => onEditing(true)}
         onBlur={() => onEditing(false)}
         style={styles.input}
       />
+    ) : stale ? (
+      <Pressable onPress={() => onEditing(true)}>
+        <Text style={styles.input}>{markdown}</Text>
+      </Pressable>
+    ) : (
+      <Html html={shownHtml} onPress={() => onEditing(true)} />
     );
-  }
-  const shown = stale ? (
-    <Pressable onPress={() => onEditing(true)}>
-      <Text style={styles.input}>{markdown}</Text>
-    </Pressable>
-  ) : (
-    <Html html={draft.showing === 'yours' ? rendered.html : html} onPress={() => onEditing(true)} />
-  );
   return max === undefined ? shown : <Clamp max={max}>{shown}</Clamp>;
 }
 
