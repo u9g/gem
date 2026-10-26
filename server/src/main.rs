@@ -59,7 +59,7 @@ query($endCursor: String, $q: String!) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        id number state title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision mergeStateStatus mergeable
+        id number state title url headRefName headRefOid baseRefName createdAt updatedAt reviewDecision
         commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 0) {
           checkRunCount checkRunCountsByState { state count }
           statusContextCount statusContextCountsByState { state count }
@@ -86,8 +86,6 @@ const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
   created_at: .createdAt,
   updated_at: .updatedAt,
   approved: (.reviewDecision == "APPROVED"),
-  behind: (.mergeStateStatus == "BEHIND" or .mergeable == "CONFLICTING"),
-  conflicts: (.mergeable == "CONFLICTING"),
   admin: (.repository.viewerPermission == "ADMIN"),
   checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
   checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
@@ -118,7 +116,10 @@ struct SearchedPullRequest {
     created_at: Timestamp,
     updated_at: Timestamp,
     approved: bool,
+    // Set by `merge_states`.
+    #[serde(default)]
     behind: bool,
+    #[serde(default)]
     conflicts: bool,
     admin: bool,
     checks_passing: bool,
@@ -576,10 +577,11 @@ async fn open_pull_requests(
         PRS_JQ,
     ])
     .await?;
-    let prs = serde_json::Deserializer::from_slice(&stdout)
+    let mut prs = serde_json::Deserializer::from_slice(&stdout)
         .into_iter()
         .collect::<Result<Vec<SearchedPullRequest>, _>>()
         .ok()?;
+    merge_states(&mut prs).await;
     changes.watch(watched(&prs)).await;
     let clusters = cluster(&prs);
     names.request_missing(&clusters).await;
@@ -590,6 +592,41 @@ async fn open_pull_requests(
         search,
         investigations: Vec::new(),
     })
+}
+
+// mergeStateStatus is slow enough for GitHub to compute that the search's pages time out with it,
+// so it is asked for MERGE_STATES_CHUNK PRs a request, all at once. A PR whose request fails is
+// neither behind nor conflicting.
+const MERGE_STATES_CHUNK: usize = 25;
+
+// Sets `behind` when GitHub will not merge a PR until it is rebased (its base branch requires it up
+// to date, or it conflicts) and `conflicts` when it conflicts.
+async fn merge_states(prs: &mut [SearchedPullRequest]) {
+    let mut requests = tokio::task::JoinSet::new();
+    for chunk in prs.chunks(MERGE_STATES_CHUNK) {
+        let ids = json!(chunk.iter().map(|pr| &pr.id).collect::<Vec<_>>());
+        let query = format!(
+            "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
+        );
+        requests.spawn(async move { gh_json::<Value>(&["api", "graphql", "-f", &query]).await });
+    }
+    let mut states = HashMap::new();
+    while let Some(result) = requests.join_next().await {
+        let Ok(Some(mut data)) = result else {
+            continue;
+        };
+        for node in data["data"]["nodes"].as_array_mut().into_iter().flatten() {
+            let id = node["id"].as_str().unwrap_or_default().to_string();
+            states.insert(id, node.take());
+        }
+    }
+    for pr in prs {
+        let Some(state) = states.get(&pr.id) else {
+            continue;
+        };
+        pr.conflicts = state["mergeable"] == "CONFLICTING";
+        pr.behind = pr.conflicts || state["mergeStateStatus"] == "BEHIND";
+    }
 }
 
 // What `changes` asks GitHub about each PR. Its own response changes with pushes, its title,
