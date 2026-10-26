@@ -12,25 +12,57 @@ pub use patch::apply_patch;
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
 // A caller that stops waiting, e.g. on a timeout, stops gh too.
 pub async fn gh(what: &str, args: &[&str]) -> Option<Vec<u8>> {
+    run(what, args).await.ok()
+}
+
+pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
+    parse(what, &gh(what, args).await?)
+}
+
+// Asks up to `tries` times while GitHub times the request out, which it answers with a 502 or 504,
+// sometimes as an HTML page gh cannot read. Any other failure, e.g. a rate limit, is not retried.
+pub async fn gh_json_retrying_timeouts<T: DeserializeOwned>(
+    what: &str,
+    args: &[&str],
+    tries: usize,
+) -> Option<T> {
+    for _ in 1..tries {
+        match run(what, args).await {
+            Ok(stdout) => return parse(what, &stdout),
+            Err(stderr) if !timed_out(&stderr) => return None,
+            Err(_) => {}
+        }
+    }
+    gh_json(what, args).await
+}
+
+fn timed_out(stderr: &str) -> bool {
+    ["HTTP 502", "HTTP 504", "invalid character '<'"]
+        .iter()
+        .any(|timeout| stderr.contains(timeout))
+}
+
+fn parse<T: DeserializeOwned>(what: &str, stdout: &[u8]) -> Option<T> {
+    serde_json::from_slice(stdout)
+        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
+        .ok()
+}
+
+// gh's stdout, or its stderr when it fails.
+async fn run(what: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new("gh")
         .args(args)
         .kill_on_drop(true)
         .output()
         .await
         .inspect_err(|error| tracing::warn!(%error, what, "cannot run gh"))
-        .ok()?;
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(stderr = %stderr.trim(), what, "gh failed");
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        tracing::warn!(%stderr, what, "gh failed");
+        return Err(stderr);
     }
-    Some(output.stdout)
-}
-
-pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
-    serde_json::from_slice(&gh(what, args).await?)
-        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
-        .ok()
+    Ok(output.stdout)
 }
 
 // The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.

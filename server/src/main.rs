@@ -105,8 +105,8 @@ prs: [.data.search.nodes[] | select(.state == "OPEN") | {
 }]
 }"#;
 
-// GitHub sometimes times out a page that usually finishes well within its limit, so a page is
-// asked for up to SEARCH_TRIES times before the refresh gives up.
+// GitHub sometimes times out a page that usually finishes well within its limit, so a page it
+// times out is asked for up to SEARCH_TRIES times before the refresh gives up.
 const SEARCH_TRIES: usize = 3;
 
 #[derive(Deserialize)]
@@ -588,14 +588,9 @@ async fn open_pull_requests(
         let after = cursor.map(|cursor| format!("endCursor={cursor}"));
         let mut args = vec!["api", "graphql", "-f", &query, "-f", &q, "--jq", PRS_JQ];
         args.extend(after.iter().flat_map(|after| ["-f", after.as_str()]));
-        let mut page = None;
-        for _ in 0..SEARCH_TRIES {
-            page = gh_json::<SearchPage>("open pull requests", &args).await;
-            if page.is_some() {
-                break;
-            }
-        }
-        let page = page?;
+        let page: SearchPage =
+            gem_github::gh_json_retrying_timeouts("open pull requests", &args, SEARCH_TRIES)
+                .await?;
         prs.extend(page.prs);
         cursor = page.next;
         if cursor.is_none() {
