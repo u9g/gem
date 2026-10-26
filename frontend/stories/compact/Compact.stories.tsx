@@ -67,22 +67,20 @@ function Comment({ proposal, max }: { proposal: Proposal; max: number }) {
 }
 
 // u9g's reply rendered as it will look on GitHub, cut to `max` pixels. Clicking it switches to the
-// editable text.
+// editable text, and leaving the text renders it again.
 function Reply({ proposal, max }: { proposal: Proposal; max: number }) {
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
   if (!proposal.reply) return null;
   return (
     <View style={{ gap: 6 }}>
-      {editing ? (
-        <EditableReply suggested={proposal.reply} draft={draft} onChange={setDraft} />
-      ) : (
-        <Bubble side="right">
-          <Clamp max={max}>
-            <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />
-          </Clamp>
-        </Bubble>
-      )}
+      <EditableReply
+        pr={proposal.pullRequestUrl}
+        suggested={proposal.reply}
+        html={proposal.replyHtml}
+        draft={draft}
+        onChange={setDraft}
+        max={max}
+      />
       {(proposal.resolveThread || proposal.closePullRequest) && (
         <View style={styles.rightRow}>
           {proposal.resolveThread && <ResolvesTag />}

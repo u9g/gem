@@ -2,7 +2,7 @@ import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from './Board';
@@ -20,7 +20,7 @@ import { Composer, InvestigationView } from './InvestigationView';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
-import { Login } from './surfaces';
+import { Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
@@ -36,10 +36,28 @@ import {
   MessageInvestigationRequestSchema,
   RebaseClusterRequestSchema,
   RebasePullRequestRequestSchema,
+  RenderMarkdownRequestSchema,
+  RenderMarkdownResponseSchema,
   RestartClusterRequestSchema,
   type PullRequestCluster,
   type Repository,
 } from './gen/gem_pb';
+
+function Contexts({
+  login,
+  render,
+  children,
+}: {
+  login: string;
+  render: (pr: string, markdown: string) => Promise<string>;
+  children: ReactNode;
+}) {
+  return (
+    <Login value={login}>
+      <RenderMarkdown value={render}>{children}</RenderMarkdown>
+    </Login>
+  );
+}
 
 function sameRepository(a: Repository | undefined, b: Repository | undefined): boolean {
   return a?.owner === b?.owner && a?.name === b?.name;
@@ -98,6 +116,14 @@ export default function App() {
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
   const search = useSearch(post);
+  const render = useCallback(
+    (pullRequestUrl: string, markdown: string) =>
+      post(
+        '/markdown/render',
+        toJson(RenderMarkdownRequestSchema, create(RenderMarkdownRequestSchema, { pullRequestUrl, markdown })),
+      ).then((json) => fromJson(RenderMarkdownResponseSchema, json).html),
+    [post],
+  );
 
   const show = useCallback(
     (json: JsonValue) => {
@@ -361,7 +387,7 @@ export default function App() {
       .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
     return (
-      <Login value={login}>
+      <Contexts login={login} render={render}>
         <View style={styles.phone}>
           {investigationView || opened ? (
             <>
@@ -424,14 +450,14 @@ export default function App() {
           )}
         </View>
         <StatusBar style="auto" />
-      </Login>
+</Contexts>
     );
   }
 
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>{filters}</View>
-      <Login value={login}>
+      <Contexts login={login} render={render}>
         <Board
           clusters={visible}
           investigations={investigations}
@@ -458,7 +484,7 @@ export default function App() {
               />
             ))}
         </Board>
-      </Login>
+</Contexts>
       <StatusBar style="auto" />
     </View>
   );

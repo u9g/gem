@@ -6,7 +6,6 @@ import './ProposalView.css';
 
 import type { Proposal } from './gen/gem_pb';
 import {
-  Bubble,
   Clamp,
   ClosesTag,
   DiffSurface,
@@ -15,7 +14,6 @@ import {
   FollowUpCard,
   Html,
   Login,
-  Quote,
   type ReplyDraft,
   RerunCard,
   ResolvesTag,
@@ -148,7 +146,6 @@ function ProposalView({
 }) {
   const login = useContext(Login);
   const phone = usePhone();
-  const [editing, setEditing] = useDraft(`${proposal.id} editing`, false);
   const [draft, setDraft] = useDraft<ReplyDraft>(`${proposal.id} reply`, { yours: proposal.reply, showing: 'suggested' });
   const [followUp, setFollowUp] = useDraft<ReplyDraft>(`${proposal.id} follow-up`, {
     yours: proposal.followUp,
@@ -243,14 +240,15 @@ function ProposalView({
             {proposal.reply ? (
               <>
                 <Text style={[styles.meta, styles.author]}>{login}</Text>
-                {editing ? (
-                  <EditableReply suggested={proposal.reply} draft={draft} onChange={setDraft} quote={quote} />
-                ) : (
-                  <Bubble side="right">
-                    {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
-                    {clamp(110, <Html html={proposal.replyHtml} onPress={() => setEditing(true)} />)}
-                  </Bubble>
-                )}
+                <EditableReply
+                  pr={proposal.pullRequestUrl}
+                  suggested={proposal.reply}
+                  html={proposal.replyHtml}
+                  draft={draft}
+                  onChange={setDraft}
+                  quote={quote}
+                  max={anchored ? undefined : 110}
+                />
               </>
             ) : (
               <Text style={styles.meta}>No reply</Text>
@@ -266,6 +264,7 @@ function ProposalView({
         <View style={[styles.column, stacked && styles.columnStacked]}>
           {proposal.followUp !== '' && (
             <FollowUpCard
+              pr={proposal.pullRequestUrl}
               suggested={proposal.followUp}
               html={proposal.followUpHtml}
               draft={followUp}
