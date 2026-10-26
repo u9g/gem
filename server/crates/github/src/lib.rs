@@ -11,13 +11,26 @@ pub use patch::apply_patch;
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
 // A caller that stops waiting, e.g. on a timeout, stops gh too.
-pub async fn gh(args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("gh").args(args).kill_on_drop(true).output().await.ok()?;
-    output.status.success().then_some(output.stdout)
+pub async fn gh(what: &str, args: &[&str]) -> Option<Vec<u8>> {
+    let output = Command::new("gh")
+        .args(args)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .inspect_err(|error| tracing::warn!(%error, what, "cannot run gh"))
+        .ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(stderr = %stderr.trim(), what, "gh failed");
+        return None;
+    }
+    Some(output.stdout)
 }
 
-pub async fn gh_json<T: DeserializeOwned>(args: &[&str]) -> Option<T> {
-    serde_json::from_slice(&gh(args).await?).ok()
+pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
+    serde_json::from_slice(&gh(what, args).await?)
+        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
+        .ok()
 }
 
 // The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.

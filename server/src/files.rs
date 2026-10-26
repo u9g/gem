@@ -98,7 +98,7 @@ async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
 
 async fn fetch(pr: &PullRequest) -> Option<Vec<FileDiff>> {
     let repo = pr.repository.as_ref()?;
-    let stdout = gh(&[
+    let stdout = gh("files", &[
         "api",
         "--paginate",
         &format!(
