@@ -125,8 +125,6 @@ export function MergeBanner({
 const styles = StyleSheet.create({
   column: {
     width: '100%',
-    flexShrink: 1,
-    minWidth: 0,
     maxWidth: 1240,
     gap: 12,
   },

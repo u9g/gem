@@ -98,7 +98,7 @@ export function ClusterReview(props: Props) {
                 {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
               </Pressable>
               <StatusLine pr={pr} />
-              {sectionsOf(pr).map((s) => (
+              {sections.filter((s) => s.pr === pr).map((s) => (
                 <Pressable
                   key={s.path}
                   style={[styles.file, section && anchor(s) === anchor(section) && styles.fileOn]}

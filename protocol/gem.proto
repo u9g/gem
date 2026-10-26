@@ -248,11 +248,11 @@ message Comment {
   string url = 4;
   // The body as GitHub renders it.
   string body_html = 5;
-  // A review comment's file, and its line in the PR's current diff: 0 once outdated, and on a
-  // top-level comment, whose path is empty too.
+  // A review comment's file, and its line in the PR's diff when the proposal was made: 0 if it was
+  // outdated by then, and on a top-level comment, whose path is empty too.
   string path = 6;
   uint32 line = 7;
-  // A review comment's hunk of the PR's diff, ending at its line.
+  // A review comment's hunk of the PR's diff then, ending at its line.
   string diff_hunk = 8;
 }
 
