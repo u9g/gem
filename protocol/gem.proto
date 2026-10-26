@@ -92,6 +92,9 @@ message PullRequest {
   Merge merge = 14;
   // How the user can merge it.
   MergeBy merge_by = 15;
+  // The PR's diff of each file a proposal on it is about: the file a review
+  // comment is on, and the files a patch changes.
+  repeated FileDiff files = 16;
 }
 
 // How a pull request can merge, decided by the server.
@@ -251,6 +254,14 @@ message Comment {
   uint32 line = 7;
   // A review comment's hunk of the PR's diff, ending at its line.
   string diff_hunk = 8;
+}
+
+// One file's part of a pull request's diff.
+message FileDiff {
+  string path = 1;
+  // GitHub's hunks for the file, without a file header. Empty for a file too
+  // large for GitHub to diff.
+  string patch = 2;
 }
 
 // Committed and pushed to the pull request's head branch.

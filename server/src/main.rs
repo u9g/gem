@@ -31,6 +31,7 @@ use proto::{
 };
 
 mod conversations;
+mod files;
 mod investigations;
 mod mcp;
 mod merges;
@@ -545,6 +546,7 @@ async fn filled(
     let mut response = cache.read().await.clone()?;
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
+    files::fill(&mut response.clusters).await;
     investigations::fill(&mut response).await;
     rebases::fill(&mut response.clusters).await;
     merges::fill(&mut response.clusters).await;
@@ -660,6 +662,7 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         head_oid: pr.head_oid.clone(),
                         agents: Vec::new(),
                         merge: None,
+                        files: Vec::new(),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
