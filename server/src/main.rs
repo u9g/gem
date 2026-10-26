@@ -52,10 +52,11 @@ const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"
 
 // Paginated by `gh api graphql --paginate`, which fills in $endCursor. $q is the user's open PRs,
 // narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`. Search ORs the qualifiers
-// naming where to look, so `org:livekit repo:u9g/gem` adds one repository to an organization.
+// naming where to look, so `org:livekit repo:u9g/gem` adds one repository to an organization. A page
+// must finish within GitHub's ~10s GraphQL timeout, past which it answers 502; 100 PRs per page do not.
 const PRS_QUERY: &str = r#"
 query($endCursor: String, $q: String!) {
-  search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
+  search(query: $q, type: ISSUE, first: 25, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
