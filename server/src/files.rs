@@ -1,6 +1,9 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::LazyLock,
+    sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -16,14 +19,22 @@ use crate::{
 const RETRY: Duration = Duration::from_secs(60);
 
 enum Diff {
-    // The previous head's diff, shown meanwhile so threads stay where they were.
+    // The previous diff, shown meanwhile so threads stay where they were.
     Fetching(Vec<FileDiff>),
     Fetched(Vec<FileDiff>),
     Failed(Instant),
 }
 
-// Each PR's diff by file at its latest head commit, by URL; only a push changes it.
-static DIFFS: LazyLock<Mutex<HashMap<String, (String, Diff)>>> = LazyLock::new(Default::default);
+// What a PR's diff is of: its head commit and the branch it merges into. Only a push or a retarget
+// changes it.
+fn of(pr: &PullRequest) -> (String, String) {
+    (pr.head_oid.clone(), pr.base.clone())
+}
+
+// Each PR's diff by file, by URL, with what it is of and the fetch that wrote it.
+static DIFFS: LazyLock<Mutex<HashMap<String, ((String, String), u64, Diff)>>> =
+    LazyLock::new(Default::default);
+static FETCHES: AtomicU64 = AtomicU64::new(0);
 
 // Gives each PR with proposals its diff of the files they are about, once fetched: a snapshot
 // never waits on GitHub.
@@ -35,8 +46,9 @@ pub async fn fill(clusters: &mut [PullRequestCluster]) {
         let paths: HashSet<String> = (pr.proposals.iter())
             .flat_map(|p| {
                 let patch = p.patch.as_ref().map_or("", |patch| &patch.diff);
+                // A deleted file's new side is /dev/null.
                 let changed = (patch.lines())
-                    .filter_map(|line| line.strip_prefix("+++ b/"))
+                    .filter_map(|line| line.strip_prefix("+++ b/").or(line.strip_prefix("--- a/")))
                     .map(str::to_string);
                 p.comment.iter().map(|c| c.path.clone()).chain(changed)
             })
@@ -51,32 +63,34 @@ pub async fn fill(clusters: &mut [PullRequestCluster]) {
     }
 }
 
-// The PR's diff when fetched for its head; otherwise starts fetching it, unless that already
-// started or failed within RETRY.
+// The PR's diff when fetched for what it is now of; otherwise starts fetching it, unless that
+// already started or failed within RETRY.
 async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
     let mut diffs = DIFFS.lock().await;
     match diffs.get(&pr.url) {
-        Some((head, Diff::Fetched(files))) if *head == pr.head_oid => return files.clone(),
-        Some((head, Diff::Fetching(files))) if *head == pr.head_oid => return files.clone(),
-        Some((head, Diff::Failed(at))) if *head == pr.head_oid && at.elapsed() < RETRY => {
+        Some((of_, _, Diff::Fetched(files) | Diff::Fetching(files))) if *of_ == of(pr) => {
+            return files.clone();
+        }
+        Some((of_, _, Diff::Failed(at))) if *of_ == of(pr) && at.elapsed() < RETRY => {
             return Vec::new();
         }
         _ => {}
     }
     let previous = match diffs.remove(&pr.url) {
-        Some((_, Diff::Fetched(files) | Diff::Fetching(files))) => files,
+        Some((_, _, Diff::Fetched(files) | Diff::Fetching(files))) => files,
         _ => Vec::new(),
     };
-    diffs.insert(pr.url.clone(), (pr.head_oid.clone(), Diff::Fetching(previous.clone())));
+    let fetch_id = FETCHES.fetch_add(1, Ordering::Relaxed);
+    diffs.insert(pr.url.clone(), (of(pr), fetch_id, Diff::Fetching(previous.clone())));
     let pr = pr.clone();
     tokio::spawn(async move {
         let files = tokio::time::timeout(RETRY, fetch(&pr)).await.ok().flatten();
         let diff = files.map_or_else(|| Diff::Failed(Instant::now()), Diff::Fetched);
-        // A push while it fetched has started a fetch for the new head.
+        // A later fetch of the PR, after a push or retarget, owns its entry now.
         if let Some(entry) = DIFFS.lock().await.get_mut(&pr.url)
-            && entry.0 == pr.head_oid
+            && entry.1 == fetch_id
         {
-            entry.1 = diff;
+            entry.2 = diff;
         }
     });
     previous
