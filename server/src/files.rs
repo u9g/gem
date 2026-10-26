@@ -11,11 +11,13 @@ use crate::{
     proto::{FileDiff, PullRequest, PullRequestCluster},
 };
 
-// How long a PR whose diff could not be fetched waits before it is asked for again.
+// How long a PR whose diff could not be fetched waits before it is asked for again, and how long a
+// fetch may take before it counts as failed.
 const RETRY: Duration = Duration::from_secs(60);
 
 enum Diff {
-    Fetching,
+    // The previous head's diff, shown meanwhile so threads stay where they were.
+    Fetching(Vec<FileDiff>),
     Fetched(Vec<FileDiff>),
     Failed(Instant),
 }
@@ -55,19 +57,29 @@ async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
     let mut diffs = DIFFS.lock().await;
     match diffs.get(&pr.url) {
         Some((head, Diff::Fetched(files))) if *head == pr.head_oid => return files.clone(),
-        Some((head, Diff::Fetching)) if *head == pr.head_oid => return Vec::new(),
+        Some((head, Diff::Fetching(files))) if *head == pr.head_oid => return files.clone(),
         Some((head, Diff::Failed(at))) if *head == pr.head_oid && at.elapsed() < RETRY => {
             return Vec::new();
         }
         _ => {}
     }
-    diffs.insert(pr.url.clone(), (pr.head_oid.clone(), Diff::Fetching));
+    let previous = match diffs.remove(&pr.url) {
+        Some((_, Diff::Fetched(files) | Diff::Fetching(files))) => files,
+        _ => Vec::new(),
+    };
+    diffs.insert(pr.url.clone(), (pr.head_oid.clone(), Diff::Fetching(previous.clone())));
     let pr = pr.clone();
     tokio::spawn(async move {
-        let diff = fetch(&pr).await.map_or_else(|| Diff::Failed(Instant::now()), Diff::Fetched);
-        DIFFS.lock().await.insert(pr.url, (pr.head_oid, diff));
+        let files = tokio::time::timeout(RETRY, fetch(&pr)).await.ok().flatten();
+        let diff = files.map_or_else(|| Diff::Failed(Instant::now()), Diff::Fetched);
+        // A push while it fetched has started a fetch for the new head.
+        if let Some(entry) = DIFFS.lock().await.get_mut(&pr.url)
+            && entry.0 == pr.head_oid
+        {
+            entry.1 = diff;
+        }
     });
-    Vec::new()
+    previous
 }
 
 async fn fetch(pr: &PullRequest) -> Option<Vec<FileDiff>> {
