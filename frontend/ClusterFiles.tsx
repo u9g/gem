@@ -139,7 +139,7 @@ export function ClusterReview(props: Props) {
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
   const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
   // GitHub's hunks for the file come without a file header.
-  const lines = parseDiff(`+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
+  const lines = parseDiff(`--- a/${section.path}\n+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
   const placed = new Map<number, Proposal[][]>();
   const unplaced: Proposal[][] = [];
   for (const group of section.groups) {
