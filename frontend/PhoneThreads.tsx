@@ -20,24 +20,33 @@ type Handlers = {
 
 // The conversations waiting on the user, as a phone shows them: a card each, in file and line
 // order, with where it is, who wrote what, the lines of code it is on, and Dismiss / Approve when
-// approving needs no choice between alternatives. A card opens its thread in a sheet over its file;
-// the open sheet is a history entry, so the browser's back closes it.
+// approving needs no choice between alternatives. A card opens its thread in a sheet over its file.
+// The open sheet is a history entry holding its conversation's proposal IDs, marked `open` like the
+// cluster's own, so back and forward close and reopen it, and it survives a remount.
 export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestCluster } & Handlers) {
   const threads: Thread[] = cluster.pullRequests
     .flatMap(sectionsOf)
     .flatMap((section) => section.groups.map((group) => ({ section, group })));
   // The open conversation's proposals: it stays open while any of them is left.
-  const [open, setOpen] = useState<string[]>();
+  const [open, setOpen] = useState<string[] | undefined>(() => history.state?.thread);
   const index = open ? threads.findIndex((t) => t.group.some((p) => open.includes(p.id))) : -1;
   const ids = (thread: Thread) => thread.group.map((p) => p.id);
+  // Set from leaving a vanished thread's entry until the browser lands on the one below it.
+  const leaving = useRef(false);
   useEffect(() => {
-    const close = () => setOpen(undefined);
-    addEventListener('popstate', close);
-    return () => removeEventListener('popstate', close);
+    const land = (event: PopStateEvent) => {
+      leaving.current = false;
+      setOpen(event.state?.thread);
+    };
+    addEventListener('popstate', land);
+    return () => removeEventListener('popstate', land);
   }, []);
   // Approving or dismissing the open conversation's last proposal removes it, and its entry.
   useEffect(() => {
-    if (open && index < 0) history.back();
+    if (open && index < 0 && !leaving.current) {
+      leaving.current = true;
+      history.back();
+    }
   }, [open, index]);
   return (
     <View style={styles.cards}>
@@ -46,7 +55,7 @@ export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestClus
           key={thread.group[0].id}
           thread={thread}
           onOpen={() => {
-            history.pushState({ thread: true }, '');
+            history.pushState({ open: true, thread: ids(thread) }, '');
             setOpen(ids(thread));
           }}
           {...handlers}
@@ -58,7 +67,10 @@ export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestClus
           <ThreadSheet
             threads={threads}
             index={index}
-            onMove={(i) => setOpen(ids(threads[i]))}
+            onMove={(i) => {
+              history.replaceState({ open: true, thread: ids(threads[i]) }, '');
+              setOpen(ids(threads[i]));
+            }}
             onClose={() => history.back()}
             {...handlers}
           />,
@@ -71,15 +83,26 @@ export function ThreadCards({ cluster, ...handlers }: { cluster: PullRequestClus
 function where({ section, group }: Thread): string {
   const ref = `${section.pr.repository?.name}#${section.pr.number}`;
   const proposal = group[0];
-  if (section.path) return `${ref} · ${section.path.split('/').pop()}${proposal.comment?.line ? `:${proposal.comment.line}` : ''}`;
-  return `${ref} · ${proposal.checkFailure ? 'checks' : 'conversation'}`;
+  const subject = proposal.checkFailure ? ' · checks' : '';
+  if (section.path) return `${ref} · ${section.path.split('/').pop()}${proposal.comment?.line ? `:${proposal.comment.line}` : ''}${subject}`;
+  return `${ref} · ${subject ? 'checks' : 'conversation'}`;
 }
 
-// The first line of what the conversation is about, as plain text.
+// The first line of markdown's visible text: no HTML, comments, link targets or emphasis marks.
+function plain(markdown: string): string {
+  return (
+    visibleMarkdown(markdown)
+      .replace(/<[^>]+>/g, '')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .split('\n')
+      .map((l) => l.replace(/[#*`>]/g, '').trim())
+      .find(Boolean) ?? ''
+  );
+}
+
+// What the conversation is about: its comment, else what approving does.
 function gist(proposal: Proposal): string {
-  if (!proposal.comment) return proposal.summary;
-  const body = visibleMarkdown(proposal.comment.body).replace(/<[^>]+>/g, '');
-  return body.split('\n').map((l) => l.replace(/[#*`>]/g, '').trim()).find(Boolean) ?? proposal.summary;
+  return (proposal.comment && plain(proposal.comment.body)) || plain(proposal.summary);
 }
 
 function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; onOpen: () => void } & Handlers) {
@@ -126,7 +149,7 @@ function Card({ thread, onOpen, busy, onApprove, onDismiss }: { thread: Thread; 
       </Text>
       {group.length === 1 && proposal.comment && (
         <Text numberOfLines={1} style={styles.meta}>
-          → {proposal.summary}
+          → {plain(proposal.summary)}
         </Text>
       )}
       {failed && (
@@ -206,7 +229,7 @@ function Code({ lines, highlight, full = false }: { lines: DiffLine[]; highlight
   const marked = useRef<ComponentRef<typeof View>>(null);
   useEffect(() => {
     if (full) (marked.current as unknown as HTMLElement | null)?.scrollIntoView({ block: 'center' });
-  }, [full]);
+  }, [full, highlight]);
   return (
     <View style={styles.code}>
       {lines.map((line, i) =>
