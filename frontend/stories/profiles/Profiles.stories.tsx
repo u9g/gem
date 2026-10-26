@@ -12,7 +12,7 @@ import { PullRequestList } from '../../PullRequestList';
 import { type Profile, type Project } from '../../server';
 import { Login } from '../../surfaces';
 import { t3 } from '../../t3';
-import { proposals } from '../fixtures';
+import { clusterMergeBy, mergeBy, proposals } from '../fixtures';
 
 // Switching profiles connects to another gem server, so the whole cluster list changes.
 const minutesAgo = (minutes: number) => timestampFromDate(new Date(Date.now() - minutes * 60_000));
@@ -25,7 +25,7 @@ const cluster = (
   create(PullRequestClusterSchema, {
     name,
     updatedAt: minutesAgo(updated),
-    mergeable: prs.every((pr) => pr.approved && pr.checksPassing),
+    mergeBy: clusterMergeBy(prs.map((pr) => ({ mergeBy: mergeBy(pr) }))),
     pullRequests: prs.map(({ owner, repo, number, title, waiting = 0, ...status }) =>
       create(PullRequestSchema, {
         repository: { owner, name: repo },
@@ -33,7 +33,7 @@ const cluster = (
         title,
         url: `https://github.com/${owner}/${repo}/pull/${number}`,
         proposals: proposals.slice(0, waiting),
-        mergeable: Boolean(status.approved && status.checksPassing),
+        mergeBy: mergeBy(status),
         ...status,
       }),
     ),

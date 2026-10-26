@@ -1,7 +1,7 @@
 import { Check, CircleCheck, CircleDashed, CircleX, MessageCircleQuestionMark } from 'lucide-react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { PullRequest } from './gen/gem_pb';
+import { MergeBy, type PullRequest } from './gen/gem_pb';
 import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
@@ -85,7 +85,7 @@ export function PullRequestList({
 }
 
 // What is happening to the PR, what it waits on, and a link to the agent doing it.
-type Status = { doing: string; waiting?: string; link?: string; ready?: boolean };
+type Status = { doing: string; waiting?: string; link?: string; ready?: boolean; forceable?: boolean };
 
 function status(pr: PullRequest): Status | undefined {
   const checks = pr.checks ?? { total: 0, done: 0, failed: 0 };
@@ -123,7 +123,8 @@ function status(pr: PullRequest): Status | undefined {
   }
   if (checks.failed > 0) return { doing: checksFailed, waiting: 'no proposal for them' };
   if (pr.behind) return { doing: 'Behind its base branch', waiting: 'waiting on you to rebase' };
-  if (pr.mergeable) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
+  if (pr.mergeBy === MergeBy.APPROVAL) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
+  if (pr.mergeBy === MergeBy.ADMIN) return { doing: 'Not approved', waiting: 'you can force it in as an admin', forceable: true };
   return undefined;
 }
 
@@ -133,7 +134,7 @@ function StatusLine({ pr }: { pr: PullRequest }) {
   return (
     <View style={styles.status}>
       <Text numberOfLines={1} style={styles.statusText}>
-        <Text style={[styles.doing, line.ready && { color: t3.addition }]}>{line.doing}</Text>
+        <Text style={[styles.doing, line.ready && { color: t3.addition }, line.forceable && { color: t3.warning }]}>{line.doing}</Text>
         {line.waiting && ` · ${line.waiting}`}
       </Text>
       {line.link && (

@@ -2,7 +2,7 @@ import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Investigation, PullRequest, PullRequestCluster } from './gen/gem_pb';
+import { type Investigation, MergeBy, type PullRequest, type PullRequestCluster } from './gen/gem_pb';
 import { t3 } from './t3';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -37,7 +37,7 @@ export function section(cluster: PullRequestCluster): (typeof sections)[number] 
     (pr.checksFailing && !running(pr) && pr.agents.length === 0);
   if (prs.some(needsYou)) return 'Needs you';
   if (prs.some((pr) => pr.agents.length > 0 || pr.rebase || pr.merge)) return 'Agents working';
-  if (cluster.mergeable) return 'Ready to merge';
+  if (cluster.mergeBy !== MergeBy.UNSPECIFIED) return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';
   return 'Waiting on review';
 }
@@ -83,7 +83,7 @@ export function PhoneClusterRow({
   return (
     <Pressable onPress={onPress} style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}>
       <View style={styles.cardTop}>
-        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, cluster.mergeable && styles.ready]}>
+        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, cluster.mergeBy === MergeBy.APPROVAL && styles.ready, cluster.mergeBy === MergeBy.ADMIN && styles.forceable]}>
           {cluster.name || cluster.pullRequests[0].title}
         </Text>
         {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
@@ -299,5 +299,8 @@ const styles = StyleSheet.create({
   },
   ready: {
     color: '#4ADE80',
+  },
+  forceable: {
+    color: t3.warning,
   },
 });

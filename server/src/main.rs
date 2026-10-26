@@ -24,11 +24,10 @@ use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseInvestigationRequest,
     CloseInvestigationResponse, DismissProposalRequest, DismissProposalResponse,
     InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
-    ListOpenPullRequestsResponse, MergeClusterRequest, MergeClusterResponse, MessageClusterRequest,
-    MessageClusterResponse,
-    MessageInvestigationRequest, MessageInvestigationResponse, PullRequest, PullRequestCluster,
-    RebasePullRequestRequest, RebasePullRequestResponse, Repository, RestartClusterRequest,
-    RestartClusterResponse,
+    ListOpenPullRequestsResponse, MergeBy, MergeClusterRequest, MergeClusterResponse,
+    MessageClusterRequest, MessageClusterResponse, MessageInvestigationRequest,
+    MessageInvestigationResponse, PullRequest, PullRequestCluster, RebasePullRequestRequest,
+    RebasePullRequestResponse, Repository, RestartClusterRequest, RestartClusterResponse,
 };
 
 mod conversations;
@@ -121,6 +120,26 @@ struct SearchedPullRequest {
     checks: Checks,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
+}
+
+fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
+    match (pr.checks_passing, pr.approved, pr.admin) {
+        (false, _, _) => MergeBy::Unspecified,
+        (true, true, _) => MergeBy::Approval,
+        (true, false, true) => MergeBy::Admin,
+        (true, false, false) => MergeBy::Unspecified,
+    }
+}
+
+fn cluster_merge_by(cluster: &PullRequestCluster) -> MergeBy {
+    let prs = || cluster.pull_requests.iter().map(|pr| pr.merge_by());
+    if prs().any(|by| by == MergeBy::Unspecified) {
+        MergeBy::Unspecified
+    } else if prs().any(|by| by == MergeBy::Admin) {
+        MergeBy::Admin
+    } else {
+        MergeBy::Approval
+    }
 }
 
 // A refresh costs one GitHub API request per 100 results, far under GitHub's hourly limits.
@@ -347,6 +366,19 @@ async fn run_server() {
                 let cluster = (response.iter().flat_map(|r| &r.clusters))
                     .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
                     .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                match (cluster.merge_by(), request.admin) {
+                    (MergeBy::Unspecified, _) => {
+                        return Err((StatusCode::CONFLICT, "the cluster cannot merge".to_string()));
+                    }
+                    (MergeBy::Admin, false) => {
+                        return Err((
+                            StatusCode::CONFLICT,
+                            "the cluster has unapproved pull requests; merge it as an admin"
+                                .to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
                 merges::start(cluster)
                     .await
                     .map(|()| Json(MergeClusterResponse {}))
@@ -623,7 +655,7 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                         title: pr.title.clone(),
                         url: pr.url.clone(),
                         approved: pr.approved,
-                        mergeable: (pr.approved || pr.admin) && pr.checks_passing,
+                        merge_by: merge_by(pr) as i32,
                         checks_passing: pr.checks_passing,
                         checks_failing: pr.checks_failing,
                         proposals: Vec::new(),
@@ -636,11 +668,11 @@ fn cluster(prs: &[SearchedPullRequest], behind: &HashSet<&str>) -> Vec<PullReque
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
-                mergeable: false,
+                merge_by: MergeBy::Unspecified as i32,
             }
         })
         .map(|mut cluster| {
-            cluster.mergeable = cluster.pull_requests.iter().all(|pr| pr.mergeable);
+            cluster.merge_by = cluster_merge_by(&cluster) as i32;
             cluster
         })
         .collect();

@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use gem_db::Db;
 use gem_merges::{Host, Merges, Progress};
 
-use crate::proto::{Merge, PullRequestCluster};
+use crate::proto::{Merge, MergeBy, PullRequestCluster};
 use crate::t3;
 
 static MERGES: OnceLock<Merges<Server>> = OnceLock::new();
@@ -45,8 +45,12 @@ pub async fn start(cluster: &PullRequestCluster) -> Result<(), String> {
         "" => cluster.pull_requests[0].title.as_str(),
         name => name,
     };
+    let admin: Vec<String> = (cluster.pull_requests.iter())
+        .filter(|pr| pr.merge_by() == MergeBy::Admin)
+        .map(|pr| pr.url.clone())
+        .collect();
     let merges = MERGES.get().ok_or("merges are not ready")?;
-    merges.start(&urls, name).await
+    merges.start(&urls, &admin, name).await
 }
 
 pub async fn fill(clusters: &mut [PullRequestCluster]) {
