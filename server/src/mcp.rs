@@ -496,6 +496,7 @@ mod tests {
             body: format!("{id}'s body"),
             url: format!("{PR}#{id}"),
             body_html: String::new(),
+            ..Default::default()
         }
     }
 

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from './Board';
+import { WithFiles } from './ClusterFiles';
 import {
   Legend,
   PhoneClusterRow,
@@ -388,20 +389,23 @@ export default function App() {
           }}
           onOpenInvestigation={setSelectedInvestigation}
           onClose={closeDrawer}
+          wide={!investigationView && opened !== undefined}
         >
           {investigationView ||
             (opened && (
-              <ClusterView
-                cluster={opened}
-                busy={busy}
-                onApprove={approve}
-                onDismiss={dismiss}
-                onRestart={restart}
-                onRebase={rebase}
-                onMerge={merge}
-                onInvestigate={investigate}
-                onMessage={(message) => messageCluster(opened, message)}
-              />
+              <WithFiles cluster={opened}>
+                <ClusterView
+                  cluster={opened}
+                  busy={busy}
+                  onApprove={approve}
+                  onDismiss={dismiss}
+                  onRestart={restart}
+                  onRebase={rebase}
+                  onMerge={merge}
+                  onInvestigate={investigate}
+                  onMessage={(message) => messageCluster(opened, message)}
+                />
+              </WithFiles>
             ))}
         </Board>
       </Login>

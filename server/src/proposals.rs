@@ -408,6 +408,7 @@ impl GitHub for Live {
                 body: c["body"].as_str().unwrap_or_default().to_string(),
                 url: c["url"].as_str().unwrap_or_default().to_string(),
                 body_html: c["bodyHTML"].as_str().unwrap_or_default().to_string(),
+                ..Default::default()
             })
             .collect();
         Ok((pr.to_string(), comments))
@@ -590,6 +591,13 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
         author: Option<Author>,
         #[serde(rename = "pullRequest")]
         pull_request: Option<Url>,
+        #[serde(default)]
+        path: String,
+        line: Option<u32>,
+        #[serde(rename = "originalLine")]
+        original_line: Option<u32>,
+        #[serde(rename = "diffHunk", default)]
+        diff_hunk: String,
     }
     #[derive(Deserialize)]
     struct Author {
@@ -601,7 +609,7 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     }
     let fields = "id body bodyHTML url author { login } pullRequest { url }";
     let output = graphql(
-        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} }} }} }}"),
+        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line originalLine diffHunk }} }} }}"),
         &[("id", id)],
     )
     .await?;
@@ -616,6 +624,9 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
             body: node.body,
             url: node.url,
             body_html: node.body_html,
+            path: node.path,
+            line: node.line.or(node.original_line).unwrap_or_default(),
+            diff_hunk: node.diff_hunk,
         },
     })
 }

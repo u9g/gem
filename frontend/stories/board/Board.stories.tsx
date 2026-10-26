@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Board } from '../../Board';
+import { WithFiles } from '../../ClusterFiles';
 import { ClusterView } from '../../ClusterView';
 import { type Proposal, type PullRequest, type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { InvestigationView } from '../../InvestigationView';
@@ -104,6 +105,7 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
           setOpenUrl(undefined);
           setOpenInvestigation(undefined);
         }}
+        wide={!investigation && opened !== undefined}
       >
         {investigation ? (
           <InvestigationView
@@ -116,16 +118,18 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
           />
         ) : (
           opened && (
-            <ClusterView
-              cluster={opened}
-              onApprove={noop}
-              onDismiss={noop}
-              onRestart={noop}
-              onRebase={noop}
-              onMerge={noop}
-              onInvestigate={noop}
-              onMessage={() => Promise.resolve()}
-            />
+            <WithFiles cluster={opened}>
+              <ClusterView
+                cluster={opened}
+                onApprove={noop}
+                onDismiss={noop}
+                onRestart={noop}
+                onRebase={noop}
+                onMerge={noop}
+                onInvestigate={noop}
+                onMessage={() => Promise.resolve()}
+              />
+            </WithFiles>
           )
         )}
       </Board>

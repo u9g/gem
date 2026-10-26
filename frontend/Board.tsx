@@ -1,16 +1,18 @@
+import { X } from 'lucide-react';
 import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { InvestigationRow, PhoneClusterRow, section, sections } from './ClusterRow';
 import type { Investigation, PullRequestCluster } from './gen/gem_pb';
-import { t3 } from './t3';
+import { Icon, t3 } from './t3';
 
 const COLUMN_MIN_WIDTH = 220;
 const DRAWER_WIDTH = 640;
 
 // The wide layout: one column per place a phone lists a cluster, left to right by what each waits
 // on, after a column of agents when any run. The open cluster or agent, `children`, slides over the
-// right edge; clicking beside it or pressing Escape closes it.
+// right edge, or over the whole board when `wide`; clicking beside it, its close button or pressing
+// Escape closes it.
 export function Board({
   clusters,
   investigations,
@@ -19,6 +21,7 @@ export function Board({
   onOpenCluster,
   onOpenInvestigation,
   onClose,
+  wide = false,
   children,
 }: {
   clusters: PullRequestCluster[];
@@ -29,6 +32,7 @@ export function Board({
   onOpenCluster: (cluster: PullRequestCluster) => void;
   onOpenInvestigation: (id: string) => void;
   onClose: () => void;
+  wide?: boolean;
   children?: ReactNode;
 }) {
   useEffect(() => {
@@ -73,8 +77,11 @@ export function Board({
       {children && (
         <>
           <Pressable accessibilityLabel="Close" style={styles.scrim} onPress={onClose} />
-          <View style={styles.drawer}>
+          <View style={[styles.drawer, wide && styles.wide]}>
             <ScrollView contentContainerStyle={styles.drawerContent}>{children}</ScrollView>
+            <Pressable accessibilityLabel="Close" style={styles.close} onPress={onClose}>
+              <Icon icon={X} size={16} />
+            </Pressable>
           </View>
         </>
       )}
@@ -171,7 +178,17 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 32,
   },
+  wide: {
+    width: '100%',
+    borderLeftWidth: 0,
+  },
   drawerContent: {
     padding: 24,
+  },
+  close: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    padding: 2,
   },
 });

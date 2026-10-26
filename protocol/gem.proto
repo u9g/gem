@@ -245,6 +245,12 @@ message Comment {
   string url = 4;
   // The body as GitHub renders it.
   string body_html = 5;
+  // A review comment's file, and its line in that file's version on the PR's head, or on the
+  // commit it was made on once outdated. Empty and 0 on a top-level comment.
+  string path = 6;
+  uint32 line = 7;
+  // A review comment's hunk of the PR's diff, ending at its line.
+  string diff_hunk = 8;
 }
 
 // Committed and pushed to the pull request's head branch.
