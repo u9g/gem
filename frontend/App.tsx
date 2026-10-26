@@ -49,6 +49,28 @@ function repositoryValue(repository: Repository): string {
   return JSON.stringify([repository.owner, repository.name]);
 }
 
+// What is open lives in the page's query, so the browser's back and forward move between what was
+// opened and a link reopens it. An investigation is shown in place of the cluster while both are set.
+type Place = { cluster?: string; investigation?: string };
+
+// A cluster is written as its oldest PR's owner/repo/number, which needs no escaping in a query.
+function currentPlace(): Place {
+  const params = new URLSearchParams(location.search);
+  const [owner, repo, number] = params.get('cluster')?.split('/') ?? [];
+  return {
+    cluster: number && `https://github.com/${owner}/${repo}/pull/${number}`,
+    investigation: params.get('investigation') ?? undefined,
+  };
+}
+
+function placeSearch(place: Place): string {
+  const params = [
+    place.cluster && `cluster=${place.cluster.replace('https://github.com/', '').replace('/pull/', '/')}`,
+    place.investigation && `investigation=${place.investigation}`,
+  ].filter(Boolean);
+  return params.length > 0 ? `?${params.join('&')}` : '';
+}
+
 export default function App() {
   const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot } =
     useServer();
@@ -57,9 +79,7 @@ export default function App() {
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [login, setLogin] = useState('');
-  const [selectedUrl, setSelectedUrl] = useState<string>();
-  // Shown in place of any cluster while set.
-  const [selectedInvestigation, setSelectedInvestigation] = useState<string>();
+  const [place, setPlace] = useState(currentPlace);
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Each request in flight: proposals being approved, dismissed or investigated, the oldest PR's URL
@@ -90,8 +110,6 @@ export default function App() {
     setClusters([]);
     setInvestigations([]);
     setLogin('');
-    setSelectedUrl(undefined);
-    setSelectedInvestigation(undefined);
     setRepoFilter(undefined);
   }, [profileId]);
 
@@ -100,17 +118,19 @@ export default function App() {
     if (snapshot) show(snapshot);
   }, [snapshot, show]);
 
-  const closeDrawer = useCallback(() => {
-    setSelectedUrl(undefined);
-    setSelectedInvestigation(undefined);
+  const go = useCallback((to: Place) => {
+    const search = placeSearch(to);
+    if (search !== location.search) history.pushState(null, '', search || location.pathname);
+    setPlace(to);
   }, []);
 
-  // On a phone an open cluster or investigation is a history entry, so the browser's back returns
-  // to the list.
+  const closeDrawer = useCallback(() => go({}), [go]);
+
   useEffect(() => {
-    addEventListener('popstate', closeDrawer);
-    return () => removeEventListener('popstate', closeDrawer);
-  }, [closeDrawer]);
+    const restore = () => setPlace(currentPlace());
+    addEventListener('popstate', restore);
+    return () => removeEventListener('popstate', restore);
+  }, []);
 
   // Marks `key` busy until the request and the reload after it settle.
   function track(key: string, request: Promise<unknown>) {
@@ -177,7 +197,7 @@ export default function App() {
       toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
     )
       .then((json) => fromJson(MessageClusterResponseSchema, json).investigationId)
-      .then((id) => load().then(() => setSelectedInvestigation(id)));
+      .then((id) => load().then(() => go({ cluster: place.cluster, investigation: id })));
   }
 
   function messageInvestigation(id: string, message: string) {
@@ -191,15 +211,12 @@ export default function App() {
     track(
       id,
       post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id }))).then(
-        () => {
-          if (phone) history.back();
-          setSelectedInvestigation(undefined);
-        },
+        () => go({ cluster: place.cluster }),
       ),
     );
   }
 
-  const investigation = investigations.find((i) => i.id === selectedInvestigation);
+  const investigation = investigations.find((i) => i.id === place.investigation);
   const investigationView = investigation && (
     <InvestigationView
       investigation={investigation}
@@ -220,7 +237,7 @@ export default function App() {
     ? clusters.filter((cluster) => cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
     : clusters;
   // A cluster is identified by its oldest PR, which stays put as the cluster grows.
-  const opened = visible.find((cluster) => cluster.pullRequests[0].url === selectedUrl);
+  const opened = visible.find((cluster) => cluster.pullRequests[0].url === place.cluster);
 
   const filters = (
     <View style={styles.filters}>
@@ -300,16 +317,12 @@ export default function App() {
     const listed = sections
       .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
-    const open = (cluster: PullRequestCluster) => {
-      history.pushState(null, '');
-      setSelectedUrl(cluster.pullRequests[0].url);
-    };
     return (
       <Login value={login}>
         <View style={styles.phone}>
           {investigationView || opened ? (
             <>
-              <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={() => history.back()}>
+              <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={closeDrawer}>
                 <ChevronLeft size={22} color="#8FA8F5" />
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
@@ -349,10 +362,7 @@ export default function App() {
                     <PhoneInvestigationRow
                       key={i.id}
                       investigation={i}
-                      onPress={() => {
-                        history.pushState(null, '');
-                        setSelectedInvestigation(i.id);
-                      }}
+                      onPress={() => go({ investigation: i.id })}
                     />
                   ))}
                 </View>
@@ -362,7 +372,7 @@ export default function App() {
                   </View>,
                   ...(i === 0 ? [<Legend key="legend" />] : []),
                   ...clusters.map((cluster) => (
-                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => open(cluster)} />
+                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => go({ cluster: cluster.pullRequests[0].url })} />
                   )),
                 ])}
               </ScrollView>
@@ -383,11 +393,8 @@ export default function App() {
           investigations={investigations}
           openUrl={investigation ? undefined : opened?.pullRequests[0].url}
           openInvestigation={investigation?.id}
-          onOpenCluster={(cluster) => {
-            setSelectedInvestigation(undefined);
-            setSelectedUrl(cluster.pullRequests[0].url);
-          }}
-          onOpenInvestigation={setSelectedInvestigation}
+          onOpenCluster={(cluster) => go({ cluster: cluster.pullRequests[0].url })}
+          onOpenInvestigation={(id) => go({ cluster: place.cluster, investigation: id })}
           onClose={closeDrawer}
           wide={!investigationView && opened !== undefined}
         >
