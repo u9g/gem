@@ -50,10 +50,10 @@ type Cache<T> = Arc<RwLock<Option<T>>>;
 // Without an owner, gh lists the authenticated user's repositories.
 const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
 
-// Paginated by `gh api graphql --paginate`, which fills in $endCursor. $q is the user's open PRs,
-// narrowed by the search qualifiers in GEM_SEARCH, e.g. `org:livekit`. Search ORs the qualifiers
-// naming where to look, so `org:livekit repo:u9g/gem` adds one repository to an organization.
-// GitHub times out a page of 100 PRs with their checks, so pages are 50.
+// $endCursor is the page to start after. $q is the user's open PRs, narrowed by the search
+// qualifiers in GEM_SEARCH, e.g. `org:livekit`. Search ORs the qualifiers naming where to look, so
+// `org:livekit repo:u9g/gem` adds one repository to an organization. GitHub times out a page of 100
+// PRs with their checks, so pages are 50.
 const PRS_QUERY: &str = r#"
 query($endCursor: String, $q: String!) {
   search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
@@ -79,7 +79,9 @@ query($endCursor: String, $q: String!) {
 // A fork's head branch can share a name with a base-repo branch (e.g. `main`), so only
 // same-repository heads can have dependents. Search keeps matching `is:open` for a while after a
 // merge or close, but each node's state is current.
-const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
+const PRS_JQ: &str = r#"{
+next: (.data.search.pageInfo | if .hasNextPage then .endCursor else null end),
+prs: [.data.search.nodes[] | select(.state == "OPEN") | {
   id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   head_oid: .headRefOid,
@@ -100,7 +102,19 @@ const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
         failed: ([$by[] | select(.state | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR")) | .count] | add // 0)
       } end),
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
+}]
 }"#;
+
+// GitHub sometimes times out a search page that usually takes half its limit, so a page is asked
+// for up to SEARCH_TRIES times before the refresh gives up.
+const SEARCH_TRIES: usize = 3;
+
+#[derive(Deserialize)]
+struct SearchPage {
+    // The cursor of the page after this one.
+    next: Option<String>,
+    prs: Vec<SearchedPullRequest>,
+}
 
 #[derive(Deserialize)]
 struct SearchedPullRequest {
@@ -566,22 +580,28 @@ async fn open_pull_requests(
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
     let search = std::env::var("GEM_SEARCH").unwrap_or_default();
-    let stdout = gh(&[
-        "api",
-        "graphql",
-        "--paginate",
-        "-f",
-        &format!("query={PRS_QUERY}"),
-        "-f",
-        &format!("q=is:pr is:open author:{} {search}", login()),
-        "--jq",
-        PRS_JQ,
-    ])
-    .await?;
-    let mut prs = serde_json::Deserializer::from_slice(&stdout)
-        .into_iter()
-        .collect::<Result<Vec<SearchedPullRequest>, _>>()
-        .ok()?;
+    let query = format!("query={PRS_QUERY}");
+    let q = format!("q=is:pr is:open author:{} {search}", login());
+    let mut prs = Vec::new();
+    let mut cursor = None;
+    loop {
+        let after = cursor.map(|cursor| format!("endCursor={cursor}"));
+        let mut args = vec!["api", "graphql", "-f", &query, "-f", &q, "--jq", PRS_JQ];
+        args.extend(after.iter().flat_map(|after| ["-f", after.as_str()]));
+        let mut page = None;
+        for _ in 0..SEARCH_TRIES {
+            page = gh_json::<SearchPage>(&args).await;
+            if page.is_some() {
+                break;
+            }
+        }
+        let page = page?;
+        prs.extend(page.prs);
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
     merge_states(&mut prs).await;
     changes.watch(watched(&prs)).await;
     let clusters = cluster(&prs);
