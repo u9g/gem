@@ -76,6 +76,18 @@ const prHunk = `@@ -30,6 +34,14 @@ from .errors import APIConnectionError
 +        await asyncio.sleep(0.1)
 +        return await synthesize_with_retry(tts, text, conn_options=conn_options, attempt=attempt + 1)`;
 
+// The PR's diff of the file the review comments are on.
+export const prFiles = [{ path: 'livekit-agents/livekit/agents/voice/tts_retry.py', patch: `@@ -1,4 +1,5 @@
+ import asyncio
++import logging
+ 
+ from .errors import APIConnectionError
+ 
+${prHunk}
+ 
+ 
+ async def stream_with_retry(tts, text, *, conn_options):` }];
+
 const reviewQuestion = comment(
   'theo',
   "Should this retry honor `conn_options.max_retry`? It always retries exactly once.\n\nAsking because the STT path uses the options, so these two would behave differently.",
