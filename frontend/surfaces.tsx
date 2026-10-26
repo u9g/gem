@@ -397,6 +397,42 @@ function Versions({ draft, onChange }: { draft: ReplyDraft; onChange: (draft: Re
   );
 }
 
+// The suggestion as GitHub renders it until pressed, then the version showing's markdown.
+function EditableMarkdown({
+  suggested,
+  html,
+  draft,
+  onChange,
+  editing,
+  onEditing,
+  max,
+}: {
+  suggested: string;
+  html: string;
+  draft: ReplyDraft;
+  onChange: (draft: ReplyDraft) => void;
+  editing: boolean;
+  onEditing: (editing: boolean) => void;
+  max: number;
+}) {
+  if (editing) {
+    return (
+      <TextInput
+        multiline
+        autoFocus
+        value={draft.showing === 'yours' ? draft.yours : suggested.trim()}
+        onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
+        style={styles.input}
+      />
+    );
+  }
+  return (
+    <Clamp max={max}>
+      <Html html={html} onPress={() => onEditing(true)} />
+    </Clamp>
+  );
+}
+
 // The prompt approving hands to a new T3 Code agent, as GitHub would render it. Clicking it edits
 // the prompt, with the same Suggested / Yours switch as replies.
 export function FollowUpCard({
@@ -420,19 +456,15 @@ export function FollowUpCard({
           {'  '}starts in T3 Code when approved
         </Text>
       </View>
-      {editing ? (
-        <TextInput
-          multiline
-          autoFocus
-          value={draft.showing === 'yours' ? draft.yours : suggested.trim()}
-          onChangeText={(yours) => onChange({ yours, showing: 'yours' })}
-          style={styles.input}
-        />
-      ) : (
-        <Clamp max={130}>
-          <Html html={html} onPress={() => setEditing(true)} />
-        </Clamp>
-      )}
+      <EditableMarkdown
+        suggested={suggested}
+        html={html}
+        draft={draft}
+        onChange={onChange}
+        editing={editing}
+        onEditing={setEditing}
+        max={130}
+      />
       {draft.yours.trim() !== suggested.trim() && <Versions draft={draft} onChange={onChange} />}
     </View>
   );
