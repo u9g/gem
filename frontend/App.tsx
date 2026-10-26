@@ -117,10 +117,14 @@ export default function App() {
     if (snapshot) show(snapshot);
   }, [snapshot, show]);
 
-  // `replace` overwrites the current entry, for a place that can no longer be returned to.
+  // `replace` overwrites the current entry, for a place that can no longer be returned to. A pushed
+  // entry's state is the query of the entry it was pushed from.
   const go = useCallback((to: Place, replace = false) => {
     const search = placeSearch(to);
-    if (search !== location.search) history[replace ? 'replaceState' : 'pushState'](null, '', search || location.pathname);
+    if (search !== location.search) {
+      if (replace) history.replaceState(history.state, '', search || location.pathname);
+      else history.pushState(location.search, '', search || location.pathname);
+    }
     setPlace(to);
   }, []);
 
@@ -135,7 +139,7 @@ export default function App() {
     setInvestigations([]);
     setLogin('');
     setRepoFilter(undefined);
-    if (shownProfile.current !== profileId) go({}, true);
+    if (shownProfile.current && shownProfile.current !== profileId) go({}, true);
     shownProfile.current = profileId;
   }, [profileId, go]);
 
@@ -225,9 +229,13 @@ export default function App() {
       id,
       post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id }))).then(
         () => {
-          // The investigation is gone, so its entry is replaced, unless something else was opened meanwhile.
+          // The investigation is gone, so its entry is left: back to the entry it was opened from when
+          // that is where it returns to, else replaced. Nothing moves if something else was opened meanwhile.
           const now = currentPlace();
-          if (now.investigation === id) go({ cluster: now.cluster }, true);
+          if (now.investigation !== id) return;
+          const to = { cluster: now.cluster };
+          if (history.state === placeSearch(to)) history.back();
+          else go(to, true);
         },
       ),
     );
