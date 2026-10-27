@@ -174,11 +174,12 @@ export default function App() {
     return () => removeEventListener('popstate', restore);
   }, []);
 
-  // Marks `key` busy until the request and the reload after it settle.
+  // Marks `key` busy until the request and the reload after it settle. A refused request reloads too:
+  // the server refuses an action on a cluster whose pull requests changed, and the reload shows them.
   function track(key: string, request: Promise<unknown>) {
     setBusy((keys) => new Set(keys).add(key));
     request
-      .then(load)
+      .then(load, load)
       .finally(() =>
         setBusy((keys) => {
           const rest = new Set(keys);
