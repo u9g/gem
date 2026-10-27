@@ -355,6 +355,9 @@ merging or releasing something first.
 - change the code of {pr}, with `patch` and `message`, when the pull request itself causes it: \
 clone the repository into a temporary directory, run `gh pr checkout <number>` in it, edit, and \
 pass what `git diff` prints as `patch`. Never commit or push.
+- change the code of another pull request in {pr}'s cluster, with `other_patches`, when that pull \
+request causes it, such as one {pr} is stacked on: make the patch the same way. The `get_cluster` \
+tool of the `{server}` MCP server lists the cluster's pull requests.
 
 Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {pr}, a \
 `summary` of one line saying what approving does, and its steps. It checks the proposal and \
