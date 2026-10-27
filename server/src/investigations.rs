@@ -312,8 +312,9 @@ async fn track(nanos: u128, title: String, prs: Vec<String>, thread_id: String) 
     .await;
 }
 
-fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
-    let checks: String = failure
+// Each of `failure`'s checks, with its run and log excerpt, as a markdown list.
+fn listed(failure: &CheckFailure) -> String {
+    failure
         .checks
         .iter()
         .map(|check| {
@@ -330,7 +331,10 @@ fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
                 check.name, check.id, check.conclusion, check.url
             )
         })
-        .collect();
+        .collect()
+}
+
+fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
     format!(
         "Checks failed on {head}, the head commit of {login}'s pull request {pr}:
 
@@ -384,6 +388,7 @@ says where things stand, and you can record more proposals the same way.
 
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals \
 later.",
+        checks = listed(failure),
         head = failure.head_oid,
         login = login(),
         server = mcp::AGENT_NAME,
