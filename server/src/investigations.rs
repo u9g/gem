@@ -180,6 +180,26 @@ thread, and you can record more proposals the same way.",
     Ok(id(nanos))
 }
 
+// Archives a finished agent that answered `failure` on `pr`, which is never an open investigation,
+// so later agents find what it found too.
+pub async fn archive(title: &str, pr: &str, failure: &CheckFailure, reply: &str) {
+    let nanos = now();
+    let investigation = Investigation {
+        id: id(nanos),
+        title: title.to_string(),
+        pull_request_url: pr.to_string(),
+        pull_request_urls: vec![pr.to_string()],
+        failed_checks: listed(failure),
+        started_at: Some(timestamp(nanos)),
+        reply: reply.to_string(),
+        ..Default::default()
+    };
+    let _ = tokio::fs::create_dir_all(PAST_DIR).await;
+    let json = serde_json::to_vec_pretty(&investigation).unwrap();
+    let path = Path::new(PAST_DIR).join(format!("{}.json", investigation.id));
+    let _ = tokio::fs::write(path, json).await;
+}
+
 // Whether `id` is one of these agents.
 pub async fn has(id: &str) -> bool {
     tokio::fs::try_exists(path(id)).await.unwrap_or(false)
@@ -203,6 +223,11 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
 
 pub async fn close(id: &str) {
     let _files = FILES.lock().await;
+    close_held(id).await;
+}
+
+// `close`, with `FILES` already held.
+async fn close_held(id: &str) {
     let _ = tokio::fs::create_dir_all(PAST_DIR).await;
     let _ = tokio::fs::rename(path(id), Path::new(PAST_DIR).join(format!("{id}.json"))).await;
     proposals::remove_of_investigation(id).await;
@@ -247,18 +272,18 @@ pub fn watch() {
                         .await
                         .contains_key(&investigation.id)
                 {
+                    // Rechecked under the lock: the user may have messaged it since it was loaded.
                     // The archive keeps what it found, which may have come since the last refresh.
+                    let _files = FILES.lock().await;
+                    if let Some(mut current) =
+                        load().await.into_iter().find(|i| i.id == investigation.id)
+                        && !current.messaged
                     {
-                        let _files = FILES.lock().await;
-                        if let Some(mut current) =
-                            load().await.into_iter().find(|i| i.id == investigation.id)
-                        {
-                            current.reply = reply;
-                            save(&current).await;
-                        }
+                        current.reply = reply;
+                        save(&current).await;
+                        close_held(&investigation.id).await;
+                        tracing::info!(investigation = %investigation.id, "finished investigation closed");
                     }
-                    close(&investigation.id).await;
-                    tracing::info!(investigation = %investigation.id, "finished investigation closed");
                     continue;
                 }
                 if working == investigation.working && reply == investigation.reply {
@@ -303,6 +328,13 @@ fn now() -> u128 {
         .as_nanos()
 }
 
+fn timestamp(nanos: u128) -> Timestamp {
+    Timestamp {
+        seconds: (nanos / 1_000_000_000) as i64,
+        nanos: (nanos % 1_000_000_000) as i32,
+    }
+}
+
 // An investigation started at `nanos` since the epoch.
 fn id(nanos: u128) -> String {
     format!("{nanos:x}")
@@ -325,10 +357,7 @@ async fn track(
         pull_request_urls: prs,
         failed_checks,
         thread_id,
-        started_at: Some(Timestamp {
-            seconds: (nanos / 1_000_000_000) as i64,
-            nanos: (nanos % 1_000_000_000) as i32,
-        }),
+        started_at: Some(timestamp(nanos)),
         working: true,
         ..Default::default()
     })
