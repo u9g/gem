@@ -149,17 +149,19 @@ function ThreadReplyStory() {
 function QuoteReplyStory() {
   const comment = quoteReply.comment!;
   const firstParagraph = visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
+  // The reply after the quote it opens with.
+  const answer = quoteReply.reply.replace(/^(>.*\n)+\n/, '');
   return (
     <Approaches>
       <Approach name="A · Step row" note="Today: one row, the reply on click">
         <Row icon={MessageSquareQuote} label="Quote reply" initiallyOpen>
-          <Markdown>{quoteReply.reply}</Markdown>
+          <Markdown>{answer}</Markdown>
         </Row>
       </Approach>
       <Approach name="B · Exact comment" note="What GitHub will show: the quote, then your reply, in a bubble">
         <Bubble>
           <Quote lines={3}>{firstParagraph}</Quote>
-          <Markdown>{quoteReply.reply}</Markdown>
+          <Markdown>{answer}</Markdown>
         </Bubble>
       </Approach>
       <Approach name="C · Context chip" note="Like T3 Code's composer: who you're quoting as a chip above the text">
@@ -169,7 +171,7 @@ function QuoteReplyStory() {
             {comment.author}: {firstParagraph}
           </Text>
         </View>
-        <Markdown>{quoteReply.reply}</Markdown>
+        <Markdown>{answer}</Markdown>
       </Approach>
     </Approaches>
   );

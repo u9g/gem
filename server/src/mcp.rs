@@ -728,6 +728,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_top_level_reply_opens_by_quoting_the_comment() {
+        let server = Server::new("quote");
+        let subject = Subject::Comment {
+            pr: PR.into(),
+            comment: "IC_1".into(),
+            thread: None,
+        };
+        let token = server.token(&subject).await;
+        let result = server
+            .call(
+                &token,
+                "propose",
+                json!({ "pr": PR, "summary": "Reply", "reply": "Done." }),
+            )
+            .await;
+        assert_eq!(result["isError"], Value::Null, "{result}");
+        let [proposal] = &server.proposals()[..] else {
+            panic!("{:?}", server.proposals());
+        };
+        assert_eq!(proposal.reply, "> IC_1's body\n\nDone.");
+        assert_eq!(proposal.reply_html, "<p>> IC_1's body\n\nDone.</p>");
+    }
+
+    #[tokio::test]
     async fn an_investigation_proposes_on_any_of_its_clusters_pull_requests() {
         let server = Server::new("investigation");
         let subject = Subject::Investigation {

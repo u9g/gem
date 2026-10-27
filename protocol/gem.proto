@@ -178,7 +178,7 @@ message Proposal {
   string thread_id = 5;
   Patch patch = 6;
   // Markdown posted as the user: a reply in the review thread, or a top-level
-  // comment that quotes `comment`.
+  // comment, which opens by quoting `comment`.
   string reply = 7;
   bool resolve_thread = 8;
   // Why the last approval failed.
