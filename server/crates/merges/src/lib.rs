@@ -3,7 +3,12 @@
 // keeps its one merge across presses, frontends and server restarts. T3 Code is reached through
 // `Host`.
 
-use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use gem_db::{
     Db,
@@ -24,7 +29,24 @@ const MIGRATIONS: &[&str] = &["
         thread_id TEXT,
         question INTEGER NOT NULL DEFAULT 0
     );
+", "
+    -- The thread's title, and when the agent started in seconds since the epoch, so the merge
+    -- shows like any other agent.
+    ALTER TABLE merges ADD COLUMN title TEXT NOT NULL DEFAULT '';
+    ALTER TABLE merges ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;
 "];
+
+// The agent can ask the user only in its reply: gem shows the reply and sends the answer back as
+// the user's next message.
+const ASK: &str = "If you need the user to decide something, ask it in your reply and end your \
+turn without settling this thread: their answer arrives as your next message. Never ask with a \
+tool.";
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
+}
 
 pub struct Progress {
     // The thread settled or stopped.
@@ -35,8 +57,11 @@ pub struct Progress {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Merge {
-    // Opens the agent's thread in T3 Code; empty while it starts.
-    pub thread_url: String,
+    // The agent's thread, None while it starts.
+    pub thread_id: Option<String>,
+    pub title: String,
+    // Seconds since the epoch.
+    pub started_at: i64,
     pub question: bool,
 }
 
@@ -49,7 +74,6 @@ pub trait Host: Send + Sync + 'static {
     ) -> impl Future<Output = Result<String, String>> + Send;
     // None when the thread cannot be read.
     fn progress(&self, thread_id: &str) -> impl Future<Output = Option<Progress>> + Send;
-    fn thread_url(&self, thread_id: &str) -> String;
 }
 
 pub struct Merges<H> {
@@ -116,20 +140,21 @@ and that it is still approved unless it is marked to be forced in. The user chos
 marked ones in past review as an admin: merge only those with `--admin`, never the others. If one \
 does not pass these checks, stop and say why, without merging the ones after it.
 
+{ASK}
+
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread."
         );
+        let title = format!("Merge {name}");
         self.db.with(|db| {
-            let mut insert = db.prepare("INSERT INTO merges (url) VALUES (?1)")?;
+            let mut insert =
+                db.prepare("INSERT INTO merges (url, title, started_at) VALUES (?1, ?2, ?3)")?;
             for url in urls {
-                insert.execute([url])?;
+                insert.execute(params![url, title, now()])?;
             }
             Ok(())
         })?;
-        let started = self
-            .host
-            .start_thread(&format!("Merge {name}"), &prompt)
-            .await;
+        let started = self.host.start_thread(&title, &prompt).await;
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
@@ -166,19 +191,27 @@ settle this thread."
     // By pull request URL.
     pub fn all(&self) -> Result<BTreeMap<String, Merge>, String> {
         self.db.with(|db| {
-            let mut rows = db.prepare("SELECT url, thread_id, question FROM merges")?;
+            let mut rows =
+                db.prepare("SELECT url, thread_id, question, title, started_at FROM merges")?;
             rows.query_map([], |row| {
-                let thread_id: Option<String> = row.get(1)?;
                 let merge = Merge {
-                    thread_url: (thread_id.as_deref())
-                        .map(|id| self.host.thread_url(id))
-                        .unwrap_or_default(),
+                    thread_id: row.get(1)?,
                     question: row.get(2)?,
+                    title: row.get(3)?,
+                    started_at: row.get(4)?,
                 };
                 Ok((row.get(0)?, merge))
             })?
             .collect()
         })
+    }
+
+    // Stops showing the merge whose agent runs in `thread_id`, as the user asked. Its cluster can be
+    // merged again; the agent keeps running in T3 Code.
+    pub fn forget(&self, thread_id: &str) -> Result<(), String> {
+        self.db
+            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [thread_id]))
+            .map(drop)
     }
 
     async fn watch(self, thread_id: String) {
@@ -270,9 +303,6 @@ mod tests {
             Some(Progress { done, question })
         }
 
-        fn thread_url(&self, thread_id: &str) -> String {
-            format!("t3://{thread_id}")
-        }
     }
 
     fn merges(host: &FakeHost) -> Merges<FakeHost> {
@@ -300,7 +330,7 @@ mod tests {
         assert_eq!(host.started(), 1);
         let all = merges.all().unwrap();
         assert_eq!(all.len(), 2);
-        assert!(all.values().all(|m| m.thread_url == "t3://thread-1"));
+        assert!(all.values().all(|m| m.thread_id.as_deref() == Some("thread-1")));
     }
 
     #[tokio::test(start_paused = true)]
@@ -329,7 +359,7 @@ mod tests {
                 .all()
                 .unwrap()
                 .values()
-                .all(|m| m.thread_url.is_empty())
+                .all(|m| m.thread_id.is_none())
         );
         starting.await.unwrap().unwrap();
     }

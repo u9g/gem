@@ -2,15 +2,15 @@ import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import type { Investigation } from './gen/gem_pb';
+import { type Agent, AgentState } from './gen/gem_pb';
 import { ProposalGroup } from './ProposalView';
-import { FailedChecks, Html } from './surfaces';
+import { Html } from './surfaces';
 import { Button, t3 } from './t3';
 
-// An investigation's or follow-up's latest reply, what it proposes, and a box to message its agent. Its
-// proposals are independent, so each shows on its own.
-export function InvestigationView({
-  investigation,
+// An agent's latest reply, what it proposes, and a box to message it, which is how a question in its
+// reply is answered. Its proposals are independent, so each shows on its own.
+export function AgentView({
+  agent,
   ago,
   busy,
   onApprove,
@@ -18,7 +18,7 @@ export function InvestigationView({
   onMessage,
   onClose,
 }: {
-  investigation: Investigation;
+  agent: Agent;
   ago: (date: Date) => string;
   busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
@@ -27,31 +27,34 @@ export function InvestigationView({
   onMessage: (message: string) => Promise<unknown>;
   onClose: () => void;
 }) {
-  const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(investigation.pullRequestUrl) ?? [];
+  const on = agent.pullRequestUrls.map((url) => {
+    const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(url) ?? [];
+    return `${repository}#${number}`;
+  });
   return (
     <View style={styles.column}>
       <View style={styles.header}>
         <View style={styles.titleBlock}>
-          <Text style={styles.title}>{investigation.title}</Text>
+          <Text style={styles.title}>{agent.title}</Text>
           <Text style={styles.meta}>
-            from {repository}#{number}
-            {investigation.startedAt && ` · ${ago(timestampDate(investigation.startedAt))}`}
+            {on.length > 0 && `on ${on.join(', ')}`}
+            {agent.startedAt && ` · ${ago(timestampDate(agent.startedAt))}`}
           </Text>
         </View>
-        <Button label="Done" disabled={busy?.has(investigation.id)} onPress={onClose} />
+        <Button label="Done" disabled={busy?.has(agent.id)} onPress={onClose} />
       </View>
-      {investigation.checkFailure && <FailedChecks failure={investigation.checkFailure} />}
-      {investigation.reply !== '' && <Html html={investigation.replyHtml} />}
-      {investigation.working && (
+      {agent.reply !== '' && <Html html={agent.replyHtml} />}
+      {agent.state === AgentState.WORKING && (
         <View style={styles.working}>
           <ActivityIndicator size={12} color="#8FA8F5" />
           <Text style={styles.meta}>Working…</Text>
         </View>
       )}
-      {investigation.proposals.map((proposal) => (
+      {agent.state === AgentState.QUEUED && <Text style={styles.meta}>Queued behind other agents…</Text>}
+      {agent.proposals.map((proposal) => (
         <ProposalGroup key={proposal.id} proposals={[proposal]} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
       ))}
-      <Composer placeholder="Message the agent…" onSend={onMessage} />
+      {agent.state !== AgentState.QUEUED && <Composer placeholder="Message the agent…" onSend={onMessage} />}
     </View>
   );
 }

@@ -7,33 +7,27 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from './Board';
 import { ClusterReview } from './ClusterFiles';
-import {
-  Legend,
-  PhoneClusterRow,
-  PhoneInvestigationRow,
-  section,
-  sections,
-  SectionTitle,
-} from './ClusterRow';
+import { AgentView, Composer } from './AgentView';
+import { agentsOf, unclustered } from './agents';
+import { Legend, PhoneAgentRow, PhoneClusterRow, section, sections, SectionTitle } from './ClusterRow';
 import { ClusterView, timeAgo } from './ClusterView';
-import { Composer, InvestigationView } from './InvestigationView';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
 import { Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {
+  type Agent,
   ApproveProposalRequestSchema,
-  CloseInvestigationRequestSchema,
+  CloseAgentRequestSchema,
   DismissProposalRequestSchema,
   InvestigateRequestSchema,
-  type Investigation,
   ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
   MergeClusterRequestSchema,
   MessageClusterRequestSchema,
+  MessageAgentRequestSchema,
   MessageClusterResponseSchema,
-  MessageInvestigationRequestSchema,
   RebaseClusterRequestSchema,
   RebasePullRequestRequestSchema,
   RenderMarkdownRequestSchema,
@@ -70,8 +64,8 @@ function repositoryValue(repository: Repository): string {
 }
 
 // What is open lives in the page's query, so the browser's back and forward move between what was
-// opened and a link reopens it. An investigation is shown in place of the cluster while both are set.
-type Place = { cluster?: string; investigation?: string };
+// opened and a link reopens it. An agent is shown in place of the cluster while both are set.
+type Place = { cluster?: string; agent?: string };
 
 const GITHUB = 'https://github.com/';
 
@@ -83,7 +77,8 @@ function currentPlace(): Place {
   const [owner, repo, number] = cluster?.split('/') ?? [];
   return {
     cluster: cluster?.includes('://') ? cluster : number && `${GITHUB}${owner}/${repo}/pull/${number}`,
-    investigation: params.get('investigation') ?? undefined,
+    // Links from before every agent was one still open their investigation.
+    agent: params.get('agent') ?? params.get('investigation') ?? undefined,
   };
 }
 
@@ -93,7 +88,7 @@ function placeSearch(place: Place): string {
     : place.cluster && encodeURIComponent(place.cluster);
   const params = [
     cluster && `cluster=${cluster}`,
-    place.investigation && `investigation=${place.investigation}`,
+    place.agent && `agent=${encodeURIComponent(place.agent)}`,
   ].filter(Boolean);
   return params.length > 0 ? `?${params.join('&')}` : '';
 }
@@ -104,7 +99,7 @@ export default function App() {
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
   const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
-  const [investigations, setInvestigations] = useState<Investigation[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [login, setLogin] = useState('');
   const [place, setPlace] = useState(currentPlace);
   const [repoFilter, setRepoFilter] = useState<Repository>();
@@ -112,7 +107,7 @@ export default function App() {
   // Each request in flight: proposals being approved, dismissed or investigated, the oldest PR's URL
   // of clusters being restarted, `merge` and that URL for ones whose merge is starting, `rebase` and
   // that URL for clusters whose rebase is starting, the URLs of PRs whose rebase is starting, and
-  // investigations being closed.
+  // agents being closed.
   const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
   const phone = usePhone();
   const search = useSearch(post);
@@ -129,7 +124,7 @@ export default function App() {
     (json: JsonValue) => {
       const response = fromJson(ListOpenPullRequestsResponseSchema, json);
       setClusters(response.clusters);
-      setInvestigations(response.investigations);
+      setAgents(response.agents);
       setLogin(response.login);
       reported(response.login, response.search);
     },
@@ -167,7 +162,7 @@ export default function App() {
   const shownProfile = useRef(profileId);
   useEffect(() => {
     setClusters([]);
-    setInvestigations([]);
+    setAgents([]);
     setLogin('');
     setRepoFilter(undefined);
     if (shownProfile.current && shownProfile.current !== profileId) go({}, true);
@@ -253,41 +248,39 @@ export default function App() {
       '/clusters/message',
       toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
     )
-      .then((json) => fromJson(MessageClusterResponseSchema, json).investigationId)
-      .then((id) => load().then(() => go({ cluster: place.cluster, investigation: id })));
+      .then((json) => fromJson(MessageClusterResponseSchema, json).agentId)
+      .then((id) => load().then(() => go({ cluster: place.cluster, agent: id })));
   }
 
-  function messageInvestigation(id: string, message: string) {
-    return post(
-      '/investigations/message',
-      toJson(MessageInvestigationRequestSchema, create(MessageInvestigationRequestSchema, { id, message })),
-    ).then(load);
-  }
-
-  function closeInvestigation(id: string) {
-    track(
-      id,
-      post('/investigations/close', toJson(CloseInvestigationRequestSchema, create(CloseInvestigationRequestSchema, { id }))).then(
-        () => {
-          // The investigation is gone, so its entry is not kept. Nothing moves if something else was
-          // opened meanwhile.
-          const now = currentPlace();
-          if (now.investigation === id) go({ cluster: now.cluster }, true);
-        },
-      ),
+  function messageAgent(id: string, message: string) {
+    return post('/agents/message', toJson(MessageAgentRequestSchema, create(MessageAgentRequestSchema, { id, message }))).then(
+      load,
     );
   }
 
-  const investigation = investigations.find((i) => i.id === place.investigation);
-  const investigationView = investigation && (
-    <InvestigationView
-      investigation={investigation}
+  function closeAgent(id: string) {
+    track(
+      id,
+      post('/agents/close', toJson(CloseAgentRequestSchema, create(CloseAgentRequestSchema, { id }))).then(() => {
+        // The agent is gone, so its entry is not kept. Nothing moves if something else was opened
+        // meanwhile.
+        const now = currentPlace();
+        if (now.agent === id) go({ cluster: now.cluster }, true);
+      }),
+    );
+  }
+
+  const openAgent = (id: string) => go({ cluster: place.cluster, agent: id });
+  const agent = agents.find((a) => a.id === place.agent);
+  const agentView = agent && (
+    <AgentView
+      agent={agent}
       ago={timeAgo}
       busy={busy}
       onApprove={approve}
       onDismiss={dismiss}
-      onMessage={(message) => messageInvestigation(investigation.id, message)}
-      onClose={() => closeInvestigation(investigation.id)}
+      onMessage={(message) => messageAgent(agent.id, message)}
+      onClose={() => closeAgent(agent.id)}
     />
   );
 
@@ -383,22 +376,25 @@ export default function App() {
   // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
   // it, with the box to ask about it under the scrolling content.
   if (phone) {
+    const listedAgents = unclustered(agents, clusters);
     const listed = sections
-      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
+      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster, agents) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
     return (
       <Contexts login={login} render={render}>
         <View style={styles.phone}>
-          {investigationView || opened ? (
+          {agentView || opened ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={closeDrawer}>
                 <ChevronLeft size={22} color="#8FA8F5" />
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
-                {investigationView || (
+                {agentView || (
                   <ClusterView
                     cluster={opened!}
+                    agents={agentsOf(opened!, agents)}
+                    onOpenAgent={openAgent}
                     busy={busy}
                     onApprove={approve}
                     onDismiss={dismiss}
@@ -410,7 +406,7 @@ export default function App() {
                   />
                 )}
               </ScrollView>
-              {!investigationView && (
+              {!agentView && (
                 <View style={styles.dock}>
                   <Composer placeholder="Ask an agent about this cluster…" onSend={(message) => messageCluster(opened!, message)} />
                 </View>
@@ -420,20 +416,16 @@ export default function App() {
             <>
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
               {filters}
-              {/* The legend is the third child: after the investigations and the first section's title. */}
+              {/* The legend is the third child: after the agents and the first section's title. */}
               <ScrollView contentContainerStyle={styles.phoneList} stickyHeaderIndices={[2]}>
                 <View>
-                  {investigations.length > 0 && (
+                  {listedAgents.length > 0 && (
                     <View style={styles.phoneSection}>
-                      <SectionTitle>Investigations</SectionTitle>
+                      <SectionTitle>Agents</SectionTitle>
                     </View>
                   )}
-                  {investigations.map((i) => (
-                    <PhoneInvestigationRow
-                      key={i.id}
-                      investigation={i}
-                      onPress={() => go({ investigation: i.id })}
-                    />
+                  {listedAgents.map((a) => (
+                    <PhoneAgentRow key={a.id} agent={a} onPress={() => go({ agent: a.id })} />
                   ))}
                 </View>
                 {listed.flatMap(({ name, clusters }, i) => [
@@ -460,18 +452,21 @@ export default function App() {
       <Contexts login={login} render={render}>
         <Board
           clusters={visible}
-          investigations={investigations}
-          openUrl={investigation ? undefined : opened?.pullRequests[0].url}
-          openInvestigation={investigation?.id}
+          allClusters={clusters}
+          agents={agents}
+          openUrl={agent ? undefined : opened?.pullRequests[0].url}
+          openAgent={agent?.id}
           onOpenCluster={(cluster) => go({ cluster: cluster.pullRequests[0].url })}
-          onOpenInvestigation={(id) => go({ cluster: place.cluster, investigation: id })}
+          onOpenAgent={openAgent}
           onClose={closeDrawer}
-          wide={!investigationView && opened !== undefined}
+          wide={!agentView && opened !== undefined}
         >
-          {investigationView ||
+          {agentView ||
             (opened && (
               <ClusterReview
                 cluster={opened}
+                agents={agentsOf(opened, agents)}
+                onOpenAgent={openAgent}
                 busy={busy}
                 onApprove={approve}
                 onDismiss={dismiss}

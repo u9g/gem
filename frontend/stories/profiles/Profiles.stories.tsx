@@ -130,16 +130,17 @@ function Desktop() {
         </View>
         <Board
           clusters={clusters}
-          investigations={[]}
+          allClusters={clusters}
+          agents={[]}
           openUrl={selectedUrl}
           onOpenCluster={select}
-          onOpenInvestigation={() => {}}
+          onOpenAgent={() => {}}
           onClose={() => select(undefined)}
         >
           {selected && (
             <View style={styles.column}>
               <Text style={styles.title}>{selected.name || selected.pullRequests[0].title}</Text>
-              <PullRequestList pullRequests={selected.pullRequests} />
+              <PullRequestList pullRequests={selected.pullRequests} agents={[]} />
             </View>
           )}
         </Board>

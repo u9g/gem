@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use pbjson_types::Timestamp;
@@ -8,8 +9,10 @@ use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
-    SearchedPullRequest, gh, login, mcp, proposals,
-    proto::{Agent, CheckFailure, Comment, PullRequestCluster},
+    SearchedPullRequest,
+    agents::Running,
+    gh, login, mcp, proposals,
+    proto::{CheckFailure, Comment},
     t3,
     tokens::{Subject, Tokens},
 };
@@ -95,6 +98,14 @@ impl Conversation {
         }
     }
 
+    // The title and prompt of the agent answering it on `pr`.
+    fn prompt(&self, pr: &Target) -> (String, String) {
+        match self {
+            Conversation::Comment { thread_id, comment } => answer(pr, thread_id, comment),
+            Conversation::Checks { check_failure } => fix(pr, check_failure),
+        }
+    }
+
     // What the agent answering it on the PR at `pr` proposes on.
     fn subject(&self, pr: &str) -> Subject {
         match self {
@@ -172,8 +183,18 @@ struct Inner {
     // restart answers conversations that were only queued, and not the others.
     started: Mutex<HashSet<String>>,
     agents: Semaphore,
-    // By the ID of the conversation they answer, with their PR's URL, until they stop.
-    answering: Mutex<HashMap<String, (String, Agent)>>,
+    // By the ID of the conversation they answer, until they stop or the user closes them.
+    answering: Mutex<HashMap<String, Answering>>,
+}
+
+// An agent answering a conversation, from when it is queued.
+struct Answering {
+    pr: String,
+    title: String,
+    // None while it is queued.
+    thread_id: Option<String>,
+    // Seconds since the epoch.
+    queued_at: i64,
 }
 
 impl Conversations {
@@ -191,14 +212,32 @@ impl Conversations {
         }))
     }
 
-    pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
-        let answering = self.0.answering.lock().await;
-        for pr in clusters.iter_mut().flat_map(|c| &mut c.pull_requests) {
-            pr.agents = (answering.values())
-                .filter(|(url, _)| *url == pr.url)
-                .map(|(_, agent)| agent.clone())
-                .collect();
-        }
+    // The agents answering conversations, by the ID of the conversation each answers. One without
+    // a thread is queued.
+    pub async fn running(&self) -> Vec<(String, Running)> {
+        (self.0.answering.lock().await.iter())
+            .map(|(id, answering)| {
+                let running = Running {
+                    thread_id: answering.thread_id.clone(),
+                    title: answering.title.clone(),
+                    question: false,
+                    started_at: answering.queued_at,
+                    pull_request_urls: vec![answering.pr.clone()],
+                };
+                (id.clone(), running)
+            })
+            .collect()
+    }
+
+    // The thread of the agent answering the conversation `id`, once it started.
+    pub async fn thread_of(&self, id: &str) -> Option<String> {
+        (self.0.answering.lock().await.get(id)).and_then(|answering| answering.thread_id.clone())
+    }
+
+    // Stops showing the agent answering the conversation `id`. A queued one still starts, but does
+    // not show.
+    pub async fn forget(&self, id: &str) {
+        self.0.answering.lock().await.remove(id);
     }
 
     // Every conversation waiting on the user by ID, with its comment as last fetched when it is one:
@@ -316,15 +355,16 @@ impl Conversations {
                 if !handled.insert(conversation.id().to_string()) {
                     continue;
                 }
-                let agent = Agent {
-                    queued: true,
-                    thread_url: String::new(),
-                    checks: matches!(conversation, Conversation::Checks { .. }),
+                let (title, _) = conversation.prompt(&pr.target);
+                let answering = Answering {
+                    pr: pr.target.url.clone(),
+                    title,
+                    thread_id: None,
+                    queued_at: SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |since| since.as_secs() as i64),
                 };
-                (self.0.answering.lock().await).insert(
-                    conversation.id().to_string(),
-                    (pr.target.url.clone(), agent),
-                );
+                (self.0.answering.lock().await).insert(conversation.id().to_string(), answering);
                 let this = self.clone();
                 let pr = pr.target.clone();
                 let conversation = conversation.clone();
@@ -337,15 +377,7 @@ impl Conversations {
                         let _ = tokio::fs::write(HANDLED_FILE, json).await;
                     }
                     let id = conversation.id();
-                    if let Some((_, agent)) = this.0.answering.lock().await.get_mut(id) {
-                        agent.queued = false;
-                    }
-                    let (title, prompt) = match &conversation {
-                        Conversation::Comment { thread_id, comment } => {
-                            answer(&pr, thread_id, comment)
-                        }
-                        Conversation::Checks { check_failure } => fix(&pr, check_failure),
-                    };
+                    let (title, prompt) = conversation.prompt(&pr);
                     let subject = conversation.subject(&pr.url);
                     let started = match mcp::agent_config(&subject).await {
                         Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
@@ -353,8 +385,8 @@ impl Conversations {
                     };
                     match started {
                         Ok(thread_id) => {
-                            if let Some((_, agent)) = this.0.answering.lock().await.get_mut(id) {
-                                agent.thread_url = t3::url(&thread_id).unwrap_or_default();
+                            if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
+                                answering.thread_id = Some(thread_id.clone());
                             }
                             t3::wait(&thread_id).await;
                         }

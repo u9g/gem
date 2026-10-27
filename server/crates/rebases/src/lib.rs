@@ -3,7 +3,12 @@
 // so a pull request keeps its one rebase across presses, frontends and server restarts. GitHub and
 // T3 Code are reached through `Host`.
 
-use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use gem_db::{
     Db,
@@ -27,7 +32,24 @@ const MIGRATIONS: &[&str] = &["
         question INTEGER NOT NULL DEFAULT 0,
         pushed INTEGER NOT NULL DEFAULT 0
     );
+", "
+    -- The thread's title, and when the agent started in seconds since the epoch, so the rebase
+    -- shows like any other agent.
+    ALTER TABLE rebases ADD COLUMN title TEXT NOT NULL DEFAULT '';
+    ALTER TABLE rebases ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;
 "];
+
+// The agent can ask the user only in its reply: gem shows the reply and sends the answer back as
+// the user's next message.
+const ASK: &str = "If you need the user to decide something, ask it in your reply and end your \
+turn without settling this thread: their answer arrives as your next message. Never ask with a \
+tool.";
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
+}
 
 pub struct Refs {
     pub base: String,
@@ -44,8 +66,11 @@ pub struct Progress {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rebase {
-    // Opens the agent's thread in T3 Code; empty while it starts.
-    pub thread_url: String,
+    // The agent's thread, None while it starts.
+    pub thread_id: Option<String>,
+    pub title: String,
+    // Seconds since the epoch.
+    pub started_at: i64,
     pub question: bool,
     // The agent pushed the rebased branch, and the pull request is still listed with its old head.
     pub pushed: bool,
@@ -65,7 +90,6 @@ pub trait Host: Send + Sync + 'static {
     // The head commit gem lists the pull request with, None once it is not listed. Search keeps
     // listing the old head until its next refresh.
     fn listed_head(&self, url: &str) -> impl Future<Output = Option<String>> + Send;
-    fn thread_url(&self, thread_id: &str) -> String;
 }
 
 pub struct Rebases<H> {
@@ -122,18 +146,23 @@ impl<H: Host> Rebases<H> {
         let prompt = format!(
             "rebase these PRs: {}
 
+{ASK}
+
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread.",
             urls.join(", ")
         );
+        let title = format!("Rebase {name}");
         self.db.with(|db| {
-            let mut insert = db.prepare("INSERT INTO rebases (url, head) VALUES (?1, ?2)")?;
+            let mut insert = db.prepare(
+                "INSERT INTO rebases (url, head, title, started_at) VALUES (?1, ?2, ?3, ?4)",
+            )?;
             for (url, head) in urls.iter().zip(&heads) {
-                insert.execute(params![url, head])?;
+                insert.execute(params![url, head, title, now()])?;
             }
             Ok(())
         })?;
-        let started = self.host.start_thread(&format!("Rebase {name}"), &prompt).await;
+        let started = self.host.start_thread(&title, &prompt).await;
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
@@ -170,15 +199,16 @@ settle this thread.",
     // By pull request URL.
     pub fn all(&self) -> Result<BTreeMap<String, Rebase>, String> {
         self.db.with(|db| {
-            let mut rows = db.prepare("SELECT url, thread_id, question, pushed FROM rebases")?;
+            let mut rows = db.prepare(
+                "SELECT url, thread_id, question, pushed, title, started_at FROM rebases",
+            )?;
             rows.query_map([], |row| {
-                let thread_id: Option<String> = row.get(1)?;
                 let rebase = Rebase {
-                    thread_url: (thread_id.as_deref())
-                        .map(|id| self.host.thread_url(id))
-                        .unwrap_or_default(),
+                    thread_id: row.get(1)?,
                     question: row.get(2)?,
                     pushed: row.get(3)?,
+                    title: row.get(4)?,
+                    started_at: row.get(5)?,
                 };
                 Ok((row.get(0)?, rebase))
             })?
@@ -242,6 +272,14 @@ settle this thread.",
                 eprintln!("{error}");
             }
         }
+    }
+
+    // Stops showing the rebase whose agent runs in `thread_id`, as the user asked. Its pull requests
+    // can be rebased again; the agent keeps running in T3 Code.
+    pub fn forget(&self, thread_id: &str) -> Result<(), String> {
+        self.db
+            .with(|db| db.execute("DELETE FROM rebases WHERE thread_id = ?1", [thread_id]))
+            .map(drop)
     }
 
     fn remove(&self, url: &str) -> Result<(), String> {
@@ -322,9 +360,6 @@ mod tests {
             self.0.lock().unwrap().listed_head.clone()
         }
 
-        fn thread_url(&self, thread_id: &str) -> String {
-            format!("t3://{thread_id}")
-        }
     }
 
     fn rebases(host: &FakeHost) -> Rebases<FakeHost> {
@@ -353,7 +388,9 @@ mod tests {
         // Pressing again while the agent works does nothing either.
         rebases.start(&[URL.into()], "r#1").await.unwrap();
         assert_eq!(host.started(), 1);
-        assert_eq!(rebase(&rebases).unwrap().thread_url, "t3://thread-1");
+        let started = rebase(&rebases).unwrap();
+        assert_eq!(started.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(started.title, "Rebase r#1");
     }
 
     #[tokio::test(start_paused = true)]
@@ -370,8 +407,8 @@ mod tests {
         rebases.start(&[other.into()], "s#2").await.unwrap();
         assert_eq!(host.started(), 1);
         let all = rebases.all().unwrap();
-        assert_eq!(all[URL].thread_url, "t3://thread-1");
-        assert_eq!(all[other].thread_url, "t3://thread-1");
+        assert_eq!(all[URL].thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(all[other].thread_id.as_deref(), Some("thread-1"));
 
         host.set(|s| s.progress = Some((true, false)));
         refreshes(1).await;
@@ -387,7 +424,7 @@ mod tests {
             async move { rebases.start(&[URL.into()], "r#1").await }
         });
         tokio::time::sleep(Duration::from_millis(500)).await;
-        assert_eq!(rebase(&rebases).unwrap().thread_url, "");
+        assert_eq!(rebase(&rebases).unwrap().thread_id, None);
         starting.await.unwrap().unwrap();
     }
 

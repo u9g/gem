@@ -187,18 +187,6 @@ pub async fn progress(thread_id: &str) -> Option<(bool, bool)> {
     Some((thread.settled || stopped, thread.pending_request_count > 0))
 }
 
-// Opens the thread in T3 Code's hosted app, which reaches this machine's T3 Code from a phone too.
-pub fn url(thread_id: &str) -> Option<String> {
-    let environment = std::fs::read_to_string(
-        PathBuf::from(env::var("HOME").ok()?).join(".t3/userdata/environment-id"),
-    )
-    .ok()?;
-    Some(format!(
-        "https://app.t3.codes/{}/{thread_id}",
-        environment.trim()
-    ))
-}
-
 // A busy thread gets the message as its next turn.
 pub async fn send(thread_id: &str, message: &str) -> Result<(), String> {
     t3(&["thread", "send", "--json", thread_id, "-"], message)

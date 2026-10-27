@@ -4,9 +4,10 @@ use std::{
 };
 
 use pbjson_types::Timestamp;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::proto::{CheckFailure, Investigation, ListOpenPullRequestsResponse, PullRequestCluster};
+use crate::proto::{Agent, AgentState, CheckFailure, PullRequestCluster};
 use crate::tokens::{Subject, Tokens};
 use crate::{login, mcp, proposals, t3};
 use gem_github::short;
@@ -15,6 +16,26 @@ use gem_github::short;
 const DIR: &str = "investigations";
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+
+// An agent gem follows in a file of its own: an investigation, a follow-up, or the answer to the
+// user's message about a cluster. Saved as JSON with the names of the `Investigation` message it
+// was before every agent was one `Agent`, so files saved then still load.
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct Investigation {
+    id: String,
+    title: String,
+    // The pull request it started from.
+    pull_request_url: String,
+    // Every pull request it acts on. Empty in files saved before it was kept: then only
+    // `pull_request_url`.
+    pull_request_urls: Vec<String>,
+    thread_id: String,
+    started_at: Option<Timestamp>,
+    working: bool,
+    reply: String,
+    reply_html: String,
+}
 
 // Held across each read-modify-write of an investigation's file, so a refresh never brings back
 // a closed investigation or undoes a message's `working`.
@@ -41,7 +62,7 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
         prs: vec![pr.clone()],
     };
     let thread_id = start_proposing(&title, &prompt, &subject).await?;
-    track(nanos, title, pr, Some(failure), proposal.summary, thread_id).await;
+    track(nanos, title, vec![pr.clone()], thread_id).await;
     Ok(())
 }
 
@@ -59,7 +80,7 @@ afterwards in this thread.",
         login = login(),
     );
     let thread_id = t3::start(title, &prompt, None).await?;
-    track(now(), title.to_string(), pr, None, String::new(), thread_id).await;
+    track(now(), title.to_string(), vec![pr.to_string()], thread_id).await;
     Ok(())
 }
 
@@ -136,17 +157,21 @@ thread, and you can record more proposals the same way.",
         snapshot = mcp::cluster_json(cluster),
         server = mcp::AGENT_NAME,
     );
+    let prs: Vec<String> = (cluster.pull_requests.iter())
+        .map(|pr| pr.url.clone())
+        .collect();
     let subject = Subject::Investigation {
         id: id(nanos),
-        prs: cluster
-            .pull_requests
-            .iter()
-            .map(|pr| pr.url.clone())
-            .collect(),
+        prs: prs.clone(),
     };
     let thread_id = start_proposing(&title, &prompt, &subject).await?;
-    track(nanos, title, &first.url, None, String::new(), thread_id).await;
+    track(nanos, title, prs, thread_id).await;
     Ok(id(nanos))
+}
+
+// Whether `id` is one of these agents.
+pub async fn has(id: &str) -> bool {
+    tokio::fs::try_exists(path(id)).await.unwrap_or(false)
 }
 
 pub async fn message(id: &str, message: &str) -> Result<(), String> {
@@ -154,7 +179,7 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
         .await
         .into_iter()
         .find(|i| i.id == id)
-        .ok_or(format!("no investigation {id}"))?;
+        .ok_or(format!("no agent {id}"))?;
     t3::send(&investigation.thread_id, message).await?;
     let _files = FILES.lock().await;
     if let Some(mut investigation) = load().await.into_iter().find(|i| i.id == id) {
@@ -171,15 +196,26 @@ pub async fn close(id: &str) {
     Tokens::here().revoke(id).await;
 }
 
-pub async fn fill(response: &mut ListOpenPullRequestsResponse) {
+pub async fn agents() -> Vec<Agent> {
     let mut proposals = proposals::of_investigations().await;
-    let mut investigations = load().await;
-    for investigation in &mut investigations {
-        investigation.proposals = proposals.remove(&investigation.id).unwrap_or_default();
-    }
-    investigations
-        .sort_by_key(|i| std::cmp::Reverse(i.started_at.as_ref().map(|t| (t.seconds, t.nanos))));
-    response.investigations = investigations;
+    (load().await.into_iter())
+        .map(|investigation| Agent {
+            proposals: proposals.remove(&investigation.id).unwrap_or_default(),
+            state: match investigation.working {
+                true => AgentState::Working,
+                false => AgentState::Waiting,
+            } as i32,
+            pull_request_urls: match investigation.pull_request_urls.is_empty() {
+                true => vec![investigation.pull_request_url],
+                false => investigation.pull_request_urls,
+            },
+            id: investigation.id,
+            title: investigation.title,
+            reply: investigation.reply,
+            reply_html: investigation.reply_html,
+            started_at: investigation.started_at,
+        })
+        .collect()
 }
 
 // Keeps each investigation's `working` and reply up to date with its thread. An investigation is
@@ -248,31 +284,22 @@ fn id(nanos: u128) -> String {
     format!("{nanos:x}")
 }
 
-// Saves an investigation started at `nanos` since the epoch.
-async fn track(
-    nanos: u128,
-    title: String,
-    pr: &str,
-    check_failure: Option<CheckFailure>,
-    rerun_summary: String,
-    thread_id: String,
-) {
+// Saves an investigation started at `nanos` since the epoch, on the pull requests `prs`, the one it
+// started from first.
+async fn track(nanos: u128, title: String, prs: Vec<String>, thread_id: String) {
     let _files = FILES.lock().await;
     save(&Investigation {
         id: id(nanos),
         title,
-        pull_request_url: pr.to_string(),
-        check_failure,
-        rerun_summary,
+        pull_request_url: prs[0].clone(),
+        pull_request_urls: prs,
         thread_id,
         started_at: Some(Timestamp {
             seconds: (nanos / 1_000_000_000) as i64,
             nanos: (nanos % 1_000_000_000) as i32,
         }),
         working: true,
-        reply: String::new(),
-        reply_html: String::new(),
-        proposals: Vec::new(),
+        ..Default::default()
     })
     .await;
 }
@@ -371,4 +398,29 @@ async fn save(investigation: &Investigation) {
     let _ = tokio::fs::create_dir_all(DIR).await;
     let json = serde_json::to_vec_pretty(investigation).unwrap();
     let _ = tokio::fs::write(path(&investigation.id), json).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_a_file_saved_as_an_investigation_message() {
+        let json = r#"{
+            "id": "18f",
+            "title": "Investigate test on gem#1",
+            "pullRequestUrl": "https://github.com/u9g/gem/pull/1",
+            "checkFailure": {"id": "c", "headOid": "abc", "checks": []},
+            "rerunSummary": "flaky",
+            "threadId": "t",
+            "startedAt": "2026-10-26T12:00:00Z",
+            "working": true
+        }"#;
+        let investigation: Investigation = serde_json::from_str(json).unwrap();
+        assert_eq!(investigation.pull_request_url, "https://github.com/u9g/gem/pull/1");
+        assert!(investigation.pull_request_urls.is_empty());
+        assert_eq!(investigation.thread_id, "t");
+        assert!(investigation.working);
+        assert_eq!(investigation.started_at.unwrap().seconds, 1_793_016_000);
+    }
 }

@@ -1,8 +1,9 @@
 import { create } from '@bufbuild/protobuf';
 
 import {
-  type Investigation,
-  InvestigationSchema,
+  type Agent,
+  AgentSchema,
+  AgentState,
   MergeBy,
   type Proposal,
   ProposalSchema,
@@ -285,26 +286,20 @@ export const checkProposals: Proposal[] = [
 
 const now = BigInt(Math.floor(Date.now() / 1000));
 
-// One investigation still on its first prompt, and one that found the root cause and proposes a
-// pull request on the base branch.
-export const investigations: Investigation[] = [
-  create(InvestigationSchema, {
+// An investigation still on its first prompt, one that found the root cause and proposes a pull
+// request on the base branch, a follow-up working, and a rebase asking the user something.
+export const agents: Agent[] = [
+  create(AgentSchema, {
     id: 'investigation-working',
     title: 'Investigate tests (3.12) on agents#4821',
-    pullRequestUrl: pr.url,
-    checkFailure: { ...failure, checks: [tests] },
-    rerunSummary: 'Rerun the tests: the runner lost its network',
-    threadId: 'thread-working',
+    pullRequestUrls: [pr.url],
     startedAt: { seconds: now - 240n },
-    working: true,
   }),
-  create(InvestigationSchema, {
+  create(AgentSchema, {
     id: 'investigation-answered',
     title: 'Investigate ruff on agents#4821',
-    pullRequestUrl: pr.url,
-    checkFailure: { ...failure, checks: [ruff] },
-    rerunSummary: 'Rerun ruff: it passes on main',
-    threadId: 'thread-answered',
+    pullRequestUrls: [pr.url],
+    state: AgentState.WAITING,
     startedAt: { seconds: now - 7200n },
     reply:
       'Not flaky. `ruff` on the runner resolves to 0.6, which `uv.lock` does not pin, and 0.6 added F401 for re-exports. It fails the same way on every run since Oct 2.',
@@ -324,12 +319,20 @@ export const investigations: Investigation[] = [
       }),
     ],
   }),
-  create(InvestigationSchema, {
+  create(AgentSchema, {
     id: 'follow-up-working',
     title: 'Open a PR on main pinning ruff to 0.5',
-    pullRequestUrl: pr.url,
-    threadId: 'thread-follow-up',
+    pullRequestUrls: [pr.url],
     startedAt: { seconds: now - 60n },
-    working: true,
+  }),
+  create(AgentSchema, {
+    id: 'rebase:thread-rebase',
+    title: 'Rebase agents#4821',
+    pullRequestUrls: [pr.url],
+    state: AgentState.WAITING,
+    startedAt: { seconds: now - 900n },
+    reply: 'Rebasing onto main conflicts in `tts_retry.py`: main renamed `synthesize` to `synthesize_stream`. Keep the retry around the new name?',
+    replyHtml:
+      '<p dir="auto">Rebasing onto main conflicts in <code class="notranslate">tts_retry.py</code>: main renamed <code class="notranslate">synthesize</code> to <code class="notranslate">synthesize_stream</code>. Keep the retry around the new name?</p>',
   }),
 ];

@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 use gem_db::Db;
 use gem_rebases::{Host, Progress, Rebases, Refs};
 
-use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster, Rebase};
+use crate::agents::Running;
+use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::{Cache, gh, t3};
 
 static REBASES: OnceLock<Rebases<Server>> = OnceLock::new();
@@ -54,10 +55,6 @@ impl Host for Server {
             .find(|pr| pr.url == url)
             .map(|pr| pr.head_oid.clone())
     }
-
-    fn thread_url(&self, thread_id: &str) -> String {
-        t3::url(thread_id).unwrap_or_default()
-    }
 }
 
 // Also watches the rebases the server's last run left.
@@ -86,17 +83,48 @@ pub async fn start_cluster(cluster: &PullRequestCluster) -> Result<(), String> {
     rebases.start(&urls, name).await
 }
 
-pub async fn fill(clusters: &mut [PullRequestCluster]) {
-    let Some(rebases) = REBASES.get() else { return };
-    let rebases = rebases.all().unwrap_or_else(|error| {
+pub fn fill(clusters: &mut [PullRequestCluster]) {
+    let rebases = all();
+    for pr in clusters.iter_mut().flat_map(|c| &mut c.pull_requests) {
+        let rebase = rebases.get(&pr.url);
+        pr.rebasing = rebase.is_some_and(|rebase| !rebase.pushed);
+        pr.rebased = rebase.is_some_and(|rebase| rebase.pushed);
+    }
+}
+
+// Each agent still rebasing, once however many pull requests it rebases. One that pushed is done:
+// its pull requests show `rebased` until they are listed with their new heads.
+pub fn running() -> Vec<Running> {
+    let mut running: Vec<Running> = Vec::new();
+    for (url, rebase) in all().into_iter().filter(|(_, rebase)| !rebase.pushed) {
+        match running.iter_mut().find(|r| r.thread_id == rebase.thread_id) {
+            Some(agent) => agent.pull_request_urls.push(url),
+            None => running.push(Running {
+                thread_id: rebase.thread_id,
+                // Empty for one started before its title was kept.
+                title: match rebase.title.as_str() {
+                    "" => "Rebase".to_string(),
+                    _ => rebase.title,
+                },
+                question: rebase.question,
+                started_at: rebase.started_at,
+                pull_request_urls: vec![url],
+            }),
+        }
+    }
+    running
+}
+
+pub fn forget(thread_id: &str) -> Result<(), String> {
+    REBASES.get().ok_or("rebases are not ready")?.forget(thread_id)
+}
+
+fn all() -> std::collections::BTreeMap<String, gem_rebases::Rebase> {
+    let Some(rebases) = REBASES.get() else {
+        return Default::default();
+    };
+    rebases.all().unwrap_or_else(|error| {
         eprintln!("{error}");
         Default::default()
-    });
-    for pr in clusters.iter_mut().flat_map(|c| &mut c.pull_requests) {
-        pr.rebase = rebases.get(&pr.url).map(|rebase| Rebase {
-            thread_url: rebase.thread_url.clone(),
-            question: rebase.question,
-            pushed: rebase.pushed,
-        });
-    }
+    })
 }

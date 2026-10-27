@@ -6,9 +6,17 @@ import { View } from 'react-native';
 
 import { Board } from '../../Board';
 import { ClusterReview } from '../../ClusterFiles';
-import { type Proposal, type PullRequest, type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
-import { InvestigationView } from '../../InvestigationView';
-import { clusterMergeBy, investigations, mergeBy, prFiles, proposals } from '../fixtures';
+import { agentsOf } from '../../agents';
+import { AgentView } from '../../AgentView';
+import {
+  AgentSchema,
+  type Proposal,
+  type PullRequest,
+  type PullRequestCluster,
+  PullRequestClusterSchema,
+  PullRequestSchema,
+} from '../../gen/gem_pb';
+import { agents as followed, clusterMergeBy, mergeBy, prFiles, proposals } from '../fixtures';
 
 // Made-up clusters, at least one in each column. Stories render at the window's width, so view
 // them at a laptop's.
@@ -22,8 +30,7 @@ type Fields = {
   behind?: boolean;
   checks?: { total: number; done: number; failed: number };
   proposals?: Proposal[];
-  agents?: { threadUrl: string }[];
-  merge?: { threadUrl: string };
+  merging?: boolean;
   files?: { path: string; patch: string }[];
 };
 
@@ -67,12 +74,11 @@ const ready1 = cluster('Respect the configured S3 region', 180, [
   pullRequest('egress', 902, 'Upload to the configured S3 region', passing),
 ]);
 const merging = cluster('Drop the legacy room service client', 3, [
-  pullRequest('server-sdk-go', 540, 'Remove RoomServiceClientV1', { ...passing, merge: { threadUrl: 'https://t3.example/m' } }),
+  pullRequest('server-sdk-go', 540, 'Remove RoomServiceClientV1', { ...passing, merging: true }),
 ]);
 const working = cluster('Hedge gateway requests', 120, [
   pullRequest('agent-gateway', 388, 'Hedge requests after the p95', {
     checks: { total: 14, done: 9, failed: 0 },
-    agents: [{ threadUrl: 'https://t3.example/thread/answer' }],
   }),
 ]);
 const running = cluster('Type room metadata updates', 40, [
@@ -85,34 +91,42 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
 
 const clusters = [needsYou, behind, ready1, merging, working, running, reviewing];
 
+// The agents merging and answering a comment, which their clusters list.
+const clusterAgents = [
+  create(AgentSchema, { id: 'merge:m', title: 'Merge Drop the legacy room service client', pullRequestUrls: [merging.pullRequests[0].url] }),
+  create(AgentSchema, { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests[0].url] }),
+];
+
 const noop = () => {};
 
 function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; agents?: boolean }) {
   const [openUrl, setOpenUrl] = useState(initial?.pullRequests[0].url);
-  const [openInvestigation, setOpenInvestigation] = useState<string>();
+  const [openAgent, setOpenAgent] = useState<string>();
   const opened = clusters.find((c) => c.pullRequests[0].url === openUrl);
-  const investigation = investigations.find((i) => i.id === openInvestigation);
+  const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
+  const agent = all.find((a) => a.id === openAgent);
   return (
     <View style={{ height: '100vh' as unknown as number }}>
       <Board
         clusters={clusters}
-        investigations={agents ? investigations : []}
-        openUrl={investigation ? undefined : openUrl}
-        openInvestigation={openInvestigation}
+        allClusters={clusters}
+        agents={all}
+        openUrl={agent ? undefined : openUrl}
+        openAgent={openAgent}
         onOpenCluster={(c) => {
-          setOpenInvestigation(undefined);
+          setOpenAgent(undefined);
           setOpenUrl(c.pullRequests[0].url);
         }}
-        onOpenInvestigation={setOpenInvestigation}
+        onOpenAgent={setOpenAgent}
         onClose={() => {
           setOpenUrl(undefined);
-          setOpenInvestigation(undefined);
+          setOpenAgent(undefined);
         }}
-        wide={!investigation && opened !== undefined}
+        wide={!agent && opened !== undefined}
       >
-        {investigation ? (
-          <InvestigationView
-            investigation={investigation}
+        {agent ? (
+          <AgentView
+            agent={agent}
             ago={() => '4 minutes ago'}
             onApprove={noop}
             onDismiss={noop}
@@ -123,6 +137,8 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
           opened && (
             <ClusterReview
               cluster={opened}
+              agents={agentsOf(opened, all)}
+              onOpenAgent={setOpenAgent}
               onApprove={noop}
               onDismiss={noop}
               onRestart={noop}
