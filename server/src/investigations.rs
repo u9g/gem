@@ -132,15 +132,16 @@ Read and investigate freely, but never push, comment, review, merge, close or re
 GitHub yourself, even when {login} asks you to handle something: propose it, and {login} approves \
 it in gem. A proposal is about one of the cluster's pull requests, and can:
 - change its code, with `patch` and `message`: clone its repository into a temporary directory, \
-run `gh pr checkout <number>` in it, edit, and pass what `git diff` prints as `patch`. Never \
+run `gh pr checkout <number>` in it, edit, and pass what `git diff` prints as `patch`, and the \
+matching change to other pull requests of the cluster the same way as `other_patches`. Never \
 commit or push.
 - reply as {login}, in the first person, with `reply`: the markdown is posted as a top-level \
 comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
 first lines before approving.
-- hand the work to another agent, with `follow_up`: when the work is too big to review as one \
-patch, such as matching changes in other repositories, write a prompt for a T3 Code agent. It \
-must stand alone: the repositories (checked out under ~/code), the branches or pull requests to \
-build on, what to change and why, and how to verify it. The agent must be able to finish without \
+- hand the work to another agent, with `follow_up`: when the work is too big to review as \
+patches, such as matching changes in other repositories with no pull request in the cluster, \
+write a prompt for a T3 Code agent. It must stand alone: the repositories (checked out under \
+~/code), the branches or pull requests to build on, what to change and why, and how to verify it. The agent must be able to finish without \
 anyone else reviewing, merging or releasing something first.
 - close the pull request without merging it, with `close_pull_request`. Pair it with a reply \
 saying why.
@@ -358,6 +359,9 @@ merging or releasing something first.
 - change the code of {pr}, with `patch` and `message`, when the pull request itself causes it: \
 clone the repository into a temporary directory, run `gh pr checkout <number>` in it, edit, and \
 pass what `git diff` prints as `patch`. Never commit or push.
+- change the code of another pull request in {pr}'s cluster, with `other_patches`, when that pull \
+request causes it, such as one {pr} is stacked on: make the patch the same way. The `get_cluster` \
+tool of the `{server}` MCP server lists the cluster's pull requests.
 
 Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {pr}, a \
 `summary` of one line saying what approving does, and its steps. It checks the proposal and \

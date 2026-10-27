@@ -45,6 +45,12 @@ function anchorDiff(path: string, hunk: string, lines = 6): string {
   return `--- a/${path}\n+++ b/${path}\n@@ -0,${count(/^([ -]|$)/)} +${start},${count(/^([ +]|$)/)} @@\n${kept.join('\n')}`;
 }
 
+// The repository name and number of the pull request at `url`.
+function pullRequestName(url: string): [string?, string?] {
+  const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(url) ?? [];
+  return [repository, number];
+}
+
 // One conversation waiting on the user as a band: the proposal's summary and actions on top, then
 // three columns cut to a few lines each: their thread, the user's reply, and the change. Arrows step
 // through alternatives. `anchored` stacks them in full instead, under the code the comment is on;
@@ -153,13 +159,17 @@ function ProposalView({
   });
   const [diff, setDiff] = useDraft(`${proposal.id} diff`, proposal.patch?.diff ?? '');
   const files = diffFiles(diff);
-  const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
+  const [repository, number] = pullRequestName(proposal.pullRequestUrl);
   const comment = proposal.comment;
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
-  const investigate = onInvestigate && proposal.rerun && !proposal.patch && !proposal.followUp && (
-    <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
-  );
+  const investigate = onInvestigate &&
+    proposal.rerun &&
+    !proposal.patch &&
+    !proposal.otherPatches.length &&
+    !proposal.followUp && (
+      <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
+    );
   const actions = (
     <>
       <Button label="Dismiss" large={phone} disabled={disabled} onPress={onDismiss} />
@@ -283,10 +293,31 @@ function ProposalView({
           ) : proposal.rerun && proposal.checkFailure ? (
             <RerunCard failure={proposal.checkFailure} />
           ) : (
-            !proposal.followUp && (
+            !proposal.followUp &&
+            !proposal.otherPatches.length && (
               <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
             )
           )}
+          {proposal.otherPatches.map((patch) => {
+            const [repository, number] = pullRequestName(patch.pullRequestUrl);
+            const files = diffFiles(patch.diff);
+            return (
+              <View key={patch.pullRequestUrl} style={styles.column}>
+                <Text style={styles.where}>
+                  {repository}#{number}
+                </Text>
+                <Text style={styles.meta}>
+                  {patch.commitMessage}
+                  {'  '}
+                  <DiffStat
+                    added={files.reduce((n, f) => n + f.added, 0)}
+                    removed={files.reduce((n, f) => n + f.removed, 0)}
+                  />
+                </Text>
+                {clamp(130, <DiffSurface diff={patch.diff} />)}
+              </View>
+            );
+          })}
         </View>
       </View>
       {phone && <View style={styles.phoneActions}>{actions}</View>}
