@@ -33,6 +33,8 @@ struct Investigation {
     thread_id: String,
     started_at: Option<Timestamp>,
     working: bool,
+    // The user has messaged it, so its replies are answers they wait on.
+    messaged: bool,
     reply: String,
     reply_html: String,
 }
@@ -184,6 +186,7 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
     let _files = FILES.lock().await;
     if let Some(mut investigation) = load().await.into_iter().find(|i| i.id == id) {
         investigation.working = true;
+        investigation.messaged = true;
         save(&investigation).await;
     }
     Ok(())
@@ -218,8 +221,8 @@ pub async fn agents() -> Vec<Agent> {
         .collect()
 }
 
-// Keeps each investigation's `working` and reply up to date with its thread. An investigation is
-// open only while its agent works or its proposals wait on the user.
+// Keeps each investigation's `working` and reply up to date with its thread. An investigation the
+// user never messaged is open only while its agent works or its proposals wait on the user.
 pub fn watch() {
     tokio::spawn(async move {
         loop {
@@ -229,6 +232,7 @@ pub fn watch() {
                 };
                 // Read after `show`: an agent records its proposals before it stops working.
                 if !working
+                    && !investigation.messaged
                     && !proposals::of_investigations()
                         .await
                         .contains_key(&investigation.id)
