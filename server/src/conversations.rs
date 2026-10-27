@@ -12,13 +12,15 @@ use crate::{
     SearchedPullRequest,
     agents::Running,
     gh, login, mcp, proposals,
-    proto::{CheckFailure, Comment},
+    proto::{CheckFailure, Comment, PullRequestCluster},
     t3,
     tokens::{Subject, Tokens},
 };
 
 // Relative to the server's working directory, like the cluster names.
 const HANDLED_FILE: &str = "handled-comments.json";
+// Why each agent answering failed checks proposed nothing, by the ID of the checks it answered.
+const NO_PROPOSAL_FILE: &str = "no-proposal-reasons.json";
 const CONCURRENT_AGENTS: usize = 4;
 
 // Fetched only for PRs whose updatedAt or failing checks moved, which any new comment, review
@@ -201,6 +203,8 @@ struct Inner {
     agents: Semaphore,
     // By the ID of the conversation they answer, until they stop or the user closes them.
     answering: Mutex<HashMap<String, Answering>>,
+    // Persisted to NO_PROPOSAL_FILE.
+    no_proposal: Mutex<HashMap<String, String>>,
 }
 
 // An agent answering a conversation, from when it is queued.
@@ -219,12 +223,17 @@ impl Conversations {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
             Err(_) => HashSet::new(),
         };
+        let no_proposal = match tokio::fs::read(NO_PROPOSAL_FILE).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
+            Err(_) => HashMap::new(),
+        };
         Self(Arc::new(Inner {
             prs: RwLock::default(),
             handled: Mutex::new(handled.clone()),
             started: Mutex::new(handled),
             agents: Semaphore::new(CONCURRENT_AGENTS),
             answering: Mutex::default(),
+            no_proposal: Mutex::new(no_proposal),
         }))
     }
 
@@ -289,7 +298,26 @@ impl Conversations {
             let _ = tokio::fs::write(HANDLED_FILE, json).await;
         }
         self.0.handled.lock().await.retain(|id| !ids.contains(id));
+        {
+            let mut no_proposal = self.0.no_proposal.lock().await;
+            no_proposal.retain(|id, _| !ids.contains(id));
+            let json = serde_json::to_vec_pretty(&*no_proposal).unwrap();
+            let _ = tokio::fs::write(NO_PROPOSAL_FILE, json).await;
+        }
         self.answer_waiting().await;
+    }
+
+    // Each PR's reason its failed checks have no proposal, while they still wait on the user.
+    pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
+        let prs = self.0.prs.read().await;
+        let no_proposal = self.0.no_proposal.lock().await;
+        for pr in clusters.iter_mut().flat_map(|c| c.pull_requests.iter_mut()) {
+            pr.no_proposal_reason = (prs.get(&pr.url).into_iter())
+                .flat_map(|known| &known.waiting)
+                .find_map(|c| no_proposal.get(c.id()))
+                .cloned()
+                .unwrap_or_default();
+        }
     }
 
     pub async fn refresh(&self, prs: &[SearchedPullRequest]) {
@@ -405,6 +433,15 @@ impl Conversations {
                                 answering.thread_id = Some(thread_id.clone());
                             }
                             t3::wait(&thread_id).await;
+                            if let Conversation::Checks { .. } = &conversation
+                                && !proposals::exist_for(id).await
+                                && let Some((_, reply)) = t3::show(&thread_id).await
+                            {
+                                let mut no_proposal = this.0.no_proposal.lock().await;
+                                no_proposal.insert(id.to_string(), reply.trim().to_string());
+                                let json = serde_json::to_vec_pretty(&*no_proposal).unwrap();
+                                let _ = tokio::fs::write(NO_PROPOSAL_FILE, json).await;
+                            }
                         }
                         Err(e) => eprintln!("{title}: {e}"),
                     }
@@ -586,7 +623,8 @@ this failure needs it), with a `summary` of \"<tool name>: <one line>\".
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals later.
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
-settle this thread. Then reply with one line saying what you proposed.",
+settle this thread. Then reply with one line saying what you proposed, or, when you proposed \
+nothing, why: {login} reads it next to the failed checks.",
         head = failure.head_oid,
         login = login(),
         url = pr.url,

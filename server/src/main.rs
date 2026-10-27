@@ -615,6 +615,7 @@ async fn filled(
     let mut response = cache.read().await.clone()?;
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
+    conversations.fill(&mut response.clusters).await;
     files::fill(&mut response.clusters).await;
     rebases::fill(&mut response.clusters);
     merges::fill(&mut response.clusters);
@@ -774,6 +775,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         rebasing: false,
                         rebased: false,
                         merging: false,
+                        no_proposal_reason: String::new(),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),

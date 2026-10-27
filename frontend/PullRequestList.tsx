@@ -101,7 +101,7 @@ function status(pr: PullRequest, agents: Agent[]): Status | undefined {
   if (pr.proposals.length > 0) {
     return { doing: `${pr.proposals.length} ${pr.proposals.length === 1 ? 'proposal' : 'proposals'}`, waiting: 'waiting on you' };
   }
-  if (checks.failed > 0) return { doing: checksFailed, waiting: 'no proposal for them' };
+  if (checks.failed > 0) return { doing: checksFailed, waiting: pr.noProposalReason || 'no proposal for them' };
   if (pr.conflicts) return { doing: `Conflicts with ${pr.base}`, waiting: 'waiting on you to rebase' };
   if (pr.behind) return { doing: `${pr.base} requires it up to date`, waiting: 'waiting on you to rebase' };
   if (pr.mergeBy === MergeBy.APPROVAL) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
@@ -114,7 +114,7 @@ export function StatusLine({ pr, agents }: { pr: PullRequest; agents: Agent[] })
   if (!line) return null;
   return (
     <View style={styles.status}>
-      <Text numberOfLines={1} style={styles.statusText}>
+      <Text numberOfLines={2} style={styles.statusText}>
         <Text style={[styles.doing, line.ready && { color: t3.addition }, line.forceable && { color: t3.warning }]}>{line.doing}</Text>
         {line.waiting && ` · ${line.waiting}`}
       </Text>

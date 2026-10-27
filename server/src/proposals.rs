@@ -40,6 +40,11 @@ pub async fn find(id: &str) -> Option<Proposal> {
         .find(|proposal| proposal.id == id)
 }
 
+// Whether a proposal answers the conversation or investigation `id`.
+pub async fn exist_for(id: &str) -> bool {
+    (load(Path::new(DIR)).await.iter()).any(|(_, proposal)| subject(proposal) == Some(id))
+}
+
 // The proposals of each investigation, by its ID.
 pub async fn of_investigations() -> HashMap<String, Vec<Proposal>> {
     let mut by_investigation: HashMap<String, Vec<Proposal>> = HashMap::new();
