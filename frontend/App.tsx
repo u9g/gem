@@ -290,8 +290,9 @@ export default function App() {
   const visible = clusters
     .filter((cluster) => !repoFilter || cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
     .filter((cluster) => !search.matches || cluster.pullRequests.some((pr) => search.matches!.has(pr.url)));
-  // A cluster is identified by its oldest PR, which stays put as the cluster grows.
-  const opened = clusters.find((cluster) => cluster.pullRequests[0].url === place.cluster);
+  // A cluster is linked to by its oldest PR, and any of its PRs opens it, so a link still opens it
+  // after an agent joins it to an older cluster.
+  const opened = clusters.find((cluster) => cluster.pullRequests.some((pr) => pr.url === place.cluster));
 
   const filters = (
     <View style={styles.filters}>
