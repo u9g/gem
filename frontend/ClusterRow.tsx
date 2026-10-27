@@ -1,4 +1,5 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
+import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -70,9 +71,27 @@ export function Legend() {
   );
 }
 
-// A cluster sized for a thumb: its name and how long ago, over one line per PR with its repository,
-// number and bars. On the board, where columns are narrow, the name wraps to a second line, the bars
-// shorten, and a PR's waiting proposals are counted; the open cluster's card is outlined.
+// "<url> + <url> - <name>": every PR of the cluster, then the name its card shows.
+function CopyCluster({ cluster }: { cluster: PullRequestCluster }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    const urls = cluster.pullRequests.map((pr) => pr.url).join(' + ');
+    await navigator.clipboard.writeText(`${urls} - ${cluster.name || cluster.pullRequests[0].title}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  const Mark = copied ? Check : Copy;
+  return (
+    <Pressable onPress={copy} hitSlop={10} accessibilityLabel="Copy pull request links">
+      <Mark size={13} color={copied ? t3.addition : 'rgba(208, 207, 212, 0.45)'} strokeWidth={2} />
+    </Pressable>
+  );
+}
+
+// A cluster sized for a thumb: its name, a button that copies its links, and how long ago, over one
+// line per PR with its repository, number and bars. On the board, where columns are narrow, the name
+// wraps to a second line, the bars shorten, and a PR's waiting proposals are counted; the open
+// cluster's card is outlined.
 export function PhoneClusterRow({
   cluster,
   board = false,
@@ -90,6 +109,7 @@ export function PhoneClusterRow({
         <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, cluster.mergeBy === MergeBy.APPROVAL && styles.ready, cluster.mergeBy === MergeBy.ADMIN && styles.forceable]}>
           {cluster.name || cluster.pullRequests[0].title}
         </Text>
+        <CopyCluster cluster={cluster} />
         {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
       </View>
       {cluster.pullRequests.map((pr) => (
