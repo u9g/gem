@@ -577,6 +577,9 @@ fn fix(pr: &Target, failure: &CheckFailure) -> (String, String) {
 
 {checks}
 Find the root cause of each failure before you choose an answer:
+- Read what earlier investigations found: the `search_investigations` tool of the `{server}` MCP \
+server finds them by the failing test's name or words of the error. Ones that fail the same way \
+may already know the root cause, or a fix that did not hold.
 - Read why it failed: `gh run view <run> --log-failed -R {full_name}` prints a GitHub Actions \
 run's failed steps.
 - Check whether this pull request caused it: compare the failing test or step with what \
@@ -613,10 +616,11 @@ something first: when the fix waits on that, such as another pull request that n
 dependency that has not been released, propose nothing for that check.
 
 Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {url}, \
-a `summary` of one line saying what approving does, its `excerpts`, and its steps. Call it once \
-per answer, and once per alternative when more than one answer is reasonable. It checks the \
-proposal and returns an error with the reason when something is wrong: fix it and call it again. \
-If the failure needs nothing from {login}, propose nothing.
+a `summary` of one line saying what approving does, linking the pull request of each earlier \
+investigation into the same failure, its `excerpts`, and its steps. Call it once per answer, and \
+once per alternative when more than one answer is reasonable. It checks the proposal and returns \
+an error with the reason when something is wrong: fix it and call it again. If the failure needs \
+nothing from {login}, propose nothing.
 
 If answering well needs something these steps cannot do, call `propose` with its `excerpts` and \
 `request_tool` instead of steps: markdown describing the missing tool (what it would do and why \

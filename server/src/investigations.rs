@@ -14,6 +14,8 @@ use gem_github::short;
 
 // One `<id>.json` file per open investigation, relative to the server's working directory.
 const DIR: &str = "investigations";
+// Where a closed investigation's file moves, so later agents can search what it found.
+pub const PAST_DIR: &str = "past-investigations";
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -195,7 +197,8 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
 
 pub async fn close(id: &str) {
     let _files = FILES.lock().await;
-    let _ = tokio::fs::remove_file(path(id)).await;
+    let _ = tokio::fs::create_dir_all(PAST_DIR).await;
+    let _ = tokio::fs::rename(path(id), Path::new(PAST_DIR).join(format!("{id}.json"))).await;
     proposals::remove_of_investigation(id).await;
     Tokens::here().revoke(id).await;
 }
@@ -334,6 +337,9 @@ fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
 {checks}
 Another agent proposed rerunning them: \"{rerun_summary}\". {login} reran them so the pull request \
 is not held up, but does not take \"flaky\" for an answer. Find the root cause:
+- Read what earlier investigations found: the `search_investigations` tool of the `{server}` MCP \
+server finds them by the failing test's name or words of the error. Ones that fail the same way \
+may already know the root cause, or a fix that did not hold.
 - Read why it failed: `gh run view <run> --log-failed -R <owner>/<repo>` prints a GitHub Actions \
 run's failed steps.
 - Find how often it fails, and where: `gh run list -R <owner>/<repo> --workflow <workflow> -L 100` \
@@ -347,7 +353,8 @@ for commits that touch the failing test or the code it runs.
 
 Your reply is what {login} reads about this investigation, in an app that shows only your latest \
 reply: say what the root cause is and the evidence for it, such as links to the runs that fail the \
-same way, in a few short paragraphs of markdown.
+same way, in a few short paragraphs of markdown. Link the pull request of each earlier \
+investigation into the same failure, with what it found.
 
 Then propose what {login} should do about it. A proposal can:
 - hand the fix to another agent, with `follow_up`: such as a pull request that fixes the test or \
@@ -383,13 +390,44 @@ later.",
     )
 }
 
+// The closed investigations in `dir` whose title or reply has every word of `query`, ignoring case,
+// newest first, as JSON.
+pub async fn search(dir: &Path, query: &str) -> String {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut found: Vec<Investigation> = (load_from(dir).await.into_iter())
+        .filter(|investigation| {
+            let text = format!("{}\n{}", investigation.title, investigation.reply).to_lowercase();
+            words.iter().all(|word| text.contains(word.as_str()))
+        })
+        .collect();
+    found.sort_by_key(|investigation| std::cmp::Reverse(investigation.id.clone()));
+    let found: Vec<serde_json::Value> = (found.into_iter())
+        .map(|investigation| {
+            serde_json::json!({
+                "title": investigation.title,
+                "pullRequestUrls": match investigation.pull_request_urls.is_empty() {
+                    true => vec![investigation.pull_request_url],
+                    false => investigation.pull_request_urls,
+                },
+                "startedAt": investigation.started_at,
+                "reply": investigation.reply,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&found).unwrap()
+}
+
 fn path(id: &str) -> PathBuf {
     Path::new(DIR).join(format!("{id}.json"))
 }
 
 async fn load() -> Vec<Investigation> {
+    load_from(Path::new(DIR)).await
+}
+
+async fn load_from(dir: &Path) -> Vec<Investigation> {
     let mut investigations = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(DIR).await else {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return investigations;
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
@@ -430,5 +468,31 @@ mod tests {
         assert_eq!(investigation.thread_id, "t");
         assert!(investigation.working);
         assert_eq!(investigation.started_at.unwrap().seconds, 1_793_016_000);
+    }
+
+    #[tokio::test]
+    async fn search_finds_closed_investigations_with_every_word_newest_first() {
+        let dir = crate::tokens::tests::temp_dir("search");
+        let write = |id: &str, title: &str, reply: &str| {
+            let investigation = Investigation {
+                id: id.into(),
+                title: title.into(),
+                pull_request_url: format!("https://github.com/o/r/pull/{id}"),
+                reply: reply.into(),
+                ..Default::default()
+            };
+            let json = serde_json::to_vec(&investigation).unwrap();
+            std::fs::write(dir.join(format!("{id}.json")), json).unwrap();
+        };
+        write("1", "Investigate test on r#1", "test_join times out: the room closes first.");
+        write("2", "Investigate lint on r#2", "A new clippy lint.");
+        write("3", "Investigate test on r#3", "TEST_JOIN times out again.");
+
+        let found: serde_json::Value =
+            serde_json::from_str(&search(&dir, "test_join timeS").await).unwrap();
+        let urls: Vec<&str> = (found.as_array().unwrap().iter())
+            .map(|f| f["pullRequestUrls"][0].as_str().unwrap())
+            .collect();
+        assert_eq!(urls, ["https://github.com/o/r/pull/3", "https://github.com/o/r/pull/1"]);
     }
 }

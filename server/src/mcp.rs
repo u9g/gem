@@ -26,6 +26,7 @@ use axum::{
 };
 use serde_json::{Value, json};
 
+use crate::investigations;
 use crate::proposals::{self, GitHub};
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::tokens::{self, Subject, Tokens};
@@ -374,16 +375,24 @@ async fn handle_agent<G: GitHub>(
             params,
             AGENT_NAME,
             "gem shows the user what agents propose doing about their pull requests, to approve \
-        or dismiss. `propose` records a proposal about what this thread answers, and \
-        `get_cluster` reads a cluster as gem shows it now.",
+        or dismiss. `propose` records a proposal about what this thread answers, \
+        `get_cluster` reads a cluster as gem shows it now, and `search_investigations` finds what \
+        earlier agents found investigating failures.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": [get_cluster(), propose_tool(subject)] })),
+        "tools/list" => {
+            Ok(json!({ "tools": [get_cluster(), search_investigations(), propose_tool(subject)] }))
+        }
         "tools/call" => {
             let arguments = &params["arguments"];
             Ok(tool_result(
                 match params["name"].as_str().unwrap_or_default() {
                     "get_cluster" => call(&endpoint.state, "get_cluster", arguments),
+                    "search_investigations" => Ok(investigations::search(
+                        &endpoint.state.join(investigations::PAST_DIR),
+                        arguments["query"].as_str().unwrap_or_default(),
+                    )
+                    .await),
                     "propose" => propose(endpoint, subject, arguments).await,
                     tool => Err(format!("no tool {tool}")),
                 },
@@ -408,6 +417,27 @@ async fn propose<G: GitHub>(
         Err(error) => tracing::info!(subject = subject.id(), %error, "proposal rejected"),
     }
     proposed.map(|id| format!("Recorded proposal {id}."))
+}
+
+fn search_investigations() -> Value {
+    json!({
+        "name": "search_investigations",
+        "description": "The investigations earlier agents finished into failed checks and other \
+    problems on the user's pull requests, newest first: each one's title, pull requests, when it \
+    started, and its last reply, which says what it found. One matches when its title or reply \
+    has every word of `query`, ignoring case.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A few distinctive words, such as the failing test's name or \
+    words of the error.",
+                },
+            },
+            "required": ["query"],
+        },
+    })
 }
 
 // `propose`, with the steps its subject can take.
@@ -704,8 +734,8 @@ mod tests {
             let (_, response) = server.post(Some(&token), list.clone()).await;
             let tools = response["result"]["tools"].as_array().unwrap().clone();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-            assert_eq!(names, ["get_cluster", "propose"]);
-            tools[1]["inputSchema"].clone()
+            assert_eq!(names, ["get_cluster", "search_investigations", "propose"]);
+            tools[2]["inputSchema"].clone()
         };
 
         let schema = propose(in_thread()).await;
@@ -965,5 +995,25 @@ mod tests {
         let cluster: Value = serde_json::from_str(text(&result)).unwrap();
         assert_eq!(cluster["name"], "Renames");
         assert_eq!(cluster["pullRequests"][0]["titleHtml"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn search_investigations_reads_the_closed_investigations() {
+        let server = Server::new("search");
+        let dir = server.state.join(investigations::PAST_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        let investigation = json!({
+            "id": "18f",
+            "title": "Investigate test on r#1",
+            "pullRequestUrl": PR,
+            "reply": "test_join times out when the room closes first.",
+        });
+        std::fs::write(dir.join("18f.json"), investigation.to_string()).unwrap();
+        let token = server.token(&in_thread()).await;
+        let result = server
+            .call(&token, "search_investigations", json!({ "query": "test_join" }))
+            .await;
+        let found: Value = serde_json::from_str(text(&result)).unwrap();
+        assert_eq!(found[0]["pullRequestUrls"], json!([PR]));
     }
 }

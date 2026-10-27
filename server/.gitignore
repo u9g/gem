@@ -1,6 +1,7 @@
 /target
 /cluster-names.json
 /proposals
+/past-investigations
 /handled-comments.json
 /.env
 /releases
