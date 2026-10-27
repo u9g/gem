@@ -434,8 +434,9 @@ fn propose_tool(subject: &Subject) -> Value {
         "other_patches": {
             "type": "array",
             "description": "Changes to the other pull requests in `pr`'s cluster, as `get_cluster` \
-    lists them, such as the same fix in another repository's matching pull request. Each is \
-    `git diff` against that pull request's head. Never commit or push them yourself.",
+    lists them, such as a fix in the pull request that causes the problem, or the same fix in \
+    another repository's matching pull request. Each is `git diff` against that pull request's \
+    head. Never commit or push them yourself.",
             "items": {
                 "type": "object",
                 "properties": {

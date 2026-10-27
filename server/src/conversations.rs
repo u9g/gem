@@ -502,10 +502,12 @@ and propose it. A proposal can:
 - change the code, with `patch` and `message`: clone {full_name} into a temporary directory, run \
 `gh pr checkout {number}` in it, edit, and pass what `git diff` prints as `patch`. Never commit or \
 push.
-- change other pull requests of this one's cluster, with `other_patches`: when the answer needs \
-the matching change on them, such as the same fix in another repository's port of this pull \
-request. Make each patch the same way, against its own pull request. The `get_cluster` tool of the \
-`{server}` MCP server lists the cluster's pull requests.
+- change other pull requests of this one's cluster, with `other_patches`: when the change belongs \
+on them, alone or with `patch`, such as in a pull request that produces what this one consumes, \
+or the same fix in another repository's port of this pull request. Before declining a concern this \
+pull request cannot fix, check whether another pull request of the cluster causes it. Make each \
+patch the same way, against its own pull request. The `get_cluster` tool of the `{server}` MCP \
+server lists the cluster's pull requests.
 - reply as {login}, in the first person, with `reply`: the markdown is posted as {reply_kind}. \
 Open with what {login} is doing about the comment, then why: {login} reads only the first lines \
 before approving, and they must not concede a suggestion the reply goes on to decline. Pin each \
@@ -594,10 +596,10 @@ when they need different answers, such as a fix for one and a rerun for another.
 - fix the code, with `patch` and `message`: clone {full_name} into a temporary directory, run \
 `gh pr checkout {number}` in it, edit, and pass what `git diff` prints as `patch`. Run the failing \
 check's command locally when you can, to show the fix works. Never commit or push.
-- change other pull requests of this one's cluster, with `other_patches`: when the fix needs the \
-matching change on them, such as a pull request this one depends on. Make each patch the same \
-way, against its own pull request. The `get_cluster` tool of the `{server}` MCP server lists the \
-cluster's pull requests.
+- change other pull requests of this one's cluster, with `other_patches`: when the fix belongs on \
+them, alone or with `patch`, such as in a pull request this one depends on or that produces what \
+this one consumes. Make each patch the same way, against its own pull request. The \
+`get_cluster` tool of the `{server}` MCP server lists the cluster's pull requests.
 - rerun the failed jobs, with `rerun`: when the failure is flaky or comes from outside the pull \
 request, such as a network error, a broken runner or a test that fails the same way on the base \
 branch, and running it again is likely to pass. Only GitHub Actions runs can be rerun.
