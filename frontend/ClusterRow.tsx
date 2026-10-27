@@ -28,8 +28,8 @@ function shortAgo(date: Date): string {
 // only a merge, its checks, or a reviewer.
 export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
 
-// An agent waiting on the user puts its cluster in front of them, as a rebase or merge waiting on
-// them does.
+// An agent waiting on the user, or with proposals for them to review, puts its cluster in front of
+// them, as a rebase or merge waiting on them does.
 export function section(cluster: PullRequestCluster): (typeof sections)[number] {
   const prs = cluster.pullRequests;
   const working = cluster.agents.filter(active);
@@ -40,7 +40,7 @@ export function section(cluster: PullRequestCluster): (typeof sections)[number] 
     (pr.behind && !pr.rebasing && !pr.rebased) ||
     ((pr.rebasing || pr.merging) && !answered(pr)) ||
     (pr.checksFailing && !running(pr) && !answered(pr));
-  if (cluster.agents.some((agent) => !active(agent)) || prs.some(needsYou)) return 'Needs you';
+  if (cluster.agents.some((agent) => !active(agent) || agent.proposals.length > 0) || prs.some(needsYou)) return 'Needs you';
   if (working.length > 0 || prs.some((pr) => pr.rebased)) return 'Agents working';
   if (cluster.mergeBy !== MergeBy.UNSPECIFIED) return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';
