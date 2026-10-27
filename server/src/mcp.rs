@@ -378,10 +378,7 @@ async fn handle_agent<G: GitHub>(
         `get_cluster` reads a cluster as gem shows it now.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => {
-            let cluster = cluster_of(&endpoint.state, &subject.prs()[0]);
-            Ok(json!({ "tools": [get_cluster(), propose_tool(subject, &cluster)] }))
-        }
+        "tools/list" => Ok(json!({ "tools": [get_cluster(), propose_tool(subject)] })),
         "tools/call" => {
             let arguments = &params["arguments"];
             Ok(tool_result(
@@ -413,8 +410,8 @@ async fn propose<G: GitHub>(
     proposed.map(|id| format!("Recorded proposal {id}."))
 }
 
-// `propose`, with the steps its subject can take, and the pull requests of `cluster` it can patch.
-fn propose_tool(subject: &Subject, cluster: &[String]) -> Value {
+// `propose`, with the steps its subject can take.
+fn propose_tool(subject: &Subject) -> Value {
     let mut properties = json!({
         "pr": {
             "type": "string",
@@ -436,12 +433,9 @@ fn propose_tool(subject: &Subject, cluster: &[String]) -> Value {
         "message": { "type": "string", "description": "The commit message for `patch`." },
         "other_patches": {
             "type": "array",
-            "description": format!(
-                "Changes to other pull requests of the cluster, such as the same fix in another \
-    repository's matching pull request: any of {} other than `pr`. Each is `git diff` against \
-    that pull request's head. Never commit or push them yourself.",
-                cluster.join(", ")
-            ),
+            "description": "Changes to the other pull requests in `pr`'s cluster, as `get_cluster` \
+    lists them, such as the same fix in another repository's matching pull request. Each is \
+    `git diff` against that pull request's head. Never commit or push them yourself.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -929,15 +923,6 @@ mod tests {
                 "other_patches": [{ "pr": pr, "patch": "diff --git a/x b/x\n", "message": "Port it" }],
             })
         };
-
-        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-        let (_, response) = server.post(Some(&token), list).await;
-        let description = response["result"]["tools"][1]["inputSchema"]["properties"]
-            ["other_patches"]["description"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(description.contains(OTHER), "{description}");
 
         for pr in [PR, ELSEWHERE] {
             let result = server.call(&token, "propose", other_patch(pr)).await;

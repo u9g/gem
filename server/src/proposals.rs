@@ -152,17 +152,19 @@ async fn approve_proposal(
     }
 }
 
-// Deletes every proposal answering a conversation with a patch written against a head commit its
-// branch has since moved past, or for another pull request no longer open, keyed by open PR URL in
-// `heads`. Returns those conversations' IDs, so they can be answered again against the new heads.
+// A proposal is stale once it has a patch written against a head commit its branch has since moved
+// past, or for another pull request no longer open, keyed by open PR URL in `heads`. Deletes each
+// stale proposal, and every proposal answering the same conversation. Returns those conversations'
+// IDs, so they can be answered again against the new heads. An investigation's proposals are
+// independent, so only its stale ones go.
 pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
     };
     let proposals = load(Path::new(DIR)).await;
-    let stale: HashSet<String> = proposals
-        .iter()
-        .filter(|(_, p)| {
+    let stale: Vec<&Proposal> = (proposals.iter())
+        .map(|(_, p)| p)
+        .filter(|p| {
             p.patch
                 .as_ref()
                 .is_some_and(|patch| moved(&p.pull_request_url, patch))
@@ -171,14 +173,19 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
                         || moved(&patch.pull_request_url, patch)
                 })
         })
-        .filter_map(|(_, p)| subject(p).map(str::to_string))
+        .collect();
+    let conversations: HashSet<String> = (stale.iter())
+        .filter(|p| p.investigation_id.is_empty())
+        .filter_map(|p| subject(p).map(str::to_string))
         .collect();
     for (path, proposal) in &proposals {
-        if subject(proposal).is_some_and(|id| stale.contains(id)) {
+        let answers_stale = proposal.investigation_id.is_empty()
+            && subject(proposal).is_some_and(|id| conversations.contains(id));
+        if answers_stale || stale.iter().any(|p| p.id == proposal.id) {
             let _ = tokio::fs::remove_file(path).await;
         }
     }
-    stale
+    conversations
 }
 
 // Deletes every proposal on the PRs at `urls`, except investigations'.

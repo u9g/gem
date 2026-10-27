@@ -11,6 +11,7 @@ use crate::command;
 
 #[derive(Deserialize)]
 struct Head {
+    state: String,
     #[serde(rename = "headRefName")]
     branch: String,
     #[serde(rename = "headRepository")]
@@ -44,12 +45,15 @@ pub async fn apply_patch(
             "view",
             pr,
             "--json",
-            "headRefName,headRepository,headRepositoryOwner",
+            "state,headRefName,headRepository,headRepositoryOwner",
         ],
         None,
     )
     .await?;
     let head: Head = serde_json::from_slice(&head).map_err(|e| e.to_string())?;
+    if head.state != "OPEN" {
+        return Err(format!("{pr} is {}", head.state.to_lowercase()));
+    }
     let full_name = format!("{}/{}", head.owner.login, head.repository.name);
 
     let checkouts = env::temp_dir().join("gem-checkouts");

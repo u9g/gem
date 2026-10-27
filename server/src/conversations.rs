@@ -467,8 +467,8 @@ and propose it. A proposal can:
 push.
 - change other pull requests of this one's cluster, with `other_patches`: when the answer needs \
 the matching change on them, such as the same fix in another repository's port of this pull \
-request. Make each patch the same way, against its own pull request. The `propose` tool lists the \
-pull requests it can patch.
+request. Make each patch the same way, against its own pull request. The `get_cluster` tool of the \
+`{server}` MCP server lists the cluster's pull requests.
 - reply as {login}, in the first person, with `reply`: the markdown is posted as {reply_kind}. \
 Open with what {login} is doing about the comment, then why: {login} reads only the first lines \
 before approving, and they must not concede a suggestion the reply goes on to decline. Pin each \
@@ -559,7 +559,8 @@ when they need different answers, such as a fix for one and a rerun for another.
 check's command locally when you can, to show the fix works. Never commit or push.
 - change other pull requests of this one's cluster, with `other_patches`: when the fix needs the \
 matching change on them, such as a pull request this one depends on. Make each patch the same \
-way, against its own pull request. The `propose` tool lists the pull requests it can patch.
+way, against its own pull request. The `get_cluster` tool of the `{server}` MCP server lists the \
+cluster's pull requests.
 - rerun the failed jobs, with `rerun`: when the failure is flaky or comes from outside the pull \
 request, such as a network error, a broken runner or a test that fails the same way on the base \
 branch, and running it again is likely to pass. Only GitHub Actions runs can be rerun.
