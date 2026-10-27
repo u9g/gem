@@ -1,21 +1,24 @@
-import { Check, CircleCheck, CircleDashed, CircleX, MessageCircleQuestionMark } from 'lucide-react';
+import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { MergeBy, type PullRequest } from './gen/gem_pb';
+import { type Agent, AgentState, MergeBy, type PullRequest } from './gen/gem_pb';
 import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
 // checks, repo#number, title, review state and how many proposals wait on it. A row opens the PR.
 // On a phone the review state is a check mark when approved, leaving the title room. A PR GitHub
-// will not merge until it is rebased onto its base branch can be rebased by an agent, which spins
-// until its thread settles; a question from it opens the thread, as does one from an agent merging
-// the cluster. Under the row, a line says what is happening to the PR and what it waits on.
+// will not merge until it is rebased onto its base branch can be rebased by an agent. A PR spins
+// while an agent works on it. Under the row, a line says what is happening to the PR and what it
+// waits on.
 export function PullRequestList({
   pullRequests,
+  agents,
   busy,
   onRebase,
 }: {
   pullRequests: PullRequest[];
+  // The cluster's active agents.
+  agents: Agent[];
   busy?: ReadonlySet<string>;
   onRebase?: (url: string) => void;
 }) {
@@ -45,31 +48,11 @@ export function PullRequestList({
                 {pr.approved ? 'Approved' : 'Review required'}
               </Text>
             )}
-            {pr.merge?.question && (
-              <Pressable
-                accessibilityLabel="Open the merge's question"
-                style={styles.question}
-                onPress={() => Linking.openURL(pr.merge!.threadUrl)}
-              >
-                <Icon icon={MessageCircleQuestionMark} size={14} color={t3.warning} />
-                {!phone && <Text style={styles.questionText}>Question</Text>}
-              </Pressable>
-            )}
-            {pr.rebase?.question && (
-              <Pressable
-                accessibilityLabel="Open the rebase's question"
-                style={styles.question}
-                onPress={() => Linking.openURL(pr.rebase!.threadUrl)}
-              >
-                <Icon icon={MessageCircleQuestionMark} size={14} color={t3.warning} />
-                {!phone && <Text style={styles.questionText}>Question</Text>}
-              </Pressable>
-            )}
-            {(pr.rebase || pr.merge || pr.agents.some((agent) => !agent.queued)) && <ActivityIndicator size={12} color="#8FA8F5" />}
-            {onRebase && (pr.behind || pr.rebase) && (
+            {on(pr, agents).some((agent) => agent.state === AgentState.WORKING) && <ActivityIndicator size={12} color="#8FA8F5" />}
+            {onRebase && (pr.behind || pr.rebasing || pr.rebased) && (
               <Button
                 label="Rebase"
-                disabled={pr.rebase !== undefined || busy?.has(pr.url)}
+                disabled={pr.rebasing || pr.rebased || busy?.has(pr.url)}
                 onPress={() => onRebase(pr.url)}
               />
             )}
@@ -77,43 +60,40 @@ export function PullRequestList({
               {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
             </View>
           </View>
-          <StatusLine pr={pr} />
+          <StatusLine pr={pr} agents={agents} />
         </Pressable>
       ))}
     </View>
   );
 }
 
-// What is happening to the PR, what it waits on, and a link to the agent doing it.
-type Status = { doing: string; waiting?: string; link?: string; ready?: boolean; forceable?: boolean };
+// The agents acting on the PR.
+function on(pr: PullRequest, agents: Agent[]): Agent[] {
+  return agents.filter((agent) => agent.pullRequestUrls.includes(pr.url));
+}
 
-function status(pr: PullRequest): Status | undefined {
+// What is happening to the PR and what it waits on.
+type Status = { doing: string; waiting?: string; ready?: boolean; forceable?: boolean };
+
+function status(pr: PullRequest, agents: Agent[]): Status | undefined {
   const checks = pr.checks ?? { total: 0, done: 0, failed: 0 };
   const running = checks.total - checks.done;
-  const noun = checks.failed === 1 ? 'check' : 'checks';
-  const checksFailed = `${checks.failed} ${noun} failed`;
-  if (pr.merge?.question) return { doing: 'Merging', waiting: 'waiting on you to answer its agent', link: pr.merge.threadUrl };
-  if (pr.merge) return { doing: 'Merging', waiting: 'waiting on its agent', link: pr.merge.threadUrl };
-  if (pr.rebase?.pushed) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
-  if (pr.rebase?.question) return { doing: 'Rebasing', waiting: 'waiting on you to answer its agent', link: pr.rebase.threadUrl };
-  if (pr.rebase) return { doing: 'Rebasing', waiting: 'waiting on its agent', link: pr.rebase.threadUrl };
-  if (pr.agents.length > 0) {
-    const comments = pr.agents.filter((agent) => !agent.checks).length;
-    const subject = [
-      comments > 0 && `${comments} ${comments === 1 ? 'comment' : 'comments'}`,
-      pr.agents.some((agent) => agent.checks) && `the ${checks.failed} failed ${noun}`,
-    ]
-      .filter(Boolean)
-      .join(' and ');
-    const working = pr.agents.filter((agent) => !agent.queued);
-    const queued = pr.agents.length - working.length;
-    if (working.length === 0) return { doing: `Queued to answer ${subject}`, waiting: 'waiting on other agents to finish' };
+  const checksFailed = `${checks.failed} ${checks.failed === 1 ? 'check' : 'checks'} failed`;
+  const acting = on(pr, agents);
+  const working = acting.filter((agent) => agent.state === AgentState.WORKING);
+  if (pr.rebased) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
+  if (working.length === 1 && acting.length === 1) return { doing: working[0].title, waiting: 'waiting on its agent' };
+  if (working.length > 0) {
+    const queued = acting.length - working.length;
     return {
-      doing: `Answering ${subject}`,
-      waiting: `${queued > 0 ? `${queued} of ${pr.agents.length} agents queued · ` : ''}waiting on proposals`,
-      link: working.find((agent) => agent.threadUrl)?.threadUrl,
+      doing: `${working.length} ${working.length === 1 ? 'agent' : 'agents'} working`,
+      waiting: `${queued > 0 ? `${queued} queued · ` : ''}waiting on them`,
     };
   }
+  if (acting.length > 0) return { doing: `${acting.length} ${acting.length === 1 ? 'agent' : 'agents'} queued`, waiting: 'waiting on other agents to finish' };
+  // Its agent stopped without finishing: it waits in the agent list.
+  if (pr.merging) return { doing: 'Merging', waiting: 'waiting on you to answer its agent' };
+  if (pr.rebasing) return { doing: 'Rebasing', waiting: 'waiting on you to answer its agent' };
   if (running > 0 && checks.failed > 0) {
     return { doing: checksFailed, waiting: `waiting on ${running} still running before an agent looks at them` };
   }
@@ -129,8 +109,8 @@ function status(pr: PullRequest): Status | undefined {
   return undefined;
 }
 
-export function StatusLine({ pr }: { pr: PullRequest }) {
-  const line = status(pr);
+export function StatusLine({ pr, agents }: { pr: PullRequest; agents: Agent[] }) {
+  const line = status(pr, agents);
   if (!line) return null;
   return (
     <View style={styles.status}>
@@ -138,11 +118,6 @@ export function StatusLine({ pr }: { pr: PullRequest }) {
         <Text style={[styles.doing, line.ready && { color: t3.addition }, line.forceable && { color: t3.warning }]}>{line.doing}</Text>
         {line.waiting && ` · ${line.waiting}`}
       </Text>
-      {line.link && (
-        <Pressable onPress={() => Linking.openURL(line.link!)}>
-          <Text style={styles.link}>Thread ↗</Text>
-        </Pressable>
-      )}
     </View>
   );
 }
@@ -150,7 +125,7 @@ export function StatusLine({ pr }: { pr: PullRequest }) {
 // Checks on the head commit: failed, passed, or still running. A pushed rebase's new commit has
 // not had its checks listed yet.
 export function ChecksIcon({ pr, size = 14 }: { pr: PullRequest; size?: number }) {
-  if (pr.rebase?.pushed) return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
+  if (pr.rebased) return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
   if (pr.checksFailing) return <Icon icon={CircleX} size={size} color={t3.deletion} />;
   if (pr.checksPassing) return <Icon icon={CircleCheck} size={size} color={t3.addition} />;
   return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
@@ -188,10 +163,6 @@ const styles = StyleSheet.create({
   doing: {
     color: t3.muted,
   },
-  link: {
-    color: '#8FA8F5',
-    fontSize: 12,
-  },
   rowBorder: {
     borderTopWidth: 1,
     borderTopColor: t3.border,
@@ -208,19 +179,6 @@ const styles = StyleSheet.create({
   },
   review: {
     color: t3.muted,
-    fontSize: 12,
-  },
-  question: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    height: 24,
-    paddingHorizontal: 6,
-    borderRadius: 8,
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-  },
-  questionText: {
-    color: t3.warning,
     fontSize: 12,
   },
   countSlot: {

@@ -5,7 +5,15 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
-import { type Proposal, type PullRequest, type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
+import { agentsOf } from '../../agents';
+import {
+  AgentSchema,
+  type Proposal,
+  type PullRequest,
+  type PullRequestCluster,
+  PullRequestClusterSchema,
+  PullRequestSchema,
+} from '../../gen/gem_pb';
 import { clusterMergeBy, mergeBy, proposals } from '../fixtures';
 
 // Made-up clusters, one in each place a phone lists them. Stories render at the window's width,
@@ -21,8 +29,7 @@ type Fields = {
   checksFailing?: boolean;
   checks?: { total: number; done: number; failed: number };
   proposals?: Proposal[];
-  agents?: { threadUrl: string }[];
-  merge?: { threadUrl: string };
+  merging?: boolean;
 };
 
 const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields) =>
@@ -63,19 +70,12 @@ const forceable = cluster('Respect the configured S3 region', 180, [
   pullRequest('egress', 902, 'Upload to the configured S3 region', { checksPassing: true, admin: true }),
 ]);
 const merging = cluster('Respect the configured S3 region', 1, [
-  pullRequest('protocol', 1103, 'Add region to S3 upload options', {
-    ...passing,
-    merge: { threadUrl: 'https://t3.example/thread/merge' },
-  }),
-  pullRequest('egress', 902, 'Upload to the configured S3 region', {
-    ...passing,
-    merge: { threadUrl: 'https://t3.example/thread/merge' },
-  }),
+  pullRequest('protocol', 1103, 'Add region to S3 upload options', { ...passing, merging: true }),
+  pullRequest('egress', 902, 'Upload to the configured S3 region', { ...passing, merging: true }),
 ]);
 const working = cluster('Hedge gateway requests', 120, [
   pullRequest('agent-gateway', 388, 'Hedge requests after the p95', {
     checks: { total: 14, done: 9, failed: 0 },
-    agents: [{ threadUrl: 'https://t3.example/thread/answer' }],
   }),
 ]);
 const running = cluster('Type room metadata updates', 40, [
@@ -85,9 +85,15 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
   pullRequest('agents', 4810, 'Pin agent version on dispatch', { checksPassing: true }),
 ]);
 
+// The agents merging and answering a comment, which their clusters list.
+const agents = [
+  create(AgentSchema, { id: 'merge:m', title: 'Merge Respect the configured S3 region', pullRequestUrls: merging.pullRequests.map((pr) => pr.url) }),
+  create(AgentSchema, { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests[0].url] }),
+];
+
 function Home({ clusters }: { clusters: PullRequestCluster[] }) {
   const listed = sections
-    .map((name) => ({ name, clusters: clusters.filter((c) => section(c) === name) }))
+    .map((name) => ({ name, clusters: clusters.filter((c) => section(c, agents) === name) }))
     .filter((s) => s.clusters.length > 0);
   return (
     <ScrollView style={styles.page} stickyHeaderIndices={[1]}>
@@ -107,6 +113,8 @@ function Cluster({ cluster }: { cluster: PullRequestCluster }) {
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <ClusterView
         cluster={cluster}
+        agents={agentsOf(cluster, agents)}
+        onOpenAgent={() => {}}
         onApprove={() => {}}
         onDismiss={() => {}}
         onRestart={() => {}}

@@ -4,7 +4,7 @@ import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type PullRequest, ProposalSchema, PullRequestSchema, RebaseSchema } from '../../gen/gem_pb';
+import { AgentSchema, AgentState, type PullRequest, ProposalSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
 import { Icon, t3 } from '../../t3';
@@ -118,7 +118,7 @@ function List() {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={cluster} />
+          <PullRequestList pullRequests={cluster} agents={[]} />
         </View>
       }
     />
@@ -179,12 +179,11 @@ export const CTabs: StoryObj = { name: 'C · Tabs', render: () => <Tabs /> };
 
 // Behind a base that requires it up to date, conflicting with its base, being rebased, and being
 // rebased by an agent with a question.
-const threadUrl = 'https://app.t3.codes/environment/thread';
 const rebasing = [
   { ...agents, behind: true },
   { ...pullRequest('client-sdk-swift', 611, 'Close data channels idle for 30 s', {}), behind: true, conflicts: true },
-  { ...agentsJs, behind: true, rebase: create(RebaseSchema, { threadUrl }) },
-  { ...protocol, behind: true, rebase: create(RebaseSchema, { threadUrl, question: true }) },
+  { ...agentsJs, behind: true, rebasing: true },
+  { ...protocol, behind: true, rebasing: true },
   pending,
 ];
 export const DRebase: StoryObj = {
@@ -195,7 +194,7 @@ export const DRebase: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={rebasing} onRebase={() => {}} />
+          <PullRequestList pullRequests={rebasing} agents={rebasingAgents} onRebase={() => {}} />
         </View>
       }
     />
@@ -208,7 +207,8 @@ const step = (title: string, status: Exclude<MessageInitShape<typeof PullRequest
     repository: { owner: 'livekit', name: 'agents' },
     number: 4821,
     title,
-    url: 'https://github.com/livekit/agents/pull/4821',
+    // Each step is its own row, so it has its own URL for the agents on it.
+    url: `https://github.com/livekit/agents/pull/4821#${title}`,
     base: 'main',
     approved: true,
     mergeBy: mergeBy({ approved: true, ...status }),
@@ -219,25 +219,41 @@ const failed = { total: 8, done: 8, failed: 2 };
 const steps = [
   step('Behind its base', { checksPassing: true, checks: passed, behind: true }),
   step('Conflicts with its base', { checksPassing: true, checks: passed, behind: true, conflicts: true }),
-  step('Rebasing', { checksPassing: true, checks: passed, behind: true, rebase: { threadUrl } }),
-  step('Rebased, not listed yet', { checksPassing: true, checks: passed, rebase: { threadUrl, pushed: true } }),
+  step('Rebasing', { checksPassing: true, checks: passed, behind: true, rebasing: true }),
+  step('Rebased, not listed yet', { checksPassing: true, checks: passed, rebased: true }),
   step('Checks running', { checks: { total: 8, done: 3, failed: 0 } }),
   step('A check failed, others run', { checksFailing: true, checks: { total: 8, done: 5, failed: 1 } }),
-  step('Agent queued', { checksFailing: true, checks: failed, agents: [{ queued: true, checks: true }] }),
-  step('Agent looking', { checksFailing: true, checks: failed, agents: [{ threadUrl, checks: true }] }),
+  step('Agent queued', { checksFailing: true, checks: failed }),
+  step('Agent looking', { checksFailing: true, checks: failed }),
   step('Proposal ready', { checksFailing: true, checks: failed, proposals: [moved('failed', agents)] }),
   step('No proposal', { checksFailing: true, checks: failed }),
   step('Green', { checksPassing: true, checks: passed }),
 ];
 // Right after Restart investigation: each PR's waiting conversations have new agents at once.
 const restarted = [
-  step('Queued behind other agents', { checksPassing: true, checks: passed, agents: [{ queued: true }, { queued: true }] }),
-  step('Answering comments', { checksPassing: true, checks: passed, agents: [{ threadUrl }, { threadUrl }, { queued: true }] }),
-  step('Answering a comment and failed checks', {
-    checksFailing: true,
-    checks: failed,
-    agents: [{ threadUrl }, { threadUrl, checks: true }],
-  }),
+  step('Queued behind other agents', { checksPassing: true, checks: passed }),
+  step('Answering comments', { checksPassing: true, checks: passed }),
+  step('Answering a comment and failed checks', { checksFailing: true, checks: failed }),
+];
+
+// The agents on the rows above, as the server lists them.
+const agent = (id: string, title: string, url: string, state = AgentState.WORKING) =>
+  create(AgentSchema, { id, title, pullRequestUrls: [url], state });
+const urlOf = (rows: PullRequest[], title: string) => rows.find((pr) => pr.title === title)!.url;
+const rebasingAgents = [agent('rebase:r', 'Rebase agents-js#1290 and protocol#1147', agentsJs.url), agent('rebase:r2', 'Rebase agents-js#1290 and protocol#1147', protocol.url)];
+const stepAgents = [
+  agent('rebase:s', 'Rebase agents#4821', urlOf(steps, 'Rebasing')),
+  agent('answer:q', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent queued'), AgentState.QUEUED),
+  agent('answer:l', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent looking')),
+];
+const restartedAgents = [
+  agent('answer:1', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), AgentState.QUEUED),
+  agent('answer:2', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), AgentState.QUEUED),
+  agent('answer:3', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Answering comments')),
+  agent('answer:4', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Answering comments')),
+  agent('answer:5', 'Answer longcw on livekit/agents#4821', urlOf(restarted, 'Answering comments'), AgentState.QUEUED),
+  agent('answer:6', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Answering a comment and failed checks')),
+  agent('answer:7', 'Fix checks on livekit/agents#4821', urlOf(restarted, 'Answering a comment and failed checks')),
 ];
 export const FRestarted: StoryObj = {
   name: 'F · Restarted',
@@ -247,7 +263,7 @@ export const FRestarted: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={restarted} />
+          <PullRequestList pullRequests={restarted} agents={restartedAgents} />
         </View>
       }
     />
@@ -262,7 +278,7 @@ export const EStatus: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={steps} onRebase={() => {}} />
+          <PullRequestList pullRequests={steps} agents={stepAgents} onRebase={() => {}} />
         </View>
       }
     />

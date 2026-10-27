@@ -2,7 +2,8 @@ import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type Investigation, MergeBy, type PullRequest, type PullRequestCluster } from './gen/gem_pb';
+import { agentsOf } from './agents';
+import { type Agent, AgentState, MergeBy, type PullRequest, type PullRequestCluster } from './gen/gem_pb';
 import { t3 } from './t3';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -26,17 +27,20 @@ function shortAgo(date: Date): string {
 // only a merge, its checks, or a reviewer.
 export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
 
-export function section(cluster: PullRequestCluster): (typeof sections)[number] {
+// An agent waiting on the user is in the agent list, not in the cluster; a rebase or merge waiting
+// on the user still puts its cluster in front of them.
+export function section(cluster: PullRequestCluster, agents: Agent[]): (typeof sections)[number] {
   const prs = cluster.pullRequests;
+  const working = agentsOf(cluster, agents);
   const running = (pr: PullRequest) => (pr.checks?.total ?? 0) > (pr.checks?.done ?? 0);
+  const answered = (pr: PullRequest) => working.some((agent) => agent.pullRequestUrls.includes(pr.url));
   const needsYou = (pr: PullRequest) =>
     pr.proposals.length > 0 ||
-    pr.rebase?.question ||
-    pr.merge?.question ||
-    (pr.behind && !pr.rebase) ||
-    (pr.checksFailing && !running(pr) && pr.agents.length === 0);
+    (pr.behind && !pr.rebasing && !pr.rebased) ||
+    ((pr.rebasing || pr.merging) && !answered(pr)) ||
+    (pr.checksFailing && !running(pr) && !answered(pr));
   if (prs.some(needsYou)) return 'Needs you';
-  if (prs.some((pr) => pr.agents.length > 0 || pr.rebase || pr.merge)) return 'Agents working';
+  if (working.length > 0 || prs.some((pr) => pr.rebased)) return 'Agents working';
   if (cluster.mergeBy !== MergeBy.UNSPECIFIED) return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';
   return 'Waiting on review';
@@ -49,7 +53,7 @@ const SEGMENT_GAP = 4;
 function segments(pr: PullRequest): (string | undefined)[] {
   const checks = pr.checksFailing ? t3.deletion : pr.checksPassing ? t3.addition : t3.warning;
   const review = pr.approved ? t3.addition : undefined;
-  const merge = pr.merge ? t3.warning : undefined;
+  const merge = pr.merging ? t3.warning : undefined;
   return [checks, review, merge];
 }
 
@@ -106,28 +110,22 @@ export function PhoneClusterRow({
   );
 }
 
-// A spinner while the agent runs, in a slot as wide when it doesn't, so titles line up.
-function InvestigationMark({ investigation }: { investigation: Investigation }) {
-  if (investigation.working) return <ActivityIndicator size={10} color="#8FA8F5" />;
+// A spinner while the agent runs, a dot while it is queued, and a slot as wide when it waits on the
+// user, so titles line up.
+function AgentMark({ agent }: { agent: Agent }) {
+  if (agent.state === AgentState.WORKING) return <ActivityIndicator size={10} color="#8FA8F5" />;
+  if (agent.state === AgentState.QUEUED) return <View style={[styles.mark, styles.queued]} />;
   return <View style={styles.mark} />;
 }
 
-function ToReview({ investigation }: { investigation: Investigation }) {
-  const count = investigation.proposals.length;
+function ToReview({ agent }: { agent: Agent }) {
+  const count = agent.proposals.length;
   if (count === 0) return null;
   return <Text style={styles.toReview}>{count} to review</Text>;
 }
 
-// One line per investigation or follow-up, like a cluster's.
-export function InvestigationRow({
-  investigation,
-  selected,
-  onPress,
-}: {
-  investigation: Investigation;
-  selected: boolean;
-  onPress: () => void;
-}) {
+// One line per agent, like a cluster's.
+export function AgentRow({ agent, selected, onPress }: { agent: Agent; selected: boolean; onPress: () => void }) {
   const [hovered, setHovered] = useState(false);
   return (
     <Pressable
@@ -136,25 +134,25 @@ export function InvestigationRow({
       onHoverOut={() => setHovered(false)}
       style={[styles.row, (selected || hovered) && styles.rowActive]}
     >
-      <InvestigationMark investigation={investigation} />
+      <AgentMark agent={agent} />
       <Text numberOfLines={1} style={styles.rowName}>
-        {investigation.title}
+        {agent.title}
       </Text>
-      <ToReview investigation={investigation} />
-      {investigation.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(investigation.startedAt))}</Text>}
+      <ToReview agent={agent} />
+      {agent.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(agent.startedAt))}</Text>}
     </Pressable>
   );
 }
 
-export function PhoneInvestigationRow({ investigation, onPress }: { investigation: Investigation; onPress: () => void }) {
+export function PhoneAgentRow({ agent, onPress }: { agent: Agent; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={styles.phoneRow}>
-      <InvestigationMark investigation={investigation} />
+      <AgentMark agent={agent} />
       <Text numberOfLines={1} style={[styles.phoneRowName, { flex: 1 }]}>
-        {investigation.title}
+        {agent.title}
       </Text>
-      <ToReview investigation={investigation} />
-      {investigation.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(investigation.startedAt))}</Text>}
+      <ToReview agent={agent} />
+      {agent.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(agent.startedAt))}</Text>}
     </Pressable>
   );
 }
@@ -273,6 +271,13 @@ const styles = StyleSheet.create({
   },
   mark: {
     width: 10,
+  },
+  queued: {
+    height: 6,
+    width: 6,
+    marginHorizontal: 2,
+    borderRadius: 3,
+    backgroundColor: t3.faint,
   },
   toReview: {
     color: '#FFFFFF',

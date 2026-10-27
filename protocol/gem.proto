@@ -18,33 +18,40 @@ message ListOpenPullRequestsResponse {
   // The search qualifiers narrowing their PRs, from GEM_SEARCH, e.g.
   // `org:livekit`. Empty when every open PR of theirs is listed.
   string search = 3;
-  // Open investigations and follow-ups, most recently started first.
-  repeated Investigation investigations = 4;
+  reserved 4;
+  reserved "investigations";
+  // Every T3 Code agent gem runs, most recently started first.
+  repeated Agent agents = 5;
 }
 
-// A T3 Code agent finding the root cause of failed checks that were rerun as flaky, or doing the
-// follow-up of an approved proposal. It outlives the pull request it started from, until the
-// user closes it.
-message Investigation {
+// A T3 Code agent gem started: answering a conversation or failed checks, rebasing or merging pull
+// requests, investigating failed checks, doing an approved proposal's follow-up, or answering the
+// user's message about a cluster. Each is followed the same way: its latest reply shows in gem, and
+// the user answers it by messaging it. Its thread stays in T3 Code after it is closed.
+message Agent {
   string id = 1;
+  // What it was asked to do, in a line: its thread's title.
   string title = 2;
-  // The pull request whose checks failed.
-  string pull_request_url = 3;
-  // The failed checks, with the excerpts the rerun proposal showed. Unset on a follow-up.
-  CheckFailure check_failure = 4;
-  // Why the rerun proposal called the failure flaky. Empty on a follow-up.
-  string rerun_summary = 5;
-  // The T3 Code thread doing the work.
-  string thread_id = 6;
-  google.protobuf.Timestamp started_at = 7;
-  // The agent is running, on its first prompt or on a message the user sent.
-  bool working = 8;
-  // The agent's latest reply, in markdown. Empty until its first reply.
-  string reply = 9;
+  AgentState state = 3;
+  // The pull requests it acts on. It belongs to the cluster holding any of them, whatever the
+  // cluster is called or becomes; with none still open, it belongs to no cluster.
+  repeated string pull_request_urls = 4;
+  // Its latest reply, in markdown. Empty until its first reply.
+  string reply = 5;
   // `reply` as GitHub renders it.
-  string reply_html = 10;
-  // What the agent proposes doing about it.
-  repeated Proposal proposals = 11;
+  string reply_html = 6;
+  // What it proposes that shows under it rather than on a pull request.
+  repeated Proposal proposals = 7;
+  google.protobuf.Timestamp started_at = 8;
+}
+
+enum AgentState {
+  // Running, on its first prompt or on a message the user sent.
+  AGENT_STATE_WORKING = 0;
+  // Waiting for other agents to finish before it starts.
+  AGENT_STATE_QUEUED = 1;
+  // Stopped, waiting on the user: to answer its reply, or to review its proposals.
+  AGENT_STATE_WAITING = 2;
 }
 
 // Pull requests connected by links, directly or through other PRs in the
@@ -79,18 +86,12 @@ message PullRequest {
   // GitHub will not merge it until the head branch is rebased onto the base branch: the base
   // branch requires it up to date, or it conflicts.
   bool behind = 9;
-  // Set while a T3 Code agent rebases the head branch onto the base branch.
-  Rebase rebase = 10;
+  reserved 10, 13, 14;
+  reserved "rebase", "agents", "merge";
   // The checks on the head commit, by how far along they are.
   Checks checks = 11;
   // Commit at the tip of the head branch.
   string head_oid = 12;
-  // The T3 Code agents answering the conversations waiting on the user, each from when it is
-  // queued until it stops.
-  repeated Agent agents = 13;
-  // Set while a T3 Code agent merges the pull request's cluster. Every pull request it merges has
-  // the same one.
-  Merge merge = 14;
   // How the user can merge it.
   MergeBy merge_by = 15;
   // The PR's diff of each file a proposal on it is about: the file a review
@@ -100,6 +101,13 @@ message PullRequest {
   string base = 17;
   // It conflicts with the base branch. Implies behind.
   bool conflicts = 18;
+  // An agent is rebasing it onto its base branch.
+  bool rebasing = 19;
+  // An agent pushed it rebased, and it is still listed with its old head commit and that commit's
+  // checks.
+  bool rebased = 20;
+  // An agent is merging its cluster.
+  bool merging = 21;
 }
 
 // How a pull request can merge, decided by the server.
@@ -122,35 +130,6 @@ message Checks {
   // Finished with FAILURE, TIMED_OUT or STARTUP_FAILURE for a check run, or FAILURE or ERROR for
   // a commit status. Agents answer failed checks once every check is done.
   uint32 failed = 3;
-}
-
-// A T3 Code agent answering a comment or failed checks on a pull request with proposals.
-message Agent {
-  // The agent waits for one of the agents already running to finish.
-  bool queued = 1;
-  // Opens the agent's thread in T3 Code. Empty while queued.
-  string thread_url = 2;
-  // It answers the head commit's failed checks, not a comment.
-  bool checks = 3;
-}
-
-// A T3 Code agent rebasing a pull request, until it settles its thread or stops.
-message Rebase {
-  // Opens the agent's thread in T3 Code.
-  string thread_url = 1;
-  // The agent waits on the user to answer a question in its thread.
-  bool question = 2;
-  // The agent pushed the rebased branch, and the pull request is still listed with its old head
-  // commit and that commit's checks.
-  bool pushed = 3;
-}
-
-// A T3 Code agent merging a cluster's pull requests, until it settles its thread or stops.
-message Merge {
-  // Opens the agent's thread in T3 Code. Empty while it starts.
-  string thread_url = 1;
-  // The agent waits on the user to answer a question in its thread.
-  bool question = 2;
 }
 
 message Repository {
@@ -206,9 +185,10 @@ message Proposal {
   bool rerun = 17;
   // `summary` as GitHub renders it.
   string summary_html = 18;
-  // Set instead of `comment` and `check_failure` when an investigation proposes it. It shows
-  // under the investigation while the investigation is open, whatever happens to its pull
-  // request. Approving it clears no other proposal.
+  // The agent's ID, set instead of `comment` and `check_failure` when an agent investigating or
+  // answering the user's message proposes it. It shows in that agent's `proposals` while the agent
+  // is open, whatever happens to its pull request. Approving it clears no other proposal. Named for
+  // investigations, which were the only such agents, so saved proposals keep it.
   string investigation_id = 19;
 }
 
@@ -316,7 +296,7 @@ message RenderMarkdownResponse {
 }
 
 // Deletes every proposal on the cluster's pull requests and queues new agents for the
-// conversations still waiting on the user. The agents show in each pull request's `agents`.
+// conversations still waiting on the user. The agents show in `agents`.
 message RestartClusterRequest {
   repeated string pull_request_urls = 1;
 }
@@ -324,7 +304,7 @@ message RestartClusterRequest {
 message RestartClusterResponse {}
 
 // Starts a T3 Code agent rebasing the pull request onto its base branch. Its progress shows in
-// the pull request's `rebase`.
+// `agents`.
 message RebasePullRequestRequest {
   string url = 1;
 }
@@ -332,7 +312,7 @@ message RebasePullRequestRequest {
 message RebasePullRequestResponse {}
 
 // Starts one T3 Code agent rebasing each of the cluster's pull requests onto its base branch,
-// stacked ones after those they stack on. Its progress shows in each pull request's `rebase`.
+// stacked ones after those they stack on. Its progress shows in `agents`.
 message RebaseClusterRequest {
   repeated string pull_request_urls = 1;
 }
@@ -340,7 +320,7 @@ message RebaseClusterRequest {
 message RebaseClusterResponse {}
 
 // Starts a T3 Code agent merging the cluster's pull requests, in an order that keeps each one's
-// base. Its progress shows in each pull request's `merge`.
+// base. Its progress shows in `agents`.
 message MergeClusterRequest {
   // The cluster's pull requests, oldest first.
   repeated string pull_request_urls = 1;
@@ -361,8 +341,7 @@ message SearchPullRequestsResponse {
   repeated string pull_request_urls = 1;
 }
 
-// Starts an agent on the user's message about a cluster, followed like an investigation. The
-// agent reads the cluster and its pull requests through gem's MCP server.
+// Starts an agent on the user's message about a cluster. The agent reads the cluster and its pull requests through gem's MCP server.
 message MessageClusterRequest {
   // The cluster's pull requests, oldest first.
   repeated string pull_request_urls = 1;
@@ -370,8 +349,7 @@ message MessageClusterRequest {
 }
 
 message MessageClusterResponse {
-  // The investigation following the agent.
-  string investigation_id = 1;
+  string agent_id = 1;
 }
 
 // Approves a rerun proposal, then starts an investigation of the checks it reruns.
@@ -381,17 +359,17 @@ message InvestigateRequest {
 
 message InvestigateResponse {}
 
-// Sends the user's message to an investigation's agent, as its next turn.
-message MessageInvestigationRequest {
+// Sends the user's message to an agent, as its next turn.
+message MessageAgentRequest {
   string id = 1;
   string message = 2;
 }
 
-message MessageInvestigationResponse {}
+message MessageAgentResponse {}
 
-// Removes an investigation and its proposals from gem. Its T3 Code thread stays.
-message CloseInvestigationRequest {
+// Removes an agent and its proposals from gem. Its T3 Code thread stays.
+message CloseAgentRequest {
   string id = 1;
 }
 
-message CloseInvestigationResponse {}
+message CloseAgentResponse {}

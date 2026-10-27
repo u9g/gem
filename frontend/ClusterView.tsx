@@ -1,8 +1,8 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StyleSheet, Text, View } from 'react-native';
 
-import { units } from './ClusterRow';
-import { MergeBy, type PullRequestCluster } from './gen/gem_pb';
+import { AgentRow, units } from './ClusterRow';
+import { type Agent, MergeBy, type PullRequestCluster } from './gen/gem_pb';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
 import { Button, t3, usePhone } from './t3';
@@ -21,6 +21,8 @@ export function timeAgo(date: Date): string {
 // conversations waiting on u9g. The phone docks the box to ask an agent about it below.
 export function ClusterView({
   cluster,
+  agents,
+  onOpenAgent,
   busy,
   onApprove,
   onDismiss,
@@ -31,6 +33,9 @@ export function ClusterView({
   onInvestigate,
 }: {
   cluster: PullRequestCluster;
+  // Its active agents.
+  agents: Agent[];
+  onOpenAgent: (id: string) => void;
   busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
   onDismiss: (id: string) => void;
@@ -62,8 +67,9 @@ export function ClusterView({
         />
       </View>
       <View style={styles.pullRequests}>
-        <PullRequestList pullRequests={cluster.pullRequests} busy={busy} onRebase={onRebase} />
+        <PullRequestList pullRequests={cluster.pullRequests} agents={agents} busy={busy} onRebase={onRebase} />
       </View>
+      <ClusterAgents agents={agents} onOpenAgent={onOpenAgent} />
       <MergeBanner cluster={cluster} busy={busy} onMerge={onMerge} />
       {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
         <ProposalGroup
@@ -74,6 +80,18 @@ export function ClusterView({
           onDismiss={onDismiss}
           onInvestigate={onInvestigate}
         />
+      ))}
+    </View>
+  );
+}
+
+// The cluster's active agents, each opening where it can be messaged.
+export function ClusterAgents({ agents, onOpenAgent }: { agents: Agent[]; onOpenAgent: (id: string) => void }) {
+  if (agents.length === 0) return null;
+  return (
+    <View>
+      {agents.map((agent) => (
+        <AgentRow key={agent.id} agent={agent} selected={false} onPress={() => onOpenAgent(agent.id)} />
       ))}
     </View>
   );
@@ -91,11 +109,11 @@ export function RebaseClusterButton({
   onRebaseCluster: (cluster: PullRequestCluster) => void;
 }) {
   const starting = busy?.has(`rebase ${cluster.pullRequests[0].url}`);
-  if (!cluster.pullRequests.some((pr) => pr.behind || pr.rebase)) return null;
+  if (!cluster.pullRequests.some((pr) => pr.behind || pr.rebasing || pr.rebased)) return null;
   return (
     <Button
       label={starting ? 'Starting an agent…' : 'Rebase cluster'}
-      disabled={starting || cluster.pullRequests.some((pr) => pr.rebase || busy?.has(pr.url))}
+      disabled={starting || cluster.pullRequests.some((pr) => pr.rebasing || pr.rebased || busy?.has(pr.url))}
       onPress={() => onRebaseCluster(cluster)}
     />
   );
@@ -121,7 +139,7 @@ export function MergeBanner({
   const admin = cluster.mergeBy === MergeBy.ADMIN;
   const forced = cluster.pullRequests.filter((pr) => pr.mergeBy === MergeBy.ADMIN).length;
   const one = forced === 1;
-  if (cluster.mergeBy === MergeBy.UNSPECIFIED || cluster.pullRequests.some((pr) => pr.merge)) return null;
+  if (cluster.mergeBy === MergeBy.UNSPECIFIED || cluster.pullRequests.some((pr) => pr.merging)) return null;
   return (
     <View style={[styles.merge, admin && styles.adminMerge, stacked && styles.mergeStacked]}>
       <Text style={[styles.mergeText, stacked && styles.mergeTextStacked]}>

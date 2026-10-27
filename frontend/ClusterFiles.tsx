@@ -3,9 +3,9 @@ import { FileCode, MessagesSquare } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
+import { ClusterAgents, type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
 import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
-import { Composer } from './InvestigationView';
+import { Composer } from './AgentView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
 import { parseDiff } from './surfaces';
@@ -53,7 +53,7 @@ type Props = Parameters<typeof ClusterView>[0] & {
 // their conversations are on, and the chosen file's diff with each conversation inside it, after
 // the line its review comment is on.
 export function ClusterReview(props: Props) {
-  const { cluster, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
+  const { cluster, agents, onOpenAgent, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
   const sections = cluster.pullRequests.flatMap(sectionsOf);
   const [chosen, setChosen] = useState<string>();
   // Approving or dismissing the last conversation on a file removes its section.
@@ -93,16 +93,16 @@ export function ClusterReview(props: Props) {
                   {pr.repository?.name}#{pr.number}
                 </Text>
                 {pr.checks && pr.checks.failed > 0 && <Text style={styles.failed}>{pr.checks.failed} failed</Text>}
-                {(pr.behind || pr.rebase) && (
+                {(pr.behind || pr.rebasing || pr.rebased) && (
                   <Button
                     label="Rebase"
-                    disabled={pr.rebase !== undefined || busy?.has(pr.url)}
+                    disabled={pr.rebasing || pr.rebased || busy?.has(pr.url)}
                     onPress={() => onRebase(pr.url)}
                   />
                 )}
                 {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
               </Pressable>
-              <StatusLine pr={pr} />
+              <StatusLine pr={pr} agents={agents} />
               {sections.filter((s) => s.pr === pr).map((s) => (
                 <Pressable
                   key={s.path}
@@ -123,6 +123,7 @@ export function ClusterReview(props: Props) {
             </View>
           ))}
         </View>
+        <ClusterAgents agents={agents} onOpenAgent={onOpenAgent} />
         {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
       </View>
       <View nativeID={MAIN} style={styles.main}>

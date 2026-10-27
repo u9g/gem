@@ -2,35 +2,41 @@ import { X } from 'lucide-react';
 import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { InvestigationRow, PhoneClusterRow, section, sections } from './ClusterRow';
-import type { Investigation, PullRequestCluster } from './gen/gem_pb';
+import { unclustered } from './agents';
+import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
+import type { Agent, PullRequestCluster } from './gen/gem_pb';
 import { Icon, t3 } from './t3';
 
 const COLUMN_MIN_WIDTH = 220;
 const DRAWER_WIDTH = 640;
 
 // The wide layout: one column per place a phone lists a cluster, left to right by what each waits
-// on, after a column of agents when any run. The open cluster or agent, `children`, slides over the
+// on, after a column of the agents no cluster lists: those waiting on the user, and those whose pull
+// requests all closed. The open cluster or agent, `children`, slides over the
 // right edge, or over the whole board when `wide`; clicking beside it, the wide drawer's close
 // button or pressing Escape closes it.
 export function Board({
   clusters,
-  investigations,
+  allClusters,
+  agents,
   openUrl,
-  openInvestigation,
+  openAgent,
   onOpenCluster,
-  onOpenInvestigation,
+  onOpenAgent,
   onClose,
   wide = false,
   children,
 }: {
+  // The clusters shown, after filters.
   clusters: PullRequestCluster[];
-  investigations: Investigation[];
+  // Every cluster, which decides where an agent is listed whatever is filtered out.
+  allClusters: PullRequestCluster[];
+  agents: Agent[];
   // The oldest PR's URL of the open cluster.
   openUrl?: string;
-  openInvestigation?: string;
+  openAgent?: string;
   onOpenCluster: (cluster: PullRequestCluster) => void;
-  onOpenInvestigation: (id: string) => void;
+  onOpenAgent: (id: string) => void;
   onClose: () => void;
   wide?: boolean;
   children?: ReactNode;
@@ -42,23 +48,24 @@ export function Board({
     return () => removeEventListener('keydown', close);
   }, [children, onClose]);
 
+  const listedAgents = unclustered(agents, allClusters);
   return (
     <View style={styles.board}>
       <View style={styles.columns}>
-        {investigations.length > 0 && (
-          <Column name="Agents" count={investigations.length}>
-            {investigations.map((i) => (
-              <InvestigationRow
-                key={i.id}
-                investigation={i}
-                selected={i.id === openInvestigation}
-                onPress={() => onOpenInvestigation(i.id)}
+        {listedAgents.length > 0 && (
+          <Column name="Agents" count={listedAgents.length}>
+            {listedAgents.map((agent) => (
+              <AgentRow
+                key={agent.id}
+                agent={agent}
+                selected={agent.id === openAgent}
+                onPress={() => onOpenAgent(agent.id)}
               />
             ))}
           </Column>
         )}
         {sections.map((name) => {
-          const listed = clusters.filter((cluster) => section(cluster) === name);
+          const listed = clusters.filter((cluster) => section(cluster, agents) === name);
           return (
             <Column key={name} name={name} count={listed.length} urgent={name === 'Needs you'}>
               {listed.map((cluster) => (

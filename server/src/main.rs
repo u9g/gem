@@ -21,17 +21,18 @@ use conversations::Conversations;
 use gem_changes::Changes;
 use names::Names;
 use proto::{
-    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseInvestigationRequest,
-    CloseInvestigationResponse, DismissProposalRequest, DismissProposalResponse,
-    InvestigateRequest, InvestigateResponse, ListOpenPullRequestsRequest,
-    ListOpenPullRequestsResponse, MergeBy, MergeClusterRequest, MergeClusterResponse,
-    MessageClusterRequest, MessageClusterResponse, MessageInvestigationRequest,
-    MessageInvestigationResponse, PullRequest, PullRequestCluster, RebaseClusterRequest,
+    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest,
+    CloseAgentResponse, DismissProposalRequest, DismissProposalResponse, InvestigateRequest,
+    InvestigateResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, MergeBy,
+    MergeClusterRequest, MergeClusterResponse, MessageAgentRequest, MessageAgentResponse,
+    MessageClusterRequest, MessageClusterResponse, PullRequest, PullRequestCluster,
+    RebaseClusterRequest,
     RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse,
     RenderMarkdownRequest, RenderMarkdownResponse, Repository, RestartClusterRequest,
     RestartClusterResponse, SearchPullRequestsRequest, SearchPullRequestsResponse,
 };
 
+mod agents;
 mod conversations;
 mod files;
 mod investigations;
@@ -387,7 +388,7 @@ async fn run_server() {
                     .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
                 investigations::ask(cluster, &request.message)
                     .await
-                    .map(|investigation_id| Json(MessageClusterResponse { investigation_id }))
+                    .map(|agent_id| Json(MessageClusterResponse { agent_id }))
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })
@@ -433,7 +434,7 @@ async fn run_server() {
             })
         })
         .route("/prs", {
-            let prs = prs.clone();
+            let (prs, conversations) = (prs.clone(), conversations.clone());
             post(move |Json(_): Json<ListOpenPullRequestsRequest>| {
                 serve_prs(prs, names, conversations)
             })
@@ -496,26 +497,24 @@ async fn run_server() {
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             }),
         )
-        .route(
-            "/investigations/message",
-            post(
-                |Json(request): Json<MessageInvestigationRequest>| async move {
-                    investigations::message(&request.id, &request.message)
-                        .await
-                        .map(|()| Json(MessageInvestigationResponse {}))
-                        .map_err(|error| (StatusCode::BAD_REQUEST, error))
-                },
-            ),
-        )
-        .route(
-            "/investigations/close",
-            post(
-                |Json(request): Json<CloseInvestigationRequest>| async move {
-                    investigations::close(&request.id).await;
-                    Json(CloseInvestigationResponse {})
-                },
-            ),
-        )
+        .route("/agents/message", {
+            let conversations = conversations.clone();
+            post(|Json(request): Json<MessageAgentRequest>| async move {
+                agents::message(&conversations, &request.id, &request.message)
+                    .await
+                    .map(|()| Json(MessageAgentResponse {}))
+                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
+            })
+        })
+        .route("/agents/close", {
+            let conversations = conversations.clone();
+            post(|Json(request): Json<CloseAgentRequest>| async move {
+                agents::close(&conversations, &request.id)
+                    .await
+                    .map(|()| Json(CloseAgentResponse {}))
+                    .map_err(|error| (StatusCode::NOT_FOUND, error))
+            })
+        })
         .route(
             "/markdown/render",
             post(|Json(request): Json<RenderMarkdownRequest>| async move {
@@ -535,6 +534,7 @@ async fn run_server() {
         );
 
     investigations::watch();
+    agents::watch(conversations);
     gem_room::serve(
         move |request| gem_http::respond(app.clone(), request),
         snapshot,
@@ -606,7 +606,7 @@ async fn serve_prs(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
-// The cached clusters with their names, proposals and investigations, as gem shows them.
+// The cached clusters with their names and proposals, and the agents, as gem shows them.
 async fn filled(
     cache: &Cache<ListOpenPullRequestsResponse>,
     names: &Names,
@@ -616,10 +616,9 @@ async fn filled(
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     files::fill(&mut response.clusters).await;
-    investigations::fill(&mut response).await;
-    rebases::fill(&mut response.clusters).await;
-    merges::fill(&mut response.clusters).await;
-    conversations.fill(&mut response.clusters).await;
+    rebases::fill(&mut response.clusters);
+    merges::fill(&mut response.clusters);
+    agents::fill(&mut response, conversations).await;
     Some(response)
 }
 
@@ -656,7 +655,7 @@ async fn open_pull_requests(
         clusters,
         login: login().to_string(),
         search,
-        investigations: Vec::new(),
+        agents: Vec::new(),
     })
 }
 
@@ -768,13 +767,13 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         proposals: Vec::new(),
                         behind: pr.behind,
                         conflicts: pr.conflicts,
-                        rebase: None,
                         checks: Some(pr.checks),
                         head_oid: pr.head_oid.clone(),
                         base: pr.base.clone(),
-                        agents: Vec::new(),
-                        merge: None,
                         files: Vec::new(),
+                        rebasing: false,
+                        rebased: false,
+                        merging: false,
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
