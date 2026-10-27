@@ -227,6 +227,11 @@ const steps = [
   step('Agent looking', { checksFailing: true, checks: failed }),
   step('Proposal ready', { checksFailing: true, checks: failed, proposals: [moved('failed', agents)] }),
   step('No proposal', { checksFailing: true, checks: failed }),
+  step('Agent proposed nothing', {
+    checksFailing: true,
+    checks: failed,
+    noProposalReason: 'Proposed nothing: both failures need livekit/protocol#1147 released first.',
+  }),
   step('Green', { checksPassing: true, checks: passed }),
 ];
 // Right after Restart investigation: each PR's waiting conversations have new agents at once.

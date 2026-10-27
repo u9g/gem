@@ -108,6 +108,9 @@ message PullRequest {
   bool rebased = 20;
   // An agent is merging its cluster.
   bool merging = 21;
+  // Why the agent that answered the head commit's failed checks proposed nothing, in its words.
+  // Empty until it finishes, and when it proposed something.
+  string no_proposal_reason = 22;
 }
 
 // How a pull request can merge, decided by the server.
