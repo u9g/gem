@@ -229,6 +229,25 @@ fn call(state: &Path, tool: &str, arguments: &Value) -> Result<String, String> {
     }
 }
 
+// The URLs of the pull requests in the snapshot's cluster holding `pr`, or none when it holds none.
+fn cluster_of(state: &Path, pr: &str) -> Vec<String> {
+    let pr = pr.trim().trim_end_matches('/');
+    let snapshot: ListOpenPullRequestsResponse = std::fs::read(state.join(SNAPSHOT))
+        .ok()
+        .and_then(|json| serde_json::from_slice(&json).ok())
+        .unwrap_or_default();
+    (snapshot.clusters.into_iter())
+        .map(|cluster| {
+            cluster
+                .pull_requests
+                .into_iter()
+                .map(|p| p.url)
+                .collect::<Vec<_>>()
+        })
+        .find(|urls| urls.iter().any(|url| url == pr))
+        .unwrap_or_default()
+}
+
 // A cluster as `get_cluster` returns it, for prompts of agents that may not reach this server.
 pub fn cluster_json(cluster: &PullRequestCluster) -> String {
     let mut cluster = serde_json::to_value(cluster).unwrap();
@@ -359,7 +378,10 @@ async fn handle_agent<G: GitHub>(
         `get_cluster` reads a cluster as gem shows it now.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": [get_cluster(), propose_tool(subject)] })),
+        "tools/list" => {
+            let cluster = cluster_of(&endpoint.state, &subject.prs()[0]);
+            Ok(json!({ "tools": [get_cluster(), propose_tool(subject, &cluster)] }))
+        }
         "tools/call" => {
             let arguments = &params["arguments"];
             Ok(tool_result(
@@ -382,7 +404,8 @@ async fn propose<G: GitHub>(
     let request: proposals::Request =
         serde_json::from_value(arguments.clone()).map_err(|e| e.to_string())?;
     let dir = endpoint.state.join(proposals::DIR);
-    let proposed = proposals::propose(&endpoint.github, &dir, subject, request).await;
+    let cluster = cluster_of(&endpoint.state, &request.pr);
+    let proposed = proposals::propose(&endpoint.github, &dir, subject, &cluster, request).await;
     match &proposed {
         Ok(id) => tracing::info!(proposal = %id, subject = subject.id(), "proposal recorded"),
         Err(error) => tracing::info!(subject = subject.id(), %error, "proposal rejected"),
@@ -390,8 +413,8 @@ async fn propose<G: GitHub>(
     proposed.map(|id| format!("Recorded proposal {id}."))
 }
 
-// `propose`, with the steps its subject can take.
-fn propose_tool(subject: &Subject) -> Value {
+// `propose`, with the steps its subject can take, and the pull requests of `cluster` it can patch.
+fn propose_tool(subject: &Subject, cluster: &[String]) -> Value {
     let mut properties = json!({
         "pr": {
             "type": "string",
@@ -411,6 +434,25 @@ fn propose_tool(subject: &Subject) -> Value {
     against its head. Never commit or push it yourself.",
         },
         "message": { "type": "string", "description": "The commit message for `patch`." },
+        "other_patches": {
+            "type": "array",
+            "description": format!(
+                "Changes to other pull requests of the cluster, such as the same fix in another \
+    repository's matching pull request: any of {} other than `pr`. Each is `git diff` against \
+    that pull request's head. Never commit or push them yourself.",
+                cluster.join(", ")
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "pr": { "type": "string", "description": "The pull request it changes." },
+                    "patch": { "type": "string" },
+                    "message": { "type": "string", "description": "The commit message." },
+                },
+                "required": ["pr", "patch", "message"],
+                "additionalProperties": false,
+            },
+        },
         "reply": {
             "type": "string",
             "description": "Markdown posted as the user, in the first person.",
@@ -466,7 +508,7 @@ fn propose_tool(subject: &Subject) -> Value {
         "name": "propose",
         "description": "Records a proposal for the user to approve or dismiss in gem. It is \
     checked first: an error says what is wrong, to fix and propose again. Approving runs its steps \
-    in this order: `follow_up`, `patch`, `reply`, `resolve_thread`, `rerun`, \
+    in this order: `follow_up`, `patch`, `other_patches`, `reply`, `resolve_thread`, `rerun`, \
     `close_pull_request`.",
         "inputSchema": {
             "type": "object",
@@ -854,6 +896,67 @@ mod tests {
             .await;
         assert_eq!(result["isError"], true);
         assert!(server.proposals().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_proposal_patches_other_pull_requests_of_its_cluster() {
+        let server = Server::new("other-patches");
+        let cluster = |urls: &[&str]| PullRequestCluster {
+            pull_requests: (urls.iter())
+                .map(|url| crate::proto::PullRequest {
+                    url: url.to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        const ELSEWHERE: &str = "https://github.com/o/r/pull/3";
+        let snapshot = ListOpenPullRequestsResponse {
+            clusters: vec![cluster(&[PR, OTHER]), cluster(&[ELSEWHERE])],
+            ..Default::default()
+        };
+        std::fs::write(
+            server.state.join(SNAPSHOT),
+            serde_json::to_vec(&snapshot).unwrap(),
+        )
+        .unwrap();
+        let token = server.token(&in_thread()).await;
+        let other_patch = |pr: &str| {
+            json!({
+                "pr": PR,
+                "summary": "Port it",
+                "reply": "Ported.",
+                "other_patches": [{ "pr": pr, "patch": "diff --git a/x b/x\n", "message": "Port it" }],
+            })
+        };
+
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        let (_, response) = server.post(Some(&token), list).await;
+        let description = response["result"]["tools"][1]["inputSchema"]["properties"]
+            ["other_patches"]["description"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(description.contains(OTHER), "{description}");
+
+        for pr in [PR, ELSEWHERE] {
+            let result = server.call(&token, "propose", other_patch(pr)).await;
+            assert_eq!(result["isError"], true, "{pr} gave {result}");
+        }
+        assert!(server.proposals().is_empty());
+
+        let result = server.call(&token, "propose", other_patch(OTHER)).await;
+        assert_eq!(result["isError"], Value::Null, "{result}");
+        let [proposal] = &server.proposals()[..] else {
+            panic!("{:?}", server.proposals());
+        };
+        assert_eq!(proposal.pull_request_url, PR);
+        assert_eq!(proposal.patch, None);
+        let [patch] = &proposal.other_patches[..] else {
+            panic!("{:?}", proposal.other_patches);
+        };
+        assert_eq!(patch.pull_request_url, OTHER);
+        assert_eq!(patch.head_oid, "abc");
     }
 
     #[tokio::test]

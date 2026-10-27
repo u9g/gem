@@ -60,6 +60,10 @@ export function stepSentence(proposal: Proposal): string {
     const n = diffFiles(proposal.patch.diff).length;
     phrases.push(`change ${n} ${n === 1 ? 'file' : 'files'}`);
   }
+  if (proposal.otherPatches.length) {
+    const n = proposal.otherPatches.length;
+    phrases.push(`change ${n} other ${n === 1 ? 'pull request' : 'pull requests'}`);
+  }
   if (proposal.reply) phrases.push(proposal.threadId ? 'reply in thread' : 'quote reply');
   if (proposal.resolveThread) phrases.push('resolve');
   if (proposal.rerun) phrases.push('rerun failed jobs');
@@ -216,6 +220,21 @@ export function Steps({ proposal }: { proposal: Proposal }) {
             <Code>{proposal.patch!.diff}</Code>
           </Row>
         ))}
+      {proposal.otherPatches.flatMap((patch) =>
+        diffFiles(patch.diff).map((file) => (
+          <Row
+            key={`${patch.pullRequestUrl} ${file.path}`}
+            icon={SquarePen}
+            label={basename(file.path)}
+            trailing={<DiffStat added={file.added} removed={file.removed} />}
+          >
+            <Text style={styles.meta}>
+              {patch.pullRequestUrl} · {patch.commitMessage}
+            </Text>
+            <Code>{patch.diff}</Code>
+          </Row>
+        )),
+      )}
       {proposal.reply !== '' && (
         <Row
           icon={proposal.threadId ? MessageCircle : MessageSquareQuote}
@@ -238,7 +257,7 @@ export function Steps({ proposal }: { proposal: Proposal }) {
 export function proposalIcon(proposal: Proposal) {
   if (proposal.error) return CircleAlert;
   if (proposal.requestedTool) return Hammer;
-  if (proposal.patch) return SquarePen;
+  if (proposal.patch || proposal.otherPatches.length) return SquarePen;
   if (proposal.followUp) return Bot;
   if (proposal.rerun) return RotateCcw;
   return MessageCircle;

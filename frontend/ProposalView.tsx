@@ -289,10 +289,31 @@ function ProposalView({
           ) : proposal.rerun && proposal.checkFailure ? (
             <RerunCard failure={proposal.checkFailure} />
           ) : (
-            !proposal.followUp && (
+            !proposal.followUp &&
+            !proposal.otherPatches.length && (
               <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
             )
           )}
+          {proposal.otherPatches.map((patch) => {
+            const [repository, number] = pullRequestName(patch.pullRequestUrl);
+            const files = diffFiles(patch.diff);
+            return (
+              <View key={patch.pullRequestUrl} style={styles.column}>
+                <Text style={styles.where}>
+                  {repository}#{number}
+                </Text>
+                <Text style={styles.meta}>
+                  {patch.commitMessage}
+                  {'  '}
+                  <DiffStat
+                    added={files.reduce((n, f) => n + f.added, 0)}
+                    removed={files.reduce((n, f) => n + f.removed, 0)}
+                  />
+                </Text>
+                {clamp(130, <DiffSurface diff={patch.diff} />)}
+              </View>
+            );
+          })}
         </View>
       </View>
       {phone && <View style={styles.phoneActions}>{actions}</View>}

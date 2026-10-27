@@ -49,6 +49,21 @@ index 3d723da..c883a61 100644
          return await synthesize_with_retry(tts, text, conn_options=conn_options, attempt=attempt + 1)
 `;
 
+// The same fix on the agents-js port of the PR.
+const jsDiff = `diff --git a/agents/src/voice/tts_retry.ts b/agents/src/voice/tts_retry.ts
+index 5be1c2a..7f0e9d4 100644
+--- a/agents/src/voice/tts_retry.ts
++++ b/agents/src/voice/tts_retry.ts
+@@ -38,6 +38,6 @@ export async function synthesizeWithRetry(
+   } catch (error) {
+     if (!(error instanceof APIConnectionError) || attempt >= connOptions.maxRetry) throw error;
+-    await delay(100);
++    await delay(connOptions.retryIntervalMs);
+     return synthesizeWithRetry(tts, text, connOptions, attempt + 1);
+   }
+ }
+`;
+
 // bodyHtml and replyHtml are what GitHub's markdown API renders for body and reply.
 const comment = (author: string, body: string, bodyHtml: string, anchor: string, line = 0) => ({
   id: `comment-${anchor}`,
@@ -201,6 +216,32 @@ export const proposals: Proposal[] = [
     replyHtml: "<p dir=\"auto\">Added a debug log for each retry.</p>",
     resolveThread: true,
     error: 'git: error: patch failed: livekit-agents/livekit/agents/voice/tts_retry.py:41\nerror: patch does not apply',
+  }),
+  create(ProposalSchema, {
+    id: 'other-patches',
+    summary: 'Retry TTS with the configured interval here and in the agents-js port, reply, and resolve',
+    summaryHtml:
+      '<p dir="auto">Retry TTS with the configured interval here and in the agents-js port, reply, and resolve</p>',
+    pullRequestUrl: pr.url,
+    comment: comment(
+      'devin-ai-integration',
+      'The agents-js port of this retry has the same fixed 100 ms sleep.',
+      '<p dir="auto">The agents-js port of this retry has the same fixed 100 ms sleep.</p>',
+      'discussion_r3',
+      43,
+    ),
+    threadId: 'thread-3',
+    patch: { diff, commitMessage: 'fix(voice): retry TTS with the configured interval' },
+    otherPatches: [
+      {
+        pullRequestUrl: 'https://github.com/livekit/agents-js/pull/1907',
+        diff: jsDiff,
+        commitMessage: 'fix(voice): retry TTS with the configured interval',
+      },
+    ],
+    reply: 'Fixed here, and the same fix goes into the agents-js port (livekit/agents-js#1907).\n',
+    replyHtml: '<p dir="auto">Fixed here, and the same fix goes into the agents-js port (livekit/agents-js#1907).</p>',
+    resolveThread: true,
   }),
 ];
 

@@ -141,9 +141,9 @@ message Repository {
 
 // An answer an agent proposes to a conversation on a pull request, or to its
 // failing checks, run as the user once approved. Approving runs the steps that
-// are set in this order: follow_up, patch, reply, resolve_thread, rerun,
-// close_pull_request. A step that succeeded is cleared, so approving again
-// after a failure resumes at the step that failed.
+// are set in this order: follow_up, patch, other_patches, reply, resolve_thread,
+// rerun, close_pull_request. A step that succeeded is cleared, so approving
+// again after a failure resumes at the step that failed.
 message Proposal {
   string id = 1;
   // One line saying what approving does.
@@ -190,6 +190,9 @@ message Proposal {
   // is open, whatever happens to its pull request. Approving it clears no other proposal. Named for
   // investigations, which were the only such agents, so saved proposals keep it.
   string investigation_id = 19;
+  // Changes to other pull requests of its cluster, each committed and pushed
+  // to its own pull request's head branch.
+  repeated Patch other_patches = 20;
 }
 
 // The checks that failed on a pull request's head commit, once all of its
@@ -257,6 +260,9 @@ message Patch {
   // The branch's head commit when the diff was checked. Once the branch moves
   // past it, the proposal is replaced by a new agent's answer.
   string head_oid = 3;
+  // The pull request it changes, on a patch in `other_patches`. Empty on
+  // `patch`, which changes the proposal's own pull request.
+  string pull_request_url = 4;
 }
 
 // Runs the proposal. Its outcome shows in the proposal: it disappears, along

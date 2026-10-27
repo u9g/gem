@@ -152,7 +152,7 @@ async fn approve_proposal(
     }
 }
 
-// Deletes every proposal answering a conversation whose patch was written against a head commit its
+// Deletes every proposal answering a conversation with a patch written against a head commit its
 // branch has since moved past, keyed by PR URL in `heads`. Returns those conversations' IDs, so
 // they can be answered again against the new head.
 pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
@@ -160,10 +160,12 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let stale: HashSet<String> = proposals
         .iter()
         .filter(|(_, p)| {
-            p.patch.as_ref().is_some_and(|patch| {
+            let own = p.patch.iter().map(|patch| (&p.pull_request_url, patch));
+            let others = (p.other_patches.iter()).map(|patch| (&patch.pull_request_url, patch));
+            own.chain(others).any(|(pr, patch)| {
                 !patch.head_oid.is_empty()
                     && heads
-                        .get(p.pull_request_url.as_str())
+                        .get(pr.as_str())
                         .is_some_and(|head| *head != patch.head_oid)
             })
         })
@@ -236,6 +238,20 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         )
         .await?;
         proposal.patch = None;
+        save(path, proposal).await;
+    }
+    while let Some(patch) = proposal.other_patches.first() {
+        step(
+            "other_patch",
+            apply_patch(
+                &patch.pull_request_url,
+                &patch.diff,
+                Some(&patch.commit_message),
+            ),
+        )
+        .instrument(tracing::info_span!("other", pull_request = %patch.pull_request_url))
+        .await?;
+        proposal.other_patches.remove(0);
         save(path, proposal).await;
     }
     if !proposal.reply.is_empty() {
@@ -332,6 +348,7 @@ pub struct Request {
     // A diff, and the message to commit it with.
     pub patch: String,
     pub message: String,
+    pub other_patches: Vec<OtherPatch>,
     // Markdown, as are the follow-up and the requested tool.
     pub reply: String,
     pub follow_up: String,
@@ -340,6 +357,15 @@ pub struct Request {
     pub close_pull_request: bool,
     pub excerpts: Vec<Excerpt>,
     pub request_tool: String,
+}
+
+// A diff for another pull request of the cluster, and the message to commit it with.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct OtherPatch {
+    pub pr: String,
+    pub patch: String,
+    pub message: String,
 }
 
 // The log lines that show why a failed check failed.
@@ -431,12 +457,14 @@ impl GitHub for Live {
     }
 }
 
-// Checks what an agent answering `subject` proposes and saves it in `dir`. Returns the
-// proposal's ID, or why it cannot be approved, for the agent to fix and propose again.
+// Checks what an agent answering `subject` proposes and saves it in `dir`. `cluster` is the URLs
+// of the pull requests in the cluster of the one it is about. Returns the proposal's ID, or why it
+// cannot be approved, for the agent to fix and propose again.
 pub async fn propose(
     github: &impl GitHub,
     dir: &Path,
     subject: &Subject,
+    cluster: &[String],
     request: Request,
 ) -> Result<String, String> {
     let Request {
@@ -444,6 +472,7 @@ pub async fn propose(
         summary,
         patch,
         message,
+        other_patches,
         reply,
         follow_up,
         resolve_thread,
@@ -522,6 +551,7 @@ pub async fn propose(
     }
 
     let steps = !patch.is_empty()
+        || !other_patches.is_empty()
         || !reply.trim().is_empty()
         || resolve_thread
         || !follow_up.trim().is_empty()
@@ -529,7 +559,7 @@ pub async fn propose(
         || close_pull_request;
     if steps != request_tool.trim().is_empty() {
         return Err(
-            "propose either steps (`patch`, `reply`, `resolve_thread`, `follow_up`, `rerun`, `close_pull_request`) or `request_tool`"
+            "propose either steps (`patch`, `other_patches`, `reply`, `resolve_thread`, `follow_up`, `rerun`, `close_pull_request`) or `request_tool`"
                 .into(),
         );
     }
@@ -544,9 +574,37 @@ pub async fn propose(
                 diff: diff.to_string(),
                 commit_message: message,
                 head_oid,
+                pull_request_url: String::new(),
             })
         }
     };
+    let others: Vec<&String> = cluster.iter().filter(|p| *p != pr).collect();
+    let mut checked = Vec::new();
+    for other in other_patches {
+        let url = other.pr.trim().trim_end_matches('/');
+        if !others.iter().any(|p| *p == url) {
+            let others: Vec<&str> = others.iter().map(|p| p.as_str()).collect();
+            return Err(format!(
+                "{url} is not another pull request in {pr}'s cluster, which has {}",
+                if others.is_empty() {
+                    "none".into()
+                } else {
+                    others.join(" and ")
+                }
+            ));
+        }
+        if other.message.trim().is_empty() {
+            return Err(format!("`message` is required with the patch for {url}"));
+        }
+        let head_oid = (github.check_patch(url, &other.patch).await)
+            .map_err(|e| format!("the patch for {url}: {e}"))?;
+        checked.push(Patch {
+            diff: other.patch,
+            commit_message: other.message,
+            head_oid,
+            pull_request_url: url.to_string(),
+        });
+    }
     // A top-level reply quotes the comment it answers in its own markdown, so the quote shows,
     // and is edited, with the rest of what is posted.
     let reply = match &comment {
@@ -586,6 +644,7 @@ pub async fn propose(
         rerun,
         summary_html,
         investigation_id: investigation_id.to_string(),
+        other_patches: checked,
     };
     tokio::fs::create_dir_all(dir)
         .await
