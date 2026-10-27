@@ -6,14 +6,13 @@ export function active(agent: Agent): boolean {
 }
 
 // The active agents acting on any of the cluster's pull requests, which its view lists.
-export function agentsOf(cluster: PullRequestCluster, agents: Agent[]): Agent[] {
-  const urls = new Set(cluster.pullRequests.map((pr) => pr.url));
-  return agents.filter((agent) => active(agent) && agent.pullRequestUrls.some((url) => urls.has(url)));
+export function agentsOf(cluster: PullRequestCluster): Agent[] {
+  return cluster.agents.filter(active);
 }
 
-// The agents the agent list shows: every one but those an open cluster's view lists. Those wait on
-// the user, or belong to no open cluster, so the list is where they are followed up.
+// The agents the agent list shows: those acting on no open pull request, and those of a cluster
+// waiting on the user, most recently started first.
 export function unclustered(agents: Agent[], clusters: PullRequestCluster[]): Agent[] {
-  const urls = new Set(clusters.flatMap((cluster) => cluster.pullRequests.map((pr) => pr.url)));
-  return agents.filter((agent) => !active(agent) || !agent.pullRequestUrls.some((url) => urls.has(url)));
+  const waiting = clusters.flatMap((cluster) => cluster.agents.filter((agent) => !active(agent)));
+  return [...agents, ...waiting].sort((a, b) => Number((b.startedAt?.seconds ?? 0n) - (a.startedAt?.seconds ?? 0n)));
 }

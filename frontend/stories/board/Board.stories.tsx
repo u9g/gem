@@ -9,6 +9,7 @@ import { ClusterReview } from '../../ClusterFiles';
 import { agentsOf } from '../../agents';
 import { AgentView } from '../../AgentView';
 import {
+  type Agent,
   AgentSchema,
   type Proposal,
   type PullRequest,
@@ -99,18 +100,28 @@ const clusterAgents = [
 
 const noop = () => {};
 
+// Each cluster holding the agents acting on its pull requests, as the server sends it.
+const holding = (agents: Agent[]) =>
+  clusters.map((c) =>
+    create(PullRequestClusterSchema, {
+      ...c,
+      agents: agents.filter((a) => c.pullRequests.some((pr) => a.pullRequestUrls.includes(pr.url))),
+    }),
+  );
+
 function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; agents?: boolean }) {
   const [openUrl, setOpenUrl] = useState(initial?.pullRequests[0].url);
   const [openAgent, setOpenAgent] = useState<string>();
-  const opened = clusters.find((c) => c.pullRequests[0].url === openUrl);
   const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
+  const listed = holding(all);
+  const opened = listed.find((c) => c.pullRequests[0].url === openUrl);
   const agent = all.find((a) => a.id === openAgent);
   return (
     <View style={{ height: '100vh' as unknown as number }}>
       <Board
-        clusters={clusters}
-        allClusters={clusters}
-        agents={all}
+        clusters={listed}
+        allClusters={listed}
+        agents={[]}
         openUrl={agent ? undefined : openUrl}
         openAgent={openAgent}
         onOpenCluster={(c) => {
@@ -137,7 +148,7 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
           opened && (
             <ClusterReview
               cluster={opened}
-              agents={agentsOf(opened, all)}
+              agents={agentsOf(opened)}
               onOpenAgent={setOpenAgent}
               onApprove={noop}
               onDismiss={noop}

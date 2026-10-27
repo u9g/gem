@@ -780,6 +780,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                     .collect::<Vec<_>>(),
                 name: String::new(),
                 merge_by: MergeBy::Unspecified as i32,
+                agents: Vec::new(),
             }
         })
         .map(|mut cluster| {

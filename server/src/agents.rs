@@ -41,7 +41,22 @@ struct Shown {
 
 static SHOWN: LazyLock<RwLock<HashMap<String, Shown>>> = LazyLock::new(RwLock::default);
 
+// Each agent is in the cluster holding its pull requests, or in the response's own list when none is
+// open.
 pub async fn fill(response: &mut ListOpenPullRequestsResponse, conversations: &Conversations) {
+    for agent in list(conversations).await {
+        let cluster = (response.clusters.iter_mut()).find(|cluster| {
+            (cluster.pull_requests.iter()).any(|pr| agent.pull_request_urls.contains(&pr.url))
+        });
+        match cluster {
+            Some(cluster) => cluster.agents.push(agent),
+            None => response.agents.push(agent),
+        }
+    }
+}
+
+// Every agent, most recently started first.
+pub async fn list(conversations: &Conversations) -> Vec<Agent> {
     let mut agents = investigations::agents().await;
     let shown = SHOWN.read().await;
     let agent = |id: String, running: Running, waiting: bool| {
@@ -91,7 +106,7 @@ pub async fn fill(response: &mut ListOpenPullRequestsResponse, conversations: &C
         agents.push(agent(id, running, waiting));
     }
     agents.sort_by_key(|a| std::cmp::Reverse(a.started_at.as_ref().map(|t| (t.seconds, t.nanos))));
-    response.agents = agents;
+    agents
 }
 
 pub async fn message(conversations: &Conversations, id: &str, message: &str) -> Result<(), String> {

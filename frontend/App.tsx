@@ -271,7 +271,7 @@ export default function App() {
   }
 
   const openAgent = (id: string) => go({ cluster: place.cluster, agent: id });
-  const agent = agents.find((a) => a.id === place.agent);
+  const agent = [...agents, ...clusters.flatMap((cluster) => cluster.agents)].find((a) => a.id === place.agent);
   const agentView = agent && (
     <AgentView
       agent={agent}
@@ -378,7 +378,7 @@ export default function App() {
   if (phone) {
     const listedAgents = unclustered(agents, clusters);
     const listed = sections
-      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster, agents) === name) }))
+      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
     return (
       <Contexts login={login} render={render}>
@@ -393,7 +393,7 @@ export default function App() {
                 {agentView || (
                   <ClusterView
                     cluster={opened!}
-                    agents={agentsOf(opened!, agents)}
+                    agents={agentsOf(opened!)}
                     onOpenAgent={openAgent}
                     busy={busy}
                     onApprove={approve}
@@ -465,7 +465,7 @@ export default function App() {
             (opened && (
               <ClusterReview
                 cluster={opened}
-                agents={agentsOf(opened, agents)}
+                agents={agentsOf(opened)}
                 onOpenAgent={openAgent}
                 busy={busy}
                 onApprove={approve}

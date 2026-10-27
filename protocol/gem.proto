@@ -20,7 +20,8 @@ message ListOpenPullRequestsResponse {
   string search = 3;
   reserved 4;
   reserved "investigations";
-  // Every T3 Code agent gem runs, most recently started first.
+  // The agents acting on no open pull request, most recently started first. Every other agent is in
+  // the cluster holding its pull requests, so each agent is listed once.
   repeated Agent agents = 5;
 }
 
@@ -68,6 +69,9 @@ message PullRequestCluster {
   // How the cluster can merge: by approval when every pull request merges by approval, unspecified
   // when any cannot merge, and by admin otherwise.
   MergeBy merge_by = 4;
+  // The agents acting on any of its pull requests, whatever their state, most recently started
+  // first.
+  repeated Agent agents = 5;
 }
 
 message PullRequest {

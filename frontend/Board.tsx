@@ -29,8 +29,9 @@ export function Board({
 }: {
   // The clusters shown, after filters.
   clusters: PullRequestCluster[];
-  // Every cluster, which decides where an agent is listed whatever is filtered out.
+  // Every cluster, whose agents waiting on the user are listed whatever is filtered out.
   allClusters: PullRequestCluster[];
+  // The agents acting on no open pull request.
   agents: Agent[];
   // The oldest PR's URL of the open cluster.
   openUrl?: string;
@@ -65,7 +66,7 @@ export function Board({
           </Column>
         )}
         {sections.map((name) => {
-          const listed = clusters.filter((cluster) => section(cluster, agents) === name);
+          const listed = clusters.filter((cluster) => section(cluster) === name);
           return (
             <Column key={name} name={name} count={listed.length} urgent={name === 'Needs you'}>
               {listed.map((cluster) => (

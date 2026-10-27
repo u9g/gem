@@ -30,9 +30,9 @@ export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Check
 
 // An agent waiting on the user is in the agent list, not in the cluster; a rebase or merge waiting
 // on the user still puts its cluster in front of them.
-export function section(cluster: PullRequestCluster, agents: Agent[]): (typeof sections)[number] {
+export function section(cluster: PullRequestCluster): (typeof sections)[number] {
   const prs = cluster.pullRequests;
-  const working = agentsOf(cluster, agents);
+  const working = agentsOf(cluster);
   const running = (pr: PullRequest) => (pr.checks?.total ?? 0) > (pr.checks?.done ?? 0);
   const answered = (pr: PullRequest) => working.some((agent) => agent.pullRequestUrls.includes(pr.url));
   const needsYou = (pr: PullRequest) =>

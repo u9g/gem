@@ -86,14 +86,16 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
 ]);
 
 // The agents merging and answering a comment, which their clusters list.
-const agents = [
+merging.agents = [
   create(AgentSchema, { id: 'merge:m', title: 'Merge Respect the configured S3 region', pullRequestUrls: merging.pullRequests.map((pr) => pr.url) }),
+];
+working.agents = [
   create(AgentSchema, { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests[0].url] }),
 ];
 
 function Home({ clusters }: { clusters: PullRequestCluster[] }) {
   const listed = sections
-    .map((name) => ({ name, clusters: clusters.filter((c) => section(c, agents) === name) }))
+    .map((name) => ({ name, clusters: clusters.filter((c) => section(c) === name) }))
     .filter((s) => s.clusters.length > 0);
   return (
     <ScrollView style={styles.page} stickyHeaderIndices={[1]}>
@@ -113,7 +115,7 @@ function Cluster({ cluster }: { cluster: PullRequestCluster }) {
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <ClusterView
         cluster={cluster}
-        agents={agentsOf(cluster, agents)}
+        agents={agentsOf(cluster)}
         onOpenAgent={() => {}}
         onApprove={() => {}}
         onDismiss={() => {}}
