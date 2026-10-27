@@ -45,6 +45,12 @@ function anchorDiff(path: string, hunk: string, lines = 6): string {
   return `--- a/${path}\n+++ b/${path}\n@@ -0,${count(/^([ -]|$)/)} +${start},${count(/^([ +]|$)/)} @@\n${kept.join('\n')}`;
 }
 
+// The repository name and number of the pull request at `url`.
+function pullRequestName(url: string): [string?, string?] {
+  const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(url) ?? [];
+  return [repository, number];
+}
+
 // One conversation waiting on the user as a band: the proposal's summary and actions on top, then
 // three columns cut to a few lines each: their thread, the user's reply, and the change. Arrows step
 // through alternatives. `anchored` stacks them in full instead, under the code the comment is on;
@@ -153,7 +159,7 @@ function ProposalView({
   });
   const [diff, setDiff] = useDraft(`${proposal.id} diff`, proposal.patch?.diff ?? '');
   const files = diffFiles(diff);
-  const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(proposal.pullRequestUrl) ?? [];
+  const [repository, number] = pullRequestName(proposal.pullRequestUrl);
   const comment = proposal.comment;
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
