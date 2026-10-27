@@ -1,19 +1,20 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { FileCode, MessagesSquare } from 'lucide-react';
-import { Fragment, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Fragment, type ReactNode, useState } from 'react';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
-import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
+import { type Agent, type Comment, MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
 import { Composer } from './InvestigationView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
 import { parseDiff } from './surfaces';
-import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
+import { Button, DiffStat, diffFiles, firstLine, Icon, t3 } from './t3';
 
-// The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
-// file: top-level comments and failed checks.
-export type Section = { pr: PullRequest; path: string; groups: Proposal[][] };
+// The conversations of one PR about one file, by the line each is on: those with proposals, and
+// those an agent still answers. `path` is '' for those on no file: top-level comments and failed
+// checks.
+export type Section = { pr: PullRequest; path: string; groups: Proposal[][]; agents: Agent[] };
 
 // A review comment's file, else the first file its proposal changes.
 function pathOf(proposal: Proposal): string {
@@ -21,17 +22,18 @@ function pathOf(proposal: Proposal): string {
 }
 
 export function sectionsOf(pr: PullRequest): Section[] {
-  const byPath = new Map<string, Proposal[][]>();
-  for (const group of bySubject(pr.proposals)) {
-    const path = pathOf(group[0]);
-    byPath.set(path, [...(byPath.get(path) ?? []), group]);
-  }
+  const byPath = new Map<string, { groups: Proposal[][]; agents: Agent[] }>();
+  const at = (path: string) => byPath.get(path) ?? byPath.set(path, { groups: [], agents: [] }).get(path)!;
+  for (const group of bySubject(pr.proposals)) at(pathOf(group[0])).groups.push(group);
+  for (const agent of pr.agents) at(agent.comment?.path ?? '').agents.push(agent);
+  const line = (comment?: Comment) => comment?.line ?? 0;
   return [...byPath]
     .sort(([a], [b]) => (a === '') !== (b === '') ? (a === '' ? 1 : -1) : a.localeCompare(b))
-    .map(([path, groups]) => ({
+    .map(([path, { groups, agents }]) => ({
       pr,
       path,
-      groups: groups.sort((a, b) => (a[0].comment?.line ?? 0) - (b[0].comment?.line ?? 0)),
+      groups: groups.sort((a, b) => line(a[0].comment) - line(b[0].comment)),
+      agents: agents.sort((a, b) => line(a.comment) - line(b.comment)),
     }));
 }
 
@@ -117,7 +119,8 @@ export function ClusterReview(props: Props) {
                   <Text numberOfLines={1} style={styles.path}>
                     {label(s.path)}
                   </Text>
-                  <Text style={styles.meta}>{s.groups.length}</Text>
+                  {s.agents.some((agent) => !agent.queued) && <ActivityIndicator size={10} color="#8FA8F5" />}
+                  {s.groups.length > 0 && <Text style={styles.meta}>{s.groups.length}</Text>}
                 </Pressable>
               ))}
             </View>
@@ -143,28 +146,34 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
   const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
   // GitHub's hunks for the file come without a file header.
   const lines = parseDiff(`--- a/${section.path}\n+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
-  const placed = new Map<number, Proposal[][]>();
-  const unplaced: Proposal[][] = [];
-  for (const group of section.groups) {
-    const comment = group[0].comment;
+  // Where in `lines` a comment's thread goes, after the line it is on, or -1: before the diff.
+  const place = (comment?: Comment) => {
     // The commented line ends the hunk, after which only "\ No newline" markers can follow.
     const last = comment?.diffHunk.split('\n').filter((l) => !l.startsWith('\\')).at(-1) ?? '';
-    const at = lines.findIndex((l) => l.kind !== 'del' && l.number === comment?.line && l.text === last.slice(1));
-    if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
-    else unplaced.push(group);
+    if (!comment?.line || last.startsWith('-')) return -1;
+    return lines.findIndex((l) => l.kind !== 'del' && l.number === comment.line && l.text === last.slice(1));
+  };
+  const placed = new Map<number, ReactNode[]>();
+  const put = (at: number, node: ReactNode) => placed.set(at, [...(placed.get(at) ?? []), node]);
+  for (const group of section.groups) {
+    const at = place(group[0].comment);
+    put(
+      at,
+      <ProposalGroup
+        key={group[0].id}
+        proposals={group}
+        inline={at >= 0}
+        anchored={at < 0}
+        busy={busy}
+        onApprove={onApprove}
+        onDismiss={onDismiss}
+        onInvestigate={onInvestigate}
+      />,
+    );
   }
-  const thread = (group: Proposal[], inline: boolean) => (
-    <ProposalGroup
-      key={group[0].id}
-      proposals={group}
-      inline={inline}
-      anchored={!inline}
-      busy={busy}
-      onApprove={onApprove}
-      onDismiss={onDismiss}
-      onInvestigate={onInvestigate}
-    />
-  );
+  section.agents.forEach((agent, i) => put(place(agent.comment), <Answering key={`agent ${i}`} agent={agent} />));
+  const waiting = section.groups.length;
+  const answering = section.agents.length;
   return (
     <View style={styles.fileView}>
       <View style={styles.bar}>
@@ -182,10 +191,15 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
         )}
         <View style={{ flex: 1 }} />
         <Text style={styles.meta}>
-          {section.groups.length} {section.groups.length === 1 ? 'thread' : 'threads'} waiting on you
+          {[
+            waiting > 0 && `${waiting} ${waiting === 1 ? 'thread' : 'threads'} waiting on you`,
+            answering > 0 && `${answering} being answered`,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
         </Text>
       </View>
-      {unplaced.map((group) => thread(group, false))}
+      {placed.get(-1)}
       {lines.length > 0 && (
         <View style={styles.code}>
           {lines.map((line, i) => (
@@ -211,11 +225,34 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
                 </View>
               )}
               {placed.has(i) && (
-                <View style={styles.inline}>{placed.get(i)!.map((group) => thread(group, true))}</View>
+                <View style={styles.inline}>{placed.get(i)}</View>
               )}
             </Fragment>
           ))}
         </View>
+      )}
+    </View>
+  );
+}
+
+// A conversation an agent still answers, where its proposal will show: the comment it answers, and
+// a link to the agent's thread once it starts.
+function Answering({ agent }: { agent: Agent }) {
+  const comment = agent.comment;
+  return (
+    <View style={styles.answering}>
+      {agent.queued ? <View style={styles.dot} /> : <ActivityIndicator size={12} color="#8FA8F5" />}
+      <Text numberOfLines={1} style={styles.answeringText}>
+        <Text style={{ color: t3.foreground }}>
+          {agent.queued ? 'Queued to answer' : 'An agent is answering'}{' '}
+          {comment ? `${comment.author}'s comment` : 'the failed checks'}
+        </Text>
+        {comment && ` · ${firstLine(comment.body)}`}
+      </Text>
+      {agent.threadUrl !== '' && (
+        <Pressable onPress={() => Linking.openURL(agent.threadUrl)}>
+          <Text style={styles.link}>Thread ↗</Text>
+        </Pressable>
       )}
     </View>
   );
@@ -364,6 +401,35 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     whiteSpace: 'pre-wrap',
   } as object,
+  answering: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(143, 168, 245, 0.35)',
+    backgroundColor: t3.background,
+  },
+  answeringText: {
+    flex: 1,
+    color: t3.muted,
+    fontSize: 13,
+  },
+  // An empty circle where a running agent's spinner goes.
+  dot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: t3.faint,
+  },
+  link: {
+    color: '#8FA8F5',
+    fontSize: 12,
+  },
   // Threads start past both gutters, under the code.
   inline: {
     gap: 8,

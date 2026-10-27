@@ -49,7 +49,7 @@ index 3d723da..c883a61 100644
 `;
 
 // bodyHtml and replyHtml are what GitHub's markdown API renders for body and reply.
-const comment = (author: string, body: string, bodyHtml: string, anchor: string, line = 0) => ({
+export const comment = (author: string, body: string, bodyHtml: string, anchor: string, line = 0) => ({
   id: `comment-${anchor}`,
   author,
   body,

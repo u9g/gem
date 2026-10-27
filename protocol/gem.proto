@@ -132,6 +132,9 @@ message Agent {
   string thread_url = 2;
   // It answers the head commit's failed checks, not a comment.
   bool checks = 3;
+  // The comment it answers, as it was when the agent was queued. Unset when it answers failed
+  // checks.
+  Comment comment = 4;
 }
 
 // A T3 Code agent rebasing a pull request, until it settles its thread or stops.

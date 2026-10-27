@@ -320,6 +320,10 @@ impl Conversations {
                     queued: true,
                     thread_url: String::new(),
                     checks: matches!(conversation, Conversation::Checks { .. }),
+                    comment: match conversation {
+                        Conversation::Comment { comment, .. } => Some(comment.clone()),
+                        Conversation::Checks { .. } => None,
+                    },
                 };
                 (self.0.answering.lock().await).insert(
                     conversation.id().to_string(),
