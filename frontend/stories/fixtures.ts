@@ -148,8 +148,10 @@ export const proposals: Proposal[] = [
       '<h3 dir="auto"><g-emoji class="g-emoji" alias="warning">⚠️</g-emoji> No Changeset found</h3>\n<p dir="auto">Latest commit: c883a61</p>\n<p dir="auto">Merging this PR will not cause a version bump for any packages.</p>',
       'issuecomment-1',
     ),
-    reply: 'No release needed: this only changes an internal retry.\n',
-    replyHtml: "<p dir=\"auto\">No release needed: this only changes an internal retry.</p>",
+    reply:
+      '> ### ⚠️ No Changeset found\n>\n> Latest commit: c883a61\n>\n> Merging this PR will not cause a version bump for any packages.\n\nNo release needed: this only changes an internal retry.\n',
+    replyHtml:
+      '<blockquote>\n<h3 dir="auto"><g-emoji class="g-emoji" alias="warning">⚠️</g-emoji> No Changeset found</h3>\n<p dir="auto">Latest commit: c883a61</p>\n<p dir="auto">Merging this PR will not cause a version bump for any packages.</p>\n</blockquote>\n<p dir="auto">No release needed: this only changes an internal retry.</p>',
   }),
   create(ProposalSchema, {
     id: 'close',

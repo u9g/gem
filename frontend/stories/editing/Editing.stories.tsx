@@ -3,8 +3,8 @@ import { Copy, Pencil, Undo2 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { EditableReply, Quote, type ReplyDraft, Theirs } from '../../surfaces';
-import { Button, Icon, Markdown, t3, visibleMarkdown } from '../../t3';
+import { EditableReply, type ReplyDraft, Theirs } from '../../surfaces';
+import { Button, Icon, Markdown, t3 } from '../../t3';
 import { proposals } from '../fixtures';
 
 const threadReply = proposals[1];
@@ -45,10 +45,6 @@ function Conversation({ quote, children }: { quote?: boolean; children: ReactNod
   );
 }
 
-function quoted(): string {
-  return visibleMarkdown(quoteReply.comment!.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
-}
-
 // ---------- A: edit in place ----------
 
 // The bubble is the editor: click it and type. Under it, T3 Code's hover actions add Revert once
@@ -67,7 +63,6 @@ function InPlace({ quote = false, edited }: { quote?: boolean; edited?: string }
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
           >
-            {quote && <Quote lines={3}>{quoted()}</Quote>}
             <GrowingInput value={draft.text} onChange={draft.setText} />
           </View>
         </View>
@@ -97,7 +92,6 @@ function Composer({ quote = false, edited, editing: startEditing = false }: { qu
       <View onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
         <View style={styles.right}>
           <View style={[styles.bubble, editing !== undefined && styles.bubbleEditing]}>
-            {quote && <Quote lines={3}>{quoted()}</Quote>}
             <Markdown>{draft.text}</Markdown>
           </View>
         </View>
@@ -150,7 +144,6 @@ function TwoVersions({ quote = false, edited }: { quote?: boolean; edited?: stri
         html={proposal.replyHtml}
         draft={draft}
         onChange={setDraft}
-        quote={quote ? quoted() : undefined}
       />
     </Conversation>
   );

@@ -240,16 +240,17 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
     }
     if !proposal.reply.is_empty() {
         if proposal.thread_id.is_empty() {
-            let quoted: String = (proposal.comment.as_ref().map_or("", |c| c.body.as_str()))
-                .lines()
-                .map(|line| format!("> {line}\n"))
-                .collect();
-            let body = format!("{quoted}\n{}", proposal.reply);
             step(
                 "comment",
                 command(
                     "gh",
-                    &["pr", "comment", &proposal.pull_request_url, "--body", &body],
+                    &[
+                        "pr",
+                        "comment",
+                        &proposal.pull_request_url,
+                        "--body",
+                        &proposal.reply,
+                    ],
                     None,
                 ),
             )
@@ -545,6 +546,17 @@ pub async fn propose(
                 head_oid,
             })
         }
+    };
+    // A top-level reply quotes the comment it answers in its own markdown, so the quote shows,
+    // and is edited, with the rest of what is posted.
+    let reply = match &comment {
+        Some(comment) if thread_id.is_empty() && !reply.trim().is_empty() => {
+            let quoted: String = (comment.body.lines())
+                .map(|line| format!("> {line}\n"))
+                .collect();
+            format!("{quoted}\n{reply}")
+        }
+        _ => reply,
     };
     let summary_html = github.render(pr, &summary).await?;
     let reply_html = github.render(pr, &reply).await?;

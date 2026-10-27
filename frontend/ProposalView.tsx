@@ -20,7 +20,7 @@ import {
   Theirs,
   ToolRequestBanner,
 } from './surfaces';
-import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, usePhone, visibleMarkdown } from './t3';
+import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, usePhone } from './t3';
 
 // Proposals answering the same conversation, or the same failed checks, are alternatives: approving
 // one clears the rest.
@@ -157,10 +157,6 @@ function ProposalView({
   const comment = proposal.comment;
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
-  const quote =
-    proposal.threadId || !comment
-      ? undefined
-      : visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
   const investigate = onInvestigate && proposal.rerun && !proposal.patch && !proposal.followUp && (
     <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
   );
@@ -246,7 +242,6 @@ function ProposalView({
                   html={proposal.replyHtml}
                   draft={draft}
                   onChange={setDraft}
-                  quote={quote}
                   max={anchored ? undefined : 110}
                 />
               </>

@@ -351,7 +351,6 @@ export function EditableReply({
   html,
   draft,
   onChange,
-  quote,
   max,
 }: {
   pr: string;
@@ -360,8 +359,6 @@ export function EditableReply({
   html: string;
   draft: ReplyDraft;
   onChange: (draft: ReplyDraft) => void;
-  // Shown above the reply, for a reply that quotes the comment it answers.
-  quote?: string;
   // Cuts the rendered reply to `max` pixels when given.
   max?: number;
 }) {
@@ -371,7 +368,6 @@ export function EditableReply({
     <View>
       <View style={{ alignItems: 'flex-end' }}>
         <View style={[styles.bubble, styles.editableBubble, editing && styles.bubbleFocused]}>
-          {quote !== undefined && <Quote lines={3}>{quote}</Quote>}
           <EditableMarkdown
             pr={pr}
             suggested={suggested}
