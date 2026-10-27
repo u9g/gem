@@ -53,7 +53,7 @@ type Props = Parameters<typeof ClusterView>[0] & {
 // their conversations are on, and the chosen file's diff with each conversation inside it, after
 // the line its review comment is on.
 export function ClusterReview(props: Props) {
-  const { cluster, agents, onOpenAgent, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
+  const { cluster, onOpenAgent, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
   const sections = cluster.pullRequests.flatMap(sectionsOf);
   const [chosen, setChosen] = useState<string>();
   // Approving or dismissing the last conversation on a file removes its section.
@@ -102,7 +102,7 @@ export function ClusterReview(props: Props) {
                 )}
                 {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
               </Pressable>
-              <StatusLine pr={pr} agents={agents} />
+              <StatusLine pr={pr} agents={cluster.agents} />
               {sections.filter((s) => s.pr === pr).map((s) => (
                 <Pressable
                   key={s.path}
@@ -123,7 +123,7 @@ export function ClusterReview(props: Props) {
             </View>
           ))}
         </View>
-        <ClusterAgents agents={agents} onOpenAgent={onOpenAgent} />
+        <ClusterAgents agents={cluster.agents} onOpenAgent={onOpenAgent} />
         {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
       </View>
       <View nativeID={MAIN} style={styles.main}>

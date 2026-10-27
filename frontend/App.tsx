@@ -8,7 +8,6 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Board } from './Board';
 import { ClusterReview } from './ClusterFiles';
 import { AgentView, Composer } from './AgentView';
-import { agentsOf, unclustered } from './agents';
 import { Legend, PhoneAgentRow, PhoneClusterRow, section, sections, SectionTitle } from './ClusterRow';
 import { ClusterView, timeAgo } from './ClusterView';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
@@ -376,7 +375,6 @@ export default function App() {
   // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
   // it, with the box to ask about it under the scrolling content.
   if (phone) {
-    const listedAgents = unclustered(agents, clusters);
     const listed = sections
       .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
       .filter(({ clusters }) => clusters.length > 0);
@@ -393,7 +391,6 @@ export default function App() {
                 {agentView || (
                   <ClusterView
                     cluster={opened!}
-                    agents={agentsOf(opened!)}
                     onOpenAgent={openAgent}
                     busy={busy}
                     onApprove={approve}
@@ -419,12 +416,12 @@ export default function App() {
               {/* The legend is the third child: after the agents and the first section's title. */}
               <ScrollView contentContainerStyle={styles.phoneList} stickyHeaderIndices={[2]}>
                 <View>
-                  {listedAgents.length > 0 && (
+                  {agents.length > 0 && (
                     <View style={styles.phoneSection}>
                       <SectionTitle>Agents</SectionTitle>
                     </View>
                   )}
-                  {listedAgents.map((a) => (
+                  {agents.map((a) => (
                     <PhoneAgentRow key={a.id} agent={a} onPress={() => go({ agent: a.id })} />
                   ))}
                 </View>
@@ -452,7 +449,6 @@ export default function App() {
       <Contexts login={login} render={render}>
         <Board
           clusters={visible}
-          allClusters={clusters}
           agents={agents}
           openUrl={agent ? undefined : opened?.pullRequests[0].url}
           openAgent={agent?.id}
@@ -465,7 +461,6 @@ export default function App() {
             (opened && (
               <ClusterReview
                 cluster={opened}
-                agents={agentsOf(opened)}
                 onOpenAgent={openAgent}
                 busy={busy}
                 onApprove={approve}

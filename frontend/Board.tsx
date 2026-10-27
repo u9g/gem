@@ -2,7 +2,6 @@ import { X } from 'lucide-react';
 import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { unclustered } from './agents';
 import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
 import type { Agent, PullRequestCluster } from './gen/gem_pb';
 import { Icon, t3 } from './t3';
@@ -11,13 +10,11 @@ const COLUMN_MIN_WIDTH = 220;
 const DRAWER_WIDTH = 640;
 
 // The wide layout: one column per place a phone lists a cluster, left to right by what each waits
-// on, after a column of the agents no cluster lists: those waiting on the user, and those whose pull
-// requests all closed. The open cluster or agent, `children`, slides over the
-// right edge, or over the whole board when `wide`; clicking beside it, the wide drawer's close
+// on, after a column of the agents acting on no open pull request; every other agent is in its
+// cluster. The open cluster or agent, `children`, slides over the right edge, or over the whole board when `wide`; clicking beside it, the wide drawer's close
 // button or pressing Escape closes it.
 export function Board({
   clusters,
-  allClusters,
   agents,
   openUrl,
   openAgent,
@@ -29,8 +26,6 @@ export function Board({
 }: {
   // The clusters shown, after filters.
   clusters: PullRequestCluster[];
-  // Every cluster, whose agents waiting on the user are listed whatever is filtered out.
-  allClusters: PullRequestCluster[];
   // The agents acting on no open pull request.
   agents: Agent[];
   // The oldest PR's URL of the open cluster.
@@ -49,13 +44,12 @@ export function Board({
     return () => removeEventListener('keydown', close);
   }, [children, onClose]);
 
-  const listedAgents = unclustered(agents, allClusters);
   return (
     <View style={styles.board}>
       <View style={styles.columns}>
-        {listedAgents.length > 0 && (
-          <Column name="Agents" count={listedAgents.length}>
-            {listedAgents.map((agent) => (
+        {agents.length > 0 && (
+          <Column name="Agents" count={agents.length}>
+            {agents.map((agent) => (
               <AgentRow
                 key={agent.id}
                 agent={agent}

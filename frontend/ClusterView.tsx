@@ -1,6 +1,7 @@
 import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StyleSheet, Text, View } from 'react-native';
 
+import { active } from './agents';
 import { AgentRow, units } from './ClusterRow';
 import { type Agent, MergeBy, type PullRequestCluster } from './gen/gem_pb';
 import { bySubject, ProposalGroup } from './ProposalView';
@@ -21,7 +22,6 @@ export function timeAgo(date: Date): string {
 // conversations waiting on u9g. The phone docks the box to ask an agent about it below.
 export function ClusterView({
   cluster,
-  agents,
   onOpenAgent,
   busy,
   onApprove,
@@ -33,8 +33,6 @@ export function ClusterView({
   onInvestigate,
 }: {
   cluster: PullRequestCluster;
-  // Its active agents.
-  agents: Agent[];
   onOpenAgent: (id: string) => void;
   busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
@@ -67,9 +65,9 @@ export function ClusterView({
         />
       </View>
       <View style={styles.pullRequests}>
-        <PullRequestList pullRequests={cluster.pullRequests} agents={agents} busy={busy} onRebase={onRebase} />
+        <PullRequestList pullRequests={cluster.pullRequests} agents={cluster.agents} busy={busy} onRebase={onRebase} />
       </View>
-      <ClusterAgents agents={agents} onOpenAgent={onOpenAgent} />
+      <ClusterAgents agents={cluster.agents} onOpenAgent={onOpenAgent} />
       <MergeBanner cluster={cluster} busy={busy} onMerge={onMerge} />
       {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
         <ProposalGroup
@@ -85,12 +83,12 @@ export function ClusterView({
   );
 }
 
-// The cluster's active agents, each opening where it can be messaged.
+// The cluster's agents, those waiting on the user first, each opening where it can be messaged.
 export function ClusterAgents({ agents, onOpenAgent }: { agents: Agent[]; onOpenAgent: (id: string) => void }) {
   if (agents.length === 0) return null;
   return (
     <View>
-      {agents.map((agent) => (
+      {[...agents].sort((a, b) => Number(active(a)) - Number(active(b))).map((agent) => (
         <AgentRow key={agent.id} agent={agent} selected={false} onPress={() => onOpenAgent(agent.id)} />
       ))}
     </View>

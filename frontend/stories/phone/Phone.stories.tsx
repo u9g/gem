@@ -5,7 +5,6 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
-import { agentsOf } from '../../agents';
 import {
   AgentSchema,
   type Proposal,
@@ -115,7 +114,6 @@ function Cluster({ cluster }: { cluster: PullRequestCluster }) {
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <ClusterView
         cluster={cluster}
-        agents={agentsOf(cluster)}
         onOpenAgent={() => {}}
         onApprove={() => {}}
         onDismiss={() => {}}
