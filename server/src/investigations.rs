@@ -14,6 +14,8 @@ use gem_github::short;
 
 // One `<id>.json` file per open investigation, relative to the server's working directory.
 const DIR: &str = "investigations";
+// Where a closed investigation's file moves, so later agents can search what it found.
+pub const PAST_DIR: &str = "past-investigations";
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -195,7 +197,8 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
 
 pub async fn close(id: &str) {
     let _files = FILES.lock().await;
-    let _ = tokio::fs::remove_file(path(id)).await;
+    let _ = tokio::fs::create_dir_all(PAST_DIR).await;
+    let _ = tokio::fs::rename(path(id), Path::new(PAST_DIR).join(format!("{id}.json"))).await;
     proposals::remove_of_investigation(id).await;
     Tokens::here().revoke(id).await;
 }
