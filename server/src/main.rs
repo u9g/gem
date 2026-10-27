@@ -145,7 +145,7 @@ fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
     }
 }
 
-fn cluster_merge_by(cluster: &PullRequestCluster) -> MergeBy {
+pub(crate) fn cluster_merge_by(cluster: &PullRequestCluster) -> MergeBy {
     let prs = || cluster.pull_requests.iter().map(|pr| pr.merge_by());
     if prs().any(|by| by == MergeBy::Unspecified) {
         MergeBy::Unspecified
@@ -334,10 +334,9 @@ async fn run_server() {
     let changes = Changes::default();
     changes.poll();
     let prs: Cache<ListOpenPullRequestsResponse> = {
-        let (names, conversations, watched) =
-            (names.clone(), conversations.clone(), changes.clone());
+        let (conversations, watched) = (conversations.clone(), changes.clone());
         cached(
-            move || open_pull_requests(names.clone(), conversations.clone(), watched.clone()),
+            move || open_pull_requests(conversations.clone(), watched.clone()),
             changes,
         )
     };
@@ -613,18 +612,20 @@ async fn filled(
     conversations: &Conversations,
 ) -> Option<ListOpenPullRequestsResponse> {
     let mut response = cache.read().await.clone()?;
+    agents::fill(&mut response, conversations).await;
+    // Names are asked for the clusters as shown, after agents join them, so none is asked for a
+    // cluster that never shows.
+    names.request_missing(&response.clusters).await;
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     conversations.fill(&mut response.clusters).await;
     files::fill(&mut response.clusters).await;
     rebases::fill(&mut response.clusters);
     merges::fill(&mut response.clusters);
-    agents::fill(&mut response, conversations).await;
     Some(response)
 }
 
 async fn open_pull_requests(
-    names: Names,
     conversations: Conversations,
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
@@ -650,7 +651,6 @@ async fn open_pull_requests(
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
-    names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
     Some(ListOpenPullRequestsResponse {
         clusters,
@@ -776,6 +776,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         rebased: false,
                         merging: false,
                         no_proposal_reason: String::new(),
+                        created_at: Some(pr.created_at.clone()),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),

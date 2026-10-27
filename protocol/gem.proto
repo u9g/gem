@@ -34,8 +34,8 @@ message Agent {
   // What it was asked to do, in a line: its thread's title.
   string title = 2;
   AgentState state = 3;
-  // The pull requests it acts on. It belongs to the cluster holding any of them, whatever the
-  // cluster is called or becomes; with none still open, it belongs to no cluster.
+  // The pull requests it acts on. It belongs to the one cluster holding those still open, whatever
+  // the cluster is called or becomes; with none still open, it belongs to no cluster.
   repeated string pull_request_urls = 4;
   // Its latest reply, in markdown. Empty until its first reply.
   string reply = 5;
@@ -57,7 +57,8 @@ enum AgentState {
 
 // Pull requests connected by links, directly or through other PRs in the
 // cluster. Two PRs are linked when one is stacked on the other (its base branch
-// is the other's head branch in the same repository) or one mentions the other.
+// is the other's head branch in the same repository), one mentions the other, or
+// an agent acts on both.
 // Oldest PR first.
 message PullRequestCluster {
   repeated PullRequest pull_requests = 1;
@@ -115,6 +116,7 @@ message PullRequest {
   // Why the agent that answered the head commit's failed checks proposed nothing, in its words.
   // Empty until it finishes, and when it proposed something.
   string no_proposal_reason = 22;
+  google.protobuf.Timestamp created_at = 23;
 }
 
 // How a pull request can merge, decided by the server.
