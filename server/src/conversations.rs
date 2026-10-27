@@ -630,7 +630,8 @@ Never push, comment, rerun or change anything on GitHub yourself: {login} approv
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread. Then reply with one line saying what you proposed, or, when you proposed \
-nothing, why: {login} reads it next to the failed checks.",
+nothing, why, with the pull request of each earlier investigation into the same failure: {login} \
+reads it next to the failed checks.",
         head = failure.head_oid,
         login = login(),
         url = pr.url,
