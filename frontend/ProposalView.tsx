@@ -163,9 +163,13 @@ function ProposalView({
   const comment = proposal.comment;
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
-  const investigate = onInvestigate && proposal.rerun && !proposal.patch && !proposal.followUp && (
-    <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
-  );
+  const investigate = onInvestigate &&
+    proposal.rerun &&
+    !proposal.patch &&
+    !proposal.otherPatches.length &&
+    !proposal.followUp && (
+      <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
+    );
   const actions = (
     <>
       <Button label="Dismiss" large={phone} disabled={disabled} onPress={onDismiss} />

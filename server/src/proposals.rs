@@ -153,21 +153,23 @@ async fn approve_proposal(
 }
 
 // Deletes every proposal answering a conversation with a patch written against a head commit its
-// branch has since moved past, keyed by PR URL in `heads`. Returns those conversations' IDs, so
-// they can be answered again against the new head.
+// branch has since moved past, or for another pull request no longer open, keyed by open PR URL in
+// `heads`. Returns those conversations' IDs, so they can be answered again against the new heads.
 pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
+    let moved = |pr: &str, patch: &Patch| {
+        !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
+    };
     let proposals = load(Path::new(DIR)).await;
     let stale: HashSet<String> = proposals
         .iter()
         .filter(|(_, p)| {
-            let own = p.patch.iter().map(|patch| (&p.pull_request_url, patch));
-            let others = (p.other_patches.iter()).map(|patch| (&patch.pull_request_url, patch));
-            own.chain(others).any(|(pr, patch)| {
-                !patch.head_oid.is_empty()
-                    && heads
-                        .get(pr.as_str())
-                        .is_some_and(|head| *head != patch.head_oid)
-            })
+            p.patch
+                .as_ref()
+                .is_some_and(|patch| moved(&p.pull_request_url, patch))
+                || p.other_patches.iter().any(|patch| {
+                    !heads.contains_key(patch.pull_request_url.as_str())
+                        || moved(&patch.pull_request_url, patch)
+                })
         })
         .filter_map(|(_, p)| subject(p).map(str::to_string))
         .collect();
@@ -582,6 +584,11 @@ pub async fn propose(
     let mut checked = Vec::new();
     for other in other_patches {
         let url = other.pr.trim().trim_end_matches('/');
+        if checked.iter().any(|p: &Patch| p.pull_request_url == url) {
+            return Err(format!(
+                "{url} has more than one patch; combine its changes into one"
+            ));
+        }
         if !others.iter().any(|p| *p == url) {
             let others: Vec<&str> = others.iter().map(|p| p.as_str()).collect();
             return Err(format!(

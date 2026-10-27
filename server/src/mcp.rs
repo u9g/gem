@@ -943,6 +943,11 @@ mod tests {
             let result = server.call(&token, "propose", other_patch(pr)).await;
             assert_eq!(result["isError"], true, "{pr} gave {result}");
         }
+        let mut twice = other_patch(OTHER);
+        let patch = twice["other_patches"][0].clone();
+        twice["other_patches"].as_array_mut().unwrap().push(patch);
+        let result = server.call(&token, "propose", twice).await;
+        assert_eq!(result["isError"], true, "{result}");
         assert!(server.proposals().is_empty());
 
         let result = server.call(&token, "propose", other_patch(OTHER)).await;
