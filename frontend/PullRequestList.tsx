@@ -2,6 +2,7 @@ import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { type Agent, AgentState, MergeBy, type PullRequest } from './gen/gem_pb';
+import { active } from './agents';
 import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
@@ -17,7 +18,7 @@ export function PullRequestList({
   onRebase,
 }: {
   pullRequests: PullRequest[];
-  // The cluster's active agents.
+  // The cluster's agents.
   agents: Agent[];
   busy?: ReadonlySet<string>;
   onRebase?: (url: string) => void;
@@ -79,7 +80,7 @@ function status(pr: PullRequest, agents: Agent[]): Status | undefined {
   const checks = pr.checks ?? { total: 0, done: 0, failed: 0 };
   const running = checks.total - checks.done;
   const checksFailed = `${checks.failed} ${checks.failed === 1 ? 'check' : 'checks'} failed`;
-  const acting = on(pr, agents);
+  const acting = on(pr, agents).filter(active);
   const working = acting.filter((agent) => agent.state === AgentState.WORKING);
   if (pr.rebased) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
   if (working.length === 1 && acting.length === 1) return { doing: working[0].title, waiting: 'waiting on its agent' };
@@ -91,7 +92,7 @@ function status(pr: PullRequest, agents: Agent[]): Status | undefined {
     };
   }
   if (acting.length > 0) return { doing: `${acting.length} ${acting.length === 1 ? 'agent' : 'agents'} queued`, waiting: 'waiting on other agents to finish' };
-  // Its agent stopped without finishing: it waits in the agent list.
+  // Its agent stopped without finishing: it waits on the user among the cluster's agents.
   if (pr.merging) return { doing: 'Merging', waiting: 'waiting on you to answer its agent' };
   if (pr.rebasing) return { doing: 'Rebasing', waiting: 'waiting on you to answer its agent' };
   if (running > 0 && checks.failed > 0) {

@@ -145,7 +145,7 @@ fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
     }
 }
 
-fn cluster_merge_by(cluster: &PullRequestCluster) -> MergeBy {
+pub(crate) fn cluster_merge_by(cluster: &PullRequestCluster) -> MergeBy {
     let prs = || cluster.pull_requests.iter().map(|pr| pr.merge_by());
     if prs().any(|by| by == MergeBy::Unspecified) {
         MergeBy::Unspecified
@@ -334,10 +334,9 @@ async fn run_server() {
     let changes = Changes::default();
     changes.poll();
     let prs: Cache<ListOpenPullRequestsResponse> = {
-        let (names, conversations, watched) =
-            (names.clone(), conversations.clone(), changes.clone());
+        let (conversations, watched) = (conversations.clone(), changes.clone());
         cached(
-            move || open_pull_requests(names.clone(), conversations.clone(), watched.clone()),
+            move || open_pull_requests(conversations.clone(), watched.clone()),
             changes,
         )
     };
@@ -382,10 +381,7 @@ async fn run_server() {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
             post(|Json(request): Json<MessageClusterRequest>| async move {
                 let response = filled(&prs, &names, &conversations).await;
-                let first = request.pull_request_urls.first();
-                let cluster = (response.iter().flat_map(|r| &r.clusters))
-                    .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
-                    .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
                 investigations::ask(cluster, &request.message)
                     .await
                     .map(|agent_id| Json(MessageClusterResponse { agent_id }))
@@ -396,10 +392,7 @@ async fn run_server() {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
             post(|Json(request): Json<MergeClusterRequest>| async move {
                 let response = filled(&prs, &names, &conversations).await;
-                let first = request.pull_request_urls.first();
-                let cluster = (response.iter().flat_map(|r| &r.clusters))
-                    .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
-                    .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
                 match (cluster.merge_by(), request.admin) {
                     (MergeBy::Unspecified, _) => {
                         return Err((StatusCode::CONFLICT, "the cluster cannot merge".to_string()));
@@ -423,10 +416,7 @@ async fn run_server() {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
             post(|Json(request): Json<RebaseClusterRequest>| async move {
                 let response = filled(&prs, &names, &conversations).await;
-                let first = request.pull_request_urls.first();
-                let cluster = (response.iter().flat_map(|r| &r.clusters))
-                    .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == first))
-                    .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+                let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
                 rebases::start_cluster(cluster)
                     .await
                     .map(|()| Json(RebaseClusterResponse {}))
@@ -606,6 +596,29 @@ async fn serve_prs(
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
 
+// The cluster the user acted on, holding exactly the pull requests they saw in it: clusters join and
+// split as links and agents come and go, and an action never reaches a pull request the user did not
+// see in the cluster.
+fn acted_on<'a>(
+    response: Option<&'a ListOpenPullRequestsResponse>,
+    urls: &[String],
+) -> Result<&'a PullRequestCluster, (StatusCode, String)> {
+    let cluster = (response.iter().flat_map(|r| &r.clusters))
+        .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == urls.first()))
+        .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+    let mut now: Vec<&str> = (cluster.pull_requests.iter()).map(|pr| pr.url.as_str()).collect();
+    let mut seen: Vec<&str> = urls.iter().map(String::as_str).collect();
+    now.sort();
+    seen.sort();
+    if now != seen {
+        return Err((
+            StatusCode::CONFLICT,
+            "the cluster's pull requests changed; look at it again".to_string(),
+        ));
+    }
+    Ok(cluster)
+}
+
 // The cached clusters with their names and proposals, and the agents, as gem shows them.
 async fn filled(
     cache: &Cache<ListOpenPullRequestsResponse>,
@@ -613,18 +626,20 @@ async fn filled(
     conversations: &Conversations,
 ) -> Option<ListOpenPullRequestsResponse> {
     let mut response = cache.read().await.clone()?;
+    agents::fill(&mut response, conversations).await;
+    // Names are asked for the clusters as shown, after agents join them, so none is asked for a
+    // cluster that never shows.
+    names.request_missing(&response.clusters).await;
     names.fill(&mut response.clusters).await;
     proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
     conversations.fill(&mut response.clusters).await;
     files::fill(&mut response.clusters).await;
     rebases::fill(&mut response.clusters);
     merges::fill(&mut response.clusters);
-    agents::fill(&mut response, conversations).await;
     Some(response)
 }
 
 async fn open_pull_requests(
-    names: Names,
     conversations: Conversations,
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
@@ -650,7 +665,6 @@ async fn open_pull_requests(
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
-    names.request_missing(&clusters).await;
     conversations.refresh(&prs).await;
     Some(ListOpenPullRequestsResponse {
         clusters,
@@ -776,10 +790,12 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         rebased: false,
                         merging: false,
                         no_proposal_reason: String::new(),
+                        created_at: Some(pr.created_at.clone()),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
                 merge_by: MergeBy::Unspecified as i32,
+                agents: Vec::new(),
             }
         })
         .map(|mut cluster| {
@@ -789,4 +805,30 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         .collect();
     clusters.sort_by_key(|c| Reverse(c.updated_at.as_ref().map(|t| (t.seconds, t.nanos))));
     clusters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_action_reaches_only_the_cluster_the_user_saw() {
+        let pr = |url: &str| PullRequest {
+            url: url.to_string(),
+            ..Default::default()
+        };
+        let response = ListOpenPullRequestsResponse {
+            clusters: vec![PullRequestCluster {
+                pull_requests: vec![pr("a"), pr("b")],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let urls = |urls: &[&str]| urls.iter().map(|u| u.to_string()).collect::<Vec<_>>();
+        assert!(acted_on(Some(&response), &urls(&["b", "a"])).is_ok());
+        let conflict = |urls: &[String]| acted_on(Some(&response), urls).err().map(|e| e.0);
+        assert_eq!(conflict(&urls(&["a"])), Some(StatusCode::CONFLICT));
+        assert_eq!(conflict(&urls(&["a", "b", "c"])), Some(StatusCode::CONFLICT));
+        assert_eq!(conflict(&urls(&["c"])), Some(StatusCode::NOT_FOUND));
+    }
 }

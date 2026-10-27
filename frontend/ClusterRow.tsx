@@ -3,7 +3,7 @@ import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { agentsOf } from './agents';
+import { active } from './agents';
 import { type Agent, AgentState, MergeBy, type PullRequest, type PullRequestCluster } from './gen/gem_pb';
 import { t3 } from './t3';
 
@@ -28,11 +28,11 @@ function shortAgo(date: Date): string {
 // only a merge, its checks, or a reviewer.
 export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Checks running', 'Waiting on review'] as const;
 
-// An agent waiting on the user is in the agent list, not in the cluster; a rebase or merge waiting
-// on the user still puts its cluster in front of them.
-export function section(cluster: PullRequestCluster, agents: Agent[]): (typeof sections)[number] {
+// An agent waiting on the user, or with proposals for them to review, puts its cluster in front of
+// them, as a rebase or merge waiting on them does.
+export function section(cluster: PullRequestCluster): (typeof sections)[number] {
   const prs = cluster.pullRequests;
-  const working = agentsOf(cluster, agents);
+  const working = cluster.agents.filter(active);
   const running = (pr: PullRequest) => (pr.checks?.total ?? 0) > (pr.checks?.done ?? 0);
   const answered = (pr: PullRequest) => working.some((agent) => agent.pullRequestUrls.includes(pr.url));
   const needsYou = (pr: PullRequest) =>
@@ -40,7 +40,7 @@ export function section(cluster: PullRequestCluster, agents: Agent[]): (typeof s
     (pr.behind && !pr.rebasing && !pr.rebased) ||
     ((pr.rebasing || pr.merging) && !answered(pr)) ||
     (pr.checksFailing && !running(pr) && !answered(pr));
-  if (prs.some(needsYou)) return 'Needs you';
+  if (cluster.agents.some((agent) => !active(agent) || agent.proposals.length > 0) || prs.some(needsYou)) return 'Needs you';
   if (working.length > 0 || prs.some((pr) => pr.rebased)) return 'Agents working';
   if (cluster.mergeBy !== MergeBy.UNSPECIFIED) return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';

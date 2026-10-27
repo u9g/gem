@@ -6,10 +6,11 @@ import { View } from 'react-native';
 
 import { Board } from '../../Board';
 import { ClusterReview } from '../../ClusterFiles';
-import { agentsOf } from '../../agents';
 import { AgentView } from '../../AgentView';
 import {
+  type Agent,
   AgentSchema,
+  AgentState,
   type Proposal,
   type PullRequest,
   type PullRequestCluster,
@@ -97,20 +98,39 @@ const clusterAgents = [
   create(AgentSchema, { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests[0].url] }),
 ];
 
+// An investigation whose pull request merged, so it acts on no open pull request.
+const orphan = create(AgentSchema, {
+  id: 'investigation-merged',
+  title: 'Investigate e2e on agents#4790',
+  pullRequestUrls: ['https://github.com/livekit/agents/pull/4790'],
+  state: AgentState.WAITING,
+  reply: 'The e2e failure was a flaky TURN server; it passed on rerun before the merge.',
+  replyHtml: '<p dir="auto">The e2e failure was a flaky TURN server; it passed on rerun before the merge.</p>',
+});
+
 const noop = () => {};
+
+// Each cluster holding the agents acting on its pull requests, as the server sends it.
+const holding = (agents: Agent[]) =>
+  clusters.map((c) =>
+    create(PullRequestClusterSchema, {
+      ...c,
+      agents: agents.filter((a) => c.pullRequests.some((pr) => a.pullRequestUrls.includes(pr.url))),
+    }),
+  );
 
 function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; agents?: boolean }) {
   const [openUrl, setOpenUrl] = useState(initial?.pullRequests[0].url);
   const [openAgent, setOpenAgent] = useState<string>();
-  const opened = clusters.find((c) => c.pullRequests[0].url === openUrl);
   const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
-  const agent = all.find((a) => a.id === openAgent);
+  const listed = holding(all);
+  const opened = listed.find((c) => c.pullRequests[0].url === openUrl);
+  const agent = [orphan, ...all].find((a) => a.id === openAgent);
   return (
     <View style={{ height: '100vh' as unknown as number }}>
       <Board
-        clusters={clusters}
-        allClusters={clusters}
-        agents={all}
+        clusters={listed}
+        agents={agents ? [orphan] : []}
         openUrl={agent ? undefined : openUrl}
         openAgent={openAgent}
         onOpenCluster={(c) => {
@@ -137,7 +157,6 @@ function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; ag
           opened && (
             <ClusterReview
               cluster={opened}
-              agents={agentsOf(opened, all)}
               onOpenAgent={setOpenAgent}
               onApprove={noop}
               onDismiss={noop}
@@ -162,4 +181,6 @@ export const Clusters: StoryObj = { render: () => <Desktop /> };
 export const WithAgents: StoryObj = { render: () => <Desktop agents /> };
 export const ReadyToMergeOpen: StoryObj = { render: () => <Desktop initial={ready1} /> };
 export const NeedsYouOpen: StoryObj = { render: () => <Desktop initial={needsYou} /> };
+// Agents waiting on the user, listed in the drawer of the cluster they wait in.
+export const NeedsYouWithAgentsOpen: StoryObj = { render: () => <Desktop initial={needsYou} agents /> };
 export const BehindOpen: StoryObj = { render: () => <Desktop initial={behind} /> };

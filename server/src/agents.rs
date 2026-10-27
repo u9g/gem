@@ -9,7 +9,7 @@ use pbjson_types::Timestamp;
 use tokio::sync::RwLock;
 
 use crate::conversations::Conversations;
-use crate::proto::{Agent, AgentState, ListOpenPullRequestsResponse};
+use crate::proto::{Agent, AgentState, ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::{investigations, merges, rebases, t3};
 
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
@@ -41,7 +41,74 @@ struct Shown {
 
 static SHOWN: LazyLock<RwLock<HashMap<String, Shown>>> = LazyLock::new(RwLock::default);
 
+// Each agent is in the one cluster holding its open pull requests, or in the response's own list when
+// none is open. Clustering and placement read the same agents, so they always agree.
 pub async fn fill(response: &mut ListOpenPullRequestsResponse, conversations: &Conversations) {
+    let agents = list(conversations).await;
+    join(&mut response.clusters, &agents);
+    for agent in agents {
+        let cluster = (response.clusters.iter_mut()).find(|cluster| {
+            (cluster.pull_requests.iter()).any(|pr| agent.pull_request_urls.contains(&pr.url))
+        });
+        match cluster {
+            Some(cluster) => cluster.agents.push(agent),
+            None => response.agents.push(agent),
+        }
+    }
+}
+
+// Joins the clusters each agent acts across into one: its pull requests sorted oldest first, updated
+// when its latest pull request was, and mergeable as its pull requests together are. Clusters stay
+// most recently updated first.
+fn join(clusters: &mut Vec<PullRequestCluster>, agents: &[Agent]) {
+    let cluster_of: HashMap<&str, usize> = (clusters.iter().enumerate())
+        .flat_map(|(i, cluster)| {
+            cluster
+                .pull_requests
+                .iter()
+                .map(move |pr| (pr.url.as_str(), i))
+        })
+        .collect();
+    let links = agents.iter().flat_map(|agent| {
+        let acted_on: Vec<usize> = (agent.pull_request_urls.iter())
+            .filter_map(|url| cluster_of.get(url.as_str()).copied())
+            .collect();
+        acted_on
+            .windows(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect::<Vec<_>>()
+    });
+    let groups = gem_cluster::components(clusters.len(), links);
+    if groups.len() == clusters.len() {
+        return;
+    }
+    let mut parts: Vec<Option<PullRequestCluster>> = clusters.drain(..).map(Some).collect();
+    let time = |t: &Option<Timestamp>| t.as_ref().map(|t| (t.seconds, t.nanos));
+    for group in groups {
+        let mut joined: Vec<PullRequestCluster> =
+            group.into_iter().filter_map(|i| parts[i].take()).collect();
+        if joined.len() == 1 {
+            clusters.push(joined.pop().unwrap());
+            continue;
+        }
+        let mut cluster = PullRequestCluster {
+            updated_at: joined
+                .iter()
+                .map(|c| c.updated_at.clone())
+                .max_by_key(time)
+                .flatten(),
+            pull_requests: joined.into_iter().flat_map(|c| c.pull_requests).collect(),
+            ..Default::default()
+        };
+        cluster.pull_requests.sort_by_key(|pr| time(&pr.created_at));
+        cluster.merge_by = crate::cluster_merge_by(&cluster) as i32;
+        clusters.push(cluster);
+    }
+    clusters.sort_by_key(|c| std::cmp::Reverse(time(&c.updated_at)));
+}
+
+// Every agent, most recently started first.
+pub async fn list(conversations: &Conversations) -> Vec<Agent> {
     let mut agents = investigations::agents().await;
     let shown = SHOWN.read().await;
     let agent = |id: String, running: Running, waiting: bool| {
@@ -91,7 +158,7 @@ pub async fn fill(response: &mut ListOpenPullRequestsResponse, conversations: &C
         agents.push(agent(id, running, waiting));
     }
     agents.sort_by_key(|a| std::cmp::Reverse(a.started_at.as_ref().map(|t| (t.seconds, t.nanos))));
-    response.agents = agents;
+    agents
 }
 
 pub async fn message(conversations: &Conversations, id: &str, message: &str) -> Result<(), String> {
@@ -168,4 +235,63 @@ pub fn watch(conversations: Conversations) {
             tokio::time::sleep(REFRESH_INTERVAL).await;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::PullRequest;
+
+    fn cluster(prs: &[(u32, i64)]) -> PullRequestCluster {
+        PullRequestCluster {
+            pull_requests: (prs.iter())
+                .map(|&(number, created)| PullRequest {
+                    number,
+                    url: format!("https://github.com/o/r/pull/{number}"),
+                    created_at: Some(Timestamp {
+                        seconds: created,
+                        nanos: 0,
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+            updated_at: (prs.iter().map(|&(_, created)| created).max())
+                .map(|seconds| Timestamp { seconds, nanos: 0 }),
+            ..Default::default()
+        }
+    }
+
+    fn on(numbers: &[u32]) -> Agent {
+        Agent {
+            pull_request_urls: (numbers.iter())
+                .map(|n| format!("https://github.com/o/r/pull/{n}"))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn numbers(clusters: &[PullRequestCluster]) -> Vec<Vec<u32>> {
+        (clusters.iter())
+            .map(|cluster| cluster.pull_requests.iter().map(|pr| pr.number).collect())
+            .collect()
+    }
+
+    #[test]
+    fn an_agent_joins_the_clusters_it_acts_across_oldest_first() {
+        let mut clusters = vec![
+            cluster(&[(3, 30)]),
+            cluster(&[(2, 20)]),
+            cluster(&[(1, 10), (4, 40)]),
+        ];
+        join(&mut clusters, &[on(&[3, 1])]);
+        assert_eq!(numbers(&clusters), [vec![1, 3, 4], vec![2]]);
+        assert_eq!(clusters[0].updated_at.as_ref().map(|t| t.seconds), Some(40));
+    }
+
+    #[test]
+    fn agents_within_one_cluster_or_on_closed_pull_requests_join_nothing() {
+        let mut clusters = vec![cluster(&[(1, 10), (2, 20)]), cluster(&[(3, 30)])];
+        join(&mut clusters, &[on(&[1, 2]), on(&[3, 9])]);
+        assert_eq!(numbers(&clusters), [vec![1, 2], vec![3]]);
+    }
 }

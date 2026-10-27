@@ -130,7 +130,6 @@ function Desktop() {
         </View>
         <Board
           clusters={clusters}
-          allClusters={clusters}
           agents={[]}
           openUrl={selectedUrl}
           onOpenCluster={select}
