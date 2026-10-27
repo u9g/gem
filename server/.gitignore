@@ -1,13 +1,8 @@
 /target
-/cluster-names.json
-/proposals
-/past-investigations
-/handled-comments.json
+/agent-tokens
 /.env
 /releases
 /launcher.lock
-/clusters.json
-/clusters.json.partial
 /gem.sqlite
 /gem.sqlite-journal
 /server.log

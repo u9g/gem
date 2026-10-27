@@ -4,6 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use gem_db::{Db, rusqlite::params};
 use pbjson_types::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -17,10 +18,15 @@ use crate::{
     tokens::{Subject, Tokens},
 };
 
-// Relative to the server's working directory, like the cluster names.
-const HANDLED_FILE: &str = "handled-comments.json";
-// Why each agent answering failed checks proposed nothing, by the ID of the checks it answered.
-const NO_PROPOSAL_FILE: &str = "no-proposal-reasons.json";
+const MIGRATIONS: &[&str] = &["
+    -- The conversations an agent was started for: the persisted part of `handled`.
+    CREATE TABLE started_conversations (id TEXT PRIMARY KEY);
+    -- Why each agent answering failed checks proposed nothing, by the ID of the checks it answered.
+    CREATE TABLE no_proposal_reasons (
+        id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL
+    );
+"];
 const CONCURRENT_AGENTS: usize = 4;
 
 // Fetched only for PRs whose updatedAt or failing checks moved, which any new comment, review
@@ -203,7 +209,7 @@ struct Inner {
     agents: Semaphore,
     // By the ID of the conversation they answer, until they stop or the user closes them.
     answering: Mutex<HashMap<String, Answering>>,
-    // Persisted to NO_PROPOSAL_FILE.
+    // Persisted to no_proposal_reasons.
     no_proposal: Mutex<HashMap<String, String>>,
 }
 
@@ -217,24 +223,45 @@ struct Answering {
     queued_at: i64,
 }
 
+pub fn migrate(db: &Db) -> Result<(), String> {
+    db.migrate("conversations", MIGRATIONS)
+}
+
+// Runs `sql` once per set of `params`. The memory it mirrors stays right when it fails.
+fn save<P: gem_db::rusqlite::Params>(sql: &str, params: impl IntoIterator<Item = P>) {
+    let saved = crate::db().with(|db| {
+        let mut statement = db.prepare(sql)?;
+        for params in params {
+            statement.execute(params)?;
+        }
+        Ok(())
+    });
+    if let Err(error) = saved {
+        tracing::warn!(%error, "cannot save conversations");
+    }
+}
+
 impl Conversations {
-    pub async fn load() -> Self {
-        let handled = match tokio::fs::read(HANDLED_FILE).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
-            Err(_) => HashSet::new(),
-        };
-        let no_proposal = match tokio::fs::read(NO_PROPOSAL_FILE).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
-            Err(_) => HashMap::new(),
-        };
-        Self(Arc::new(Inner {
+    pub fn load() -> Result<Self, String> {
+        let (handled, no_proposal) = crate::db().with(|db| {
+            let handled: HashSet<String> = db
+                .prepare("SELECT id FROM started_conversations")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            let no_proposal: HashMap<String, String> = db
+                .prepare("SELECT id, reason FROM no_proposal_reasons")?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            Ok((handled, no_proposal))
+        })?;
+        Ok(Self(Arc::new(Inner {
             prs: RwLock::default(),
             handled: Mutex::new(handled.clone()),
             started: Mutex::new(handled),
             agents: Semaphore::new(CONCURRENT_AGENTS),
             answering: Mutex::default(),
             no_proposal: Mutex::new(no_proposal),
-        }))
+        })))
     }
 
     // The agents answering conversations, by the ID of the conversation each answers. One without
@@ -294,15 +321,13 @@ impl Conversations {
         {
             let mut started = self.0.started.lock().await;
             started.retain(|id| !ids.contains(id));
-            let json = serde_json::to_vec_pretty(&*started).unwrap();
-            let _ = tokio::fs::write(HANDLED_FILE, json).await;
+            save("DELETE FROM started_conversations WHERE id = ?1", ids.iter().map(|id| [id]));
         }
         self.0.handled.lock().await.retain(|id| !ids.contains(id));
         {
             let mut no_proposal = self.0.no_proposal.lock().await;
             no_proposal.retain(|id, _| !ids.contains(id));
-            let json = serde_json::to_vec_pretty(&*no_proposal).unwrap();
-            let _ = tokio::fs::write(NO_PROPOSAL_FILE, json).await;
+            save("DELETE FROM no_proposal_reasons WHERE id = ?1", ids.iter().map(|id| [id]));
         }
         self.answer_waiting().await;
     }
@@ -382,8 +407,7 @@ impl Conversations {
         if !stale.is_empty() {
             let mut started = self.0.started.lock().await;
             started.retain(|id| !stale.contains(id));
-            let json = serde_json::to_vec_pretty(&*started).unwrap();
-            let _ = tokio::fs::write(HANDLED_FILE, json).await;
+            save("DELETE FROM started_conversations WHERE id = ?1", stale.iter().map(|id| [id]));
         }
 
         self.0.handled.lock().await.retain(|id| !stale.contains(id));
@@ -417,8 +441,10 @@ impl Conversations {
                     {
                         let mut started = this.0.started.lock().await;
                         started.insert(conversation.id().to_string());
-                        let json = serde_json::to_vec_pretty(&*started).unwrap();
-                        let _ = tokio::fs::write(HANDLED_FILE, json).await;
+                        save(
+                            "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
+                            [[conversation.id()]],
+                        );
                     }
                     let id = conversation.id();
                     let (title, prompt) = conversation.prompt(&pr);
@@ -439,9 +465,12 @@ impl Conversations {
                                     .await;
                                 if !proposals::exist_for(id).await {
                                     let mut no_proposal = this.0.no_proposal.lock().await;
+                                    save(
+                                        "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
+                                         VALUES (?1, ?2)",
+                                        [params![id, reply]],
+                                    );
                                     no_proposal.insert(id.to_string(), reply.to_string());
-                                    let json = serde_json::to_vec_pretty(&*no_proposal).unwrap();
-                                    let _ = tokio::fs::write(NO_PROPOSAL_FILE, json).await;
                                 }
                             }
                         }

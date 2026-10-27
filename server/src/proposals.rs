@@ -1,10 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
-    path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use gem_db::{Db, rusqlite::params};
 use serde::Deserialize;
 use tracing::Instrument;
 
@@ -13,9 +13,19 @@ use crate::tokens::Subject;
 use crate::{conversations, investigations};
 use gem_github::{apply_patch, command, graphql, render, repository};
 
-// One `<id>.json` file per proposal, relative to the server's working directory. Agents make
-// them with the `propose` tool of the `gem-agent` MCP server, which checks them first.
-pub const DIR: &str = "proposals";
+// Agents make proposals with the `propose` tool of the `gem-agent` MCP server, which checks them
+// first.
+const MIGRATIONS: &[&str] = &["
+    CREATE TABLE proposals (
+        id TEXT PRIMARY KEY,
+        -- The Proposal message, as JSON.
+        proposal TEXT NOT NULL
+    );
+"];
+
+pub fn migrate(db: &Db) -> Result<(), String> {
+    db.migrate("proposals", MIGRATIONS)
+}
 
 // The conversation or investigation a proposal answers.
 fn subject(proposal: &Proposal) -> Option<&str> {
@@ -35,20 +45,18 @@ fn answers(proposal: &Proposal) -> Vec<&str> {
 }
 
 pub async fn find(id: &str) -> Option<Proposal> {
-    (load(Path::new(DIR)).await.into_iter())
-        .map(|(_, proposal)| proposal)
-        .find(|proposal| proposal.id == id)
+    load(crate::db()).into_iter().find(|proposal| proposal.id == id)
 }
 
 // Whether a proposal answers the conversation or investigation `id`.
 pub async fn exist_for(id: &str) -> bool {
-    (load(Path::new(DIR)).await.iter()).any(|(_, proposal)| subject(proposal) == Some(id))
+    (load(crate::db()).iter()).any(|proposal| subject(proposal) == Some(id))
 }
 
 // The proposals of each investigation, by its ID.
 pub async fn of_investigations() -> HashMap<String, Vec<Proposal>> {
     let mut by_investigation: HashMap<String, Vec<Proposal>> = HashMap::new();
-    for (_, proposal) in load(Path::new(DIR)).await {
+    for proposal in load(crate::db()) {
         if !proposal.investigation_id.is_empty() {
             by_investigation
                 .entry(proposal.investigation_id.clone())
@@ -60,9 +68,9 @@ pub async fn of_investigations() -> HashMap<String, Vec<Proposal>> {
 }
 
 pub async fn remove_of_investigation(id: &str) {
-    for (path, proposal) in load(Path::new(DIR)).await {
+    for proposal in load(crate::db()) {
         if proposal.investigation_id == id {
-            let _ = tokio::fs::remove_file(path).await;
+            delete(&proposal.id);
         }
     }
 }
@@ -71,7 +79,7 @@ pub async fn remove_of_investigation(id: &str) {
 // proposal was made moves or outdates it.
 pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashMap<String, Option<Comment>>) {
     let mut by_pr: HashMap<String, Vec<Proposal>> = HashMap::new();
-    for (_, mut proposal) in load(Path::new(DIR)).await {
+    for mut proposal in load(crate::db()) {
         let Some(current) = subject(&proposal).and_then(|id| waiting.get(id)) else {
             continue;
         };
@@ -113,8 +121,8 @@ async fn approve_proposal(
     follow_up: &str,
     diff: &str,
 ) -> Result<Option<String>, String> {
-    let proposals = load(Path::new(DIR)).await;
-    let Some((path, mut proposal)) = proposals.iter().find(|(_, p)| p.id == id).cloned() else {
+    let proposals = load(crate::db());
+    let Some(mut proposal) = proposals.iter().find(|p| p.id == id).cloned() else {
         return Err(format!("no proposal {id}"));
     };
     tracing::Span::current().record("pull_request", proposal.pull_request_url.as_str());
@@ -134,7 +142,7 @@ async fn approve_proposal(
     if let Some(patch) = proposal.patch.as_mut().filter(|_| !diff.is_empty()) {
         patch.diff = diff.to_string();
     }
-    match run(&path, &mut proposal).await {
+    match run(&mut proposal).await {
         // Nothing else on a closed PR needs answering.
         Ok(()) if closes => {
             remove_on(std::slice::from_ref(&proposal.pull_request_url)).await;
@@ -142,16 +150,16 @@ async fn approve_proposal(
         }
         Ok(()) => {
             let answered = answers(&proposal);
-            for (path, other) in &proposals {
+            for other in &proposals {
                 if answers(other).iter().any(|a| answered.contains(a)) {
-                    let _ = tokio::fs::remove_file(path).await;
+                    delete(&other.id);
                 }
             }
             Ok(None)
         }
         Err(error) => {
             proposal.error = error.clone();
-            save(&path, &proposal).await;
+            save(crate::db(), &proposal);
             Err(error)
         }
     }
@@ -166,9 +174,8 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
     };
-    let proposals = load(Path::new(DIR)).await;
+    let proposals = load(crate::db());
     let stale: Vec<&Proposal> = (proposals.iter())
-        .map(|(_, p)| p)
         .filter(|p| {
             p.patch
                 .as_ref()
@@ -183,11 +190,11 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
         .filter(|p| p.investigation_id.is_empty())
         .filter_map(|p| subject(p).map(str::to_string))
         .collect();
-    for (path, proposal) in &proposals {
+    for proposal in &proposals {
         let answers_stale = proposal.investigation_id.is_empty()
             && subject(proposal).is_some_and(|id| conversations.contains(id));
         if answers_stale || stale.iter().any(|p| p.id == proposal.id) {
-            let _ = tokio::fs::remove_file(path).await;
+            delete(&proposal.id);
         }
     }
     conversations
@@ -195,19 +202,15 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
 
 // Deletes every proposal on the PRs at `urls`, except investigations'.
 pub async fn remove_on(urls: &[String]) {
-    for (path, proposal) in load(Path::new(DIR)).await {
+    for proposal in load(crate::db()) {
         if urls.contains(&proposal.pull_request_url) && proposal.investigation_id.is_empty() {
-            let _ = tokio::fs::remove_file(path).await;
+            delete(&proposal.id);
         }
     }
 }
 
 pub async fn dismiss(id: &str) {
-    for (path, proposal) in load(Path::new(DIR)).await {
-        if proposal.id == id {
-            let _ = tokio::fs::remove_file(path).await;
-        }
-    }
+    delete(id);
 }
 
 // Logs a step of an approve starting and how it ended. A step that succeeded is saved as done
@@ -227,7 +230,7 @@ async fn step<T>(
     result
 }
 
-async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
+async fn run(proposal: &mut Proposal) -> Result<(), String> {
     if !proposal.follow_up.is_empty() {
         step(
             "follow_up",
@@ -239,7 +242,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         )
         .await?;
         proposal.follow_up.clear();
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     if let Some(patch) = &proposal.patch {
         step(
@@ -252,7 +255,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         )
         .await?;
         proposal.patch = None;
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     while let Some(patch) = proposal.other_patches.first() {
         step(
@@ -266,7 +269,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         .instrument(tracing::info_span!("other", pull_request = %patch.pull_request_url))
         .await?;
         proposal.other_patches.remove(0);
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     if !proposal.reply.is_empty() {
         if proposal.thread_id.is_empty() {
@@ -296,7 +299,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
             .await?;
         }
         proposal.reply.clear();
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     if proposal.resolve_thread {
         step(
@@ -308,7 +311,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         )
         .await?;
         proposal.resolve_thread = false;
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     if proposal.rerun {
         let mut runs: Vec<u64> = (proposal.check_failure.iter())
@@ -338,7 +341,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
             .await?;
         }
         proposal.rerun = false;
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     if proposal.close_pull_request {
         step(
@@ -347,7 +350,7 @@ async fn run(path: &Path, proposal: &mut Proposal) -> Result<(), String> {
         )
         .await?;
         proposal.close_pull_request = false;
-        save(path, proposal).await;
+        save(crate::db(), proposal);
     }
     Ok(())
 }
@@ -471,12 +474,12 @@ impl GitHub for Live {
     }
 }
 
-// Checks what an agent answering `subject` proposes and saves it in `dir`. `cluster` is the URLs
+// Checks what an agent answering `subject` proposes and saves it in `db`. `cluster` is the URLs
 // of the pull requests in the cluster of the one it is about. Returns the proposal's ID, or why it
 // cannot be approved, for the agent to fix and propose again.
 pub async fn propose(
     github: &impl GitHub,
-    dir: &Path,
+    db: &Db,
     subject: &Subject,
     cluster: &[String],
     request: Request,
@@ -665,10 +668,12 @@ pub async fn propose(
         investigation_id: investigation_id.to_string(),
         other_patches: checked,
     };
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|e| e.to_string())?;
-    save(&dir.join(format!("{}.json", proposal.id)), &proposal).await;
+    db.with(|db| {
+        db.execute(
+            "INSERT INTO proposals (id, proposal) VALUES (?1, ?2)",
+            params![proposal.id, serde_json::to_string(&proposal).unwrap()],
+        )
+    })?;
     Ok(proposal.id)
 }
 
@@ -726,22 +731,39 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     })
 }
 
-async fn load(dir: &Path) -> Vec<(PathBuf, Proposal)> {
-    let mut proposals = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        return proposals;
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        if let Ok(bytes) = tokio::fs::read(&path).await
-            && let Ok(proposal) = serde_json::from_slice(&bytes)
-        {
-            proposals.push((path, proposal));
+pub fn load(db: &Db) -> Vec<Proposal> {
+    let proposals = db.with(|db| {
+        db.prepare("SELECT proposal FROM proposals")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()
+    });
+    match proposals {
+        Ok(proposals) => (proposals.iter())
+            .filter_map(|json| serde_json::from_str(json).ok())
+            .collect(),
+        Err(error) => {
+            tracing::warn!(%error, "cannot read proposals");
+            Vec::new()
         }
     }
-    proposals
 }
 
-async fn save(path: &Path, proposal: &Proposal) {
-    let _ = tokio::fs::write(path, serde_json::to_vec_pretty(proposal).unwrap()).await;
+fn save(db: &Db, proposal: &Proposal) {
+    let saved = db.with(|db| {
+        db.execute(
+            "INSERT OR REPLACE INTO proposals (id, proposal) VALUES (?1, ?2)",
+            params![proposal.id, serde_json::to_string(proposal).unwrap()],
+        )
+    });
+    if let Err(error) = saved {
+        tracing::warn!(proposal = %proposal.id, %error, "cannot save proposal");
+    }
+}
+
+fn delete(id: &str) {
+    let deleted =
+        crate::db().with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", [id]));
+    if let Err(error) = deleted {
+        tracing::warn!(proposal = id, %error, "cannot delete proposal");
+    }
 }
