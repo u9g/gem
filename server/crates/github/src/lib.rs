@@ -33,6 +33,26 @@ pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T
         .ok()
 }
 
+// gh's output parsed whatever its exit status. `gh api graphql` exits non-zero when any one field
+// errors, e.g. a repository behind SAML enforcement the token is not authorized for, but still
+// prints the other fields' data, which a query over many PRs wants rather than nothing.
+pub async fn gh_partial_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
+    let output = Command::new("gh")
+        .args(args)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .inspect_err(|error| tracing::warn!(%error, what, "cannot run gh"))
+        .ok()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(stderr = %stderr.trim(), what, "gh failed; reading what it printed");
+    }
+    serde_json::from_slice(&output.stdout)
+        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
+        .ok()
+}
+
 // The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.
 // The first call asks gh, blocking, and panics when gh is not authenticated.
 pub fn login() -> &'static str {

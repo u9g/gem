@@ -44,7 +44,7 @@ mod search;
 mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{gh, gh_json, login, render};
+use gem_github::{gh, gh_json, gh_partial_json, login, render};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -661,8 +661,9 @@ async fn open_pull_requests(
 }
 
 // mergeStateStatus is slow enough for GitHub to compute that the search's pages time out with it,
-// so it is asked for MERGE_STATES_CHUNK PRs a request, all at once. A PR whose request fails is
-// neither behind nor conflicting.
+// so it is asked for MERGE_STATES_CHUNK PRs a request, all at once. A PR whose node errors, e.g. in
+// a repository behind SAML enforcement the token is not authorized for, is neither behind nor
+// conflicting, without taking the rest of its request's PRs with it.
 const MERGE_STATES_CHUNK: usize = 25;
 
 // Sets `behind` when GitHub will not merge a PR until it is rebased (its base branch requires it up
@@ -674,7 +675,9 @@ async fn merge_states(prs: &mut [SearchedPullRequest]) {
         let query = format!(
             "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
         );
-        requests.spawn(async move { gh_json::<Value>("merge states", &["api", "graphql", "-f", &query]).await });
+        requests.spawn(async move {
+            gh_partial_json::<Value>("merge states", &["api", "graphql", "-f", &query]).await
+        });
     }
     let mut states = HashMap::new();
     while let Some(result) = requests.join_next().await {

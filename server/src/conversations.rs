@@ -123,31 +123,47 @@ pub async fn check_failure(pr: &str, id: &str) -> Option<CheckFailure> {
         })
 }
 
-// The conversations waiting on the user on each PR, by GraphQL node ID.
+// The conversations waiting on the user on each PR, by GraphQL node ID. gh exits non-zero when any
+// one node errors, e.g. a PR in a repository behind SAML enforcement the token is not authorized
+// for, and then prints the raw response instead of applying --jq, so a chunk that fails is asked for
+// one PR at a time: only the PR that errors is lost, not the chunk's others.
 async fn fetch(ids: &[&str]) -> Vec<Fetched> {
     let mut fetched = Vec::new();
     for chunk in ids.chunks(100) {
-        let mut args = vec![
-            "api".to_string(),
-            "graphql".to_string(),
-            "-f".to_string(),
-            format!("query={CONVERSATIONS_QUERY}"),
-            "--jq".to_string(),
-            CONVERSATIONS_JQ.to_string(),
-        ];
-        for id in chunk {
-            args.extend(["-f".to_string(), format!("ids[]={id}")]);
-        }
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let Some(stdout) = gh("conversations", &args).await else {
-            continue;
-        };
-        for result in serde_json::Deserializer::from_slice(&stdout).into_iter::<Fetched>() {
-            let Ok(result) = result else { break };
-            fetched.push(result);
+        match fetch_chunk(chunk).await {
+            Some(results) => fetched.extend(results),
+            None if chunk.len() > 1 => {
+                for &id in chunk {
+                    fetched.extend(fetch_chunk(&[id]).await.into_iter().flatten());
+                }
+            }
+            None => {}
         }
     }
     fetched
+}
+
+// The conversations of the PRs with node IDs `ids`, in one request, or None when it fails.
+async fn fetch_chunk(ids: &[&str]) -> Option<Vec<Fetched>> {
+    let mut args = vec![
+        "api".to_string(),
+        "graphql".to_string(),
+        "-f".to_string(),
+        format!("query={CONVERSATIONS_QUERY}"),
+        "--jq".to_string(),
+        CONVERSATIONS_JQ.to_string(),
+    ];
+    for id in ids {
+        args.extend(["-f".to_string(), format!("ids[]={id}")]);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let stdout = gh("conversations", &args).await?;
+    Some(
+        serde_json::Deserializer::from_slice(&stdout)
+            .into_iter::<Fetched>()
+            .map_while(Result::ok)
+            .collect(),
+    )
 }
 
 #[derive(Clone)]
