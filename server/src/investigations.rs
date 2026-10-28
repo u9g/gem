@@ -135,12 +135,15 @@ it in gem. A proposal is about one of the cluster's pull requests, and can:
 run `gh pr checkout <number>` in it, edit, and pass what `git diff` prints as `patch`, and the \
 matching change to other pull requests of the cluster the same way as `other_patches`. Never \
 commit or push.
+- open a new pull request, with `open_pull_request`: such as a fix on a base branch. Make its \
+`patch` the same way against the latest `origin/<base branch>`, and link the pull request the \
+proposal is about in its description.
 - reply as {login}, in the first person, with `reply`: the markdown is posted as a top-level \
 comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
 first lines before approving.
 - hand the work to another agent, with `follow_up`: when the work is too big to review as \
-patches, such as matching changes in other repositories with no pull request in the cluster, \
-write a prompt for a T3 Code agent. It must stand alone: the repositories (checked out under \
+patches or one new pull request, such as matching changes in other repositories with no pull \
+request in the cluster, write a prompt for a T3 Code agent. It must stand alone: the repositories (checked out under \
 ~/code), the branches or pull requests to build on, what to change and why, and how to verify it. The agent must be able to finish without \
 anyone else reviewing, merging or releasing something first.
 - close the pull request without merging it, with `close_pull_request`. Pair it with a reply \
@@ -393,12 +396,17 @@ same way, in a few short paragraphs of markdown. Link the pull request of each e
 investigation into the same failure, with what it found.
 
 Then propose what {login} should do about it. A proposal can:
-- hand the fix to another agent, with `follow_up`: such as a pull request that fixes the test or \
-the code on the base branch. Write a prompt for a T3 Code agent. It must stand alone: the \
-repositories (checked out under ~/code), the branch to build on, what to change and \
-why, how to verify it, and that it opens a pull request with the fix whose description links \
-{pr}, where the test failed. The agent must be able to finish without anyone else reviewing, \
-merging or releasing something first.
+- open a pull request with the fix, with `open_pull_request`: such as one that fixes the test or \
+the code on the base branch. Clone the repository into a temporary directory, check out the \
+latest `origin/<base branch>`, edit, verify the fix, and pass what `git diff` prints as its \
+`patch`, with a title and a description that says what fails and why, and links {pr}, where the \
+test failed. Never commit, push or open it yourself.
+- hand the fix to another agent, with `follow_up`: only when it is too big for one \
+`open_pull_request`, such as matching changes across repositories. Write a prompt for a T3 Code \
+agent. It must stand alone: the repositories (checked out under ~/code), the branch to build on, \
+what to change and why, how to verify it, and that it opens a pull request with the fix whose \
+description links {pr}, where the test failed. The agent must be able to finish without anyone \
+else reviewing, merging or releasing something first.
 - change the code of {pr}, with `patch` and `message`, when the pull request itself causes it: \
 clone the repository into a temporary directory, run `gh pr checkout <number>` in it, edit, and \
 pass what `git diff` prints as `patch`. Never commit or push.

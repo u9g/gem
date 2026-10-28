@@ -358,6 +358,25 @@ export const agents: Agent[] = [
         followUpHtml:
           '<p dir="auto">In ~/code/agents, branch off origin/main, pin <code class="notranslate">ruff==0.5.7</code> in the dev dependencies, run <code class="notranslate">uv lock</code> and <code class="notranslate">uv run ruff check .</code>, then open a PR.</p>',
       }),
+      create(ProposalSchema, {
+        id: 'investigation-open-pull-request',
+        summary: 'Open a PR on main pinning ruff to 0.5',
+        summaryHtml: '<p dir="auto">Open a PR on main pinning ruff to 0.5</p>',
+        pullRequestUrl: pr.url,
+        investigationId: 'investigation-answered',
+        openPullRequest: {
+          repository: 'livekit/agents',
+          base: 'main',
+          branch: 'ci/pin-ruff',
+          title: 'Pin ruff to 0.5',
+          body: `ruff 0.6 added F401 for re-exports, which fails lint on every run since Oct 2. Found on ${pr.url}.`,
+          bodyHtml: `<p dir="auto">ruff 0.6 added F401 for re-exports, which fails lint on every run since Oct 2. Found on <a href="${pr.url}">${pr.url}</a>.</p>`,
+          patch: {
+            diff: 'diff --git a/pyproject.toml b/pyproject.toml\n--- a/pyproject.toml\n+++ b/pyproject.toml\n@@ -12,3 +12,3 @@ dev = [\n     "pytest>=8",\n-    "ruff",\n+    "ruff==0.5.7",\n ]\n',
+            commitMessage: 'Pin ruff to 0.5',
+          },
+        },
+      }),
     ],
   }),
   create(AgentSchema, {

@@ -526,6 +526,9 @@ or the same fix in another repository's port of this pull request. Before declin
 pull request cannot fix, check whether another pull request of the cluster causes it. Make each \
 patch the same way, against its own pull request. The `get_cluster` tool of the `{server}` MCP \
 server lists the cluster's pull requests.
+- open a new pull request, with `open_pull_request`: when the change belongs in a pull request of \
+its own, such as a fix on the base branch. Make its `patch` the same way against the latest \
+`origin/<base branch>`, and link {url} in its description.
 - reply as {login}, in the first person, with `reply`: the markdown is posted as {reply_kind}. \
 Open with what {login} is doing about the comment, then why: {login} reads only the first lines \
 before approving, and they must not concede a suggestion the reply goes on to decline. Pin each \
@@ -621,6 +624,9 @@ check's command locally when you can, to show the fix works. Never commit or pus
 them, alone or with `patch`, such as in a pull request this one depends on or that produces what \
 this one consumes. Make each patch the same way, against its own pull request. The \
 `get_cluster` tool of the `{server}` MCP server lists the cluster's pull requests.
+- open a new pull request, with `open_pull_request`: when the fix belongs in a pull request of its \
+own, such as a test that fails the same way on the base branch. Make its `patch` the same way \
+against the latest `origin/<base branch>`, and link {url} in its description.
 - rerun the failed jobs, with `rerun`: when the failure is flaky or comes from outside the pull \
 request, such as a network error, a broken runner or a test that fails the same way on the base \
 branch, and running it again is likely to pass. Only GitHub Actions runs can be rerun.

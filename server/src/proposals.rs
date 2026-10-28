@@ -8,10 +8,13 @@ use gem_db::{Db, rusqlite::params};
 use serde::Deserialize;
 use tracing::Instrument;
 
-use crate::proto::{CheckFailure, Comment, Patch, Proposal, PullRequestCluster};
+use crate::proto::{CheckFailure, Comment, NewPullRequest, Patch, Proposal, PullRequestCluster};
 use crate::tokens::Subject;
 use crate::{conversations, investigations};
-use gem_github::{apply_patch, command, graphql, render, repository};
+use gem_github::{
+    apply_patch, check_new_pull_request, command, graphql, open_pull_request, push_new_branch,
+    render, repository,
+};
 
 // Agents make proposals with the `propose` tool of the `gem-agent` MCP server, which checks them
 // first.
@@ -260,6 +263,45 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
         proposal.other_patches.remove(0);
         save(crate::db(), proposal);
     }
+    // The pushed branch's patch is dropped, so a retry opens the pull request without pushing
+    // again.
+    if let Some(new) = &proposal.open_pull_request
+        && let Some(patch) = &new.patch
+    {
+        step(
+            "push_new_branch",
+            push_new_branch(
+                &new.repository,
+                &new.base,
+                &new.branch,
+                &patch.diff,
+                &patch.commit_message,
+            ),
+        )
+        .instrument(tracing::info_span!("new", repository = %new.repository, branch = %new.branch))
+        .await?;
+        if let Some(new) = &mut proposal.open_pull_request {
+            new.patch = None;
+        }
+        save(crate::db(), proposal);
+    }
+    if let Some(new) = &proposal.open_pull_request {
+        let url = step(
+            "open_pull_request",
+            open_pull_request(
+                &new.repository,
+                &new.base,
+                &new.branch,
+                &new.title,
+                &new.body,
+            ),
+        )
+        .instrument(tracing::info_span!("new", repository = %new.repository, branch = %new.branch))
+        .await?;
+        tracing::info!(%url, "pull request opened");
+        proposal.open_pull_request = None;
+        save(crate::db(), proposal);
+    }
     if !proposal.reply.is_empty() {
         if proposal.thread_id.is_empty() {
             step(
@@ -355,6 +397,7 @@ pub struct Request {
     pub patch: String,
     pub message: String,
     pub other_patches: Vec<OtherPatch>,
+    pub open_pull_request: Option<OpenPullRequest>,
     // Markdown, as are the follow-up and the requested tool.
     pub reply: String,
     pub follow_up: String,
@@ -370,6 +413,20 @@ pub struct Request {
 #[serde(deny_unknown_fields)]
 pub struct OtherPatch {
     pub pr: String,
+    pub patch: String,
+    pub message: String,
+}
+
+// A pull request to open: a diff against `base` of `repository`, committed on `branch`.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct OpenPullRequest {
+    pub repository: String,
+    pub base: String,
+    pub branch: String,
+    pub title: String,
+    // Markdown.
+    pub body: String,
     pub patch: String,
     pub message: String,
 }
@@ -400,6 +457,15 @@ pub trait GitHub: Send + Sync + 'static {
     fn check_patch(
         &self,
         pr: &str,
+        diff: &str,
+    ) -> impl Future<Output = Result<String, String>> + Send;
+    // Checks that the diff applies to the head of `base` in the repository `owner/name`, and that
+    // `branch` is new. Returns that head commit.
+    fn check_new_pull_request(
+        &self,
+        repository: &str,
+        base: &str,
+        branch: &str,
         diff: &str,
     ) -> impl Future<Output = Result<String, String>> + Send;
     fn render(
@@ -458,6 +524,16 @@ impl GitHub for Live {
         apply_patch(pr, diff, None).await
     }
 
+    async fn check_new_pull_request(
+        &self,
+        repository: &str,
+        base: &str,
+        branch: &str,
+        diff: &str,
+    ) -> Result<String, String> {
+        check_new_pull_request(repository, base, branch, diff).await
+    }
+
     async fn render(&self, pr: &str, markdown: &str) -> Result<String, String> {
         render(pr, markdown).await
     }
@@ -479,6 +555,7 @@ pub async fn propose(
         patch,
         message,
         other_patches,
+        open_pull_request,
         reply,
         follow_up,
         resolve_thread,
@@ -558,6 +635,7 @@ pub async fn propose(
 
     let steps = !patch.is_empty()
         || !other_patches.is_empty()
+        || open_pull_request.is_some()
         || !reply.trim().is_empty()
         || resolve_thread
         || !follow_up.trim().is_empty()
@@ -565,7 +643,7 @@ pub async fn propose(
         || close_pull_request;
     if steps != request_tool.trim().is_empty() {
         return Err(
-            "propose either steps (`patch`, `other_patches`, `reply`, `resolve_thread`, `follow_up`, `rerun`, `close_pull_request`) or `request_tool`"
+            "propose either steps (`patch`, `other_patches`, `open_pull_request`, `reply`, `resolve_thread`, `follow_up`, `rerun`, `close_pull_request`) or `request_tool`"
                 .into(),
         );
     }
@@ -616,6 +694,10 @@ pub async fn propose(
             pull_request_url: url.to_string(),
         });
     }
+    let open_pull_request = match open_pull_request {
+        None => None,
+        Some(new) => Some(check_open_pull_request(github, pr, new).await?),
+    };
     // A top-level reply quotes the comment it answers in its own markdown, so the quote shows,
     // and is edited, with the rest of what is posted.
     let reply = match &comment {
@@ -656,6 +738,7 @@ pub async fn propose(
         summary_html,
         investigation_id: investigation_id.to_string(),
         other_patches: checked,
+        open_pull_request,
     };
     db.with(|db| {
         db.execute(
@@ -664,6 +747,70 @@ pub async fn propose(
         )
     })?;
     Ok(proposal.id)
+}
+
+// Checks a pull request to open, proposed about the pull request at `pr`, which its body must link.
+async fn check_open_pull_request(
+    github: &impl GitHub,
+    pr: &str,
+    new: OpenPullRequest,
+) -> Result<NewPullRequest, String> {
+    let repository = (new.repository.trim())
+        .trim_start_matches("https://github.com/")
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+    let parts: Vec<&str> = repository.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|part| matches!(*part, "" | "." | "..")) {
+        return Err(format!(
+            "`open_pull_request.repository` is `owner/name`, not `{}`",
+            new.repository
+        ));
+    }
+    let base = new.base.trim();
+    let branch = new.branch.trim();
+    for (field, value) in [
+        ("base", base),
+        ("branch", branch),
+        ("title", new.title.trim()),
+        ("patch", new.patch.as_str()),
+        ("message", new.message.trim()),
+    ] {
+        if value.is_empty() {
+            return Err(format!("`open_pull_request.{field}` is required"));
+        }
+    }
+    if branch == base {
+        return Err("`open_pull_request.branch` must be a new branch, not `base`".into());
+    }
+    // A link to the pull request, not one to a longer number that starts the same.
+    let links = new
+        .body
+        .match_indices(pr)
+        .any(|(at, _)| !(new.body[at + pr.len()..].starts_with(|c: char| c.is_ascii_digit())));
+    if !links {
+        return Err(format!(
+            "`open_pull_request.body` must link {pr}, so gem groups the two pull requests"
+        ));
+    }
+    let head_oid = (github
+        .check_new_pull_request(repository, base, branch, &new.patch)
+        .await)
+        .map_err(|e| format!("the patch for the new pull request: {e}"))?;
+    Ok(NewPullRequest {
+        repository: repository.to_string(),
+        base: base.to_string(),
+        branch: branch.to_string(),
+        title: new.title.trim().to_string(),
+        // Rendered where it is posted, so `#123` links an issue of that repository.
+        body_html: (github.render(&format!("https://github.com/{repository}"), &new.body)).await?,
+        body: new.body,
+        patch: Some(Patch {
+            diff: new.patch,
+            commit_message: new.message,
+            head_oid,
+            pull_request_url: String::new(),
+        }),
+    })
 }
 
 pub struct FetchedComment {

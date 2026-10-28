@@ -497,6 +497,38 @@ fn propose_tool(subject: &Subject) -> Value {
                 "additionalProperties": false,
             },
         },
+        "open_pull_request": {
+            "type": "object",
+            "description": "A new pull request, such as a fix on the base branch for a test that \
+    fails there too. Approving commits `patch` on `branch` off `base`, pushes it to `repository`, \
+    or to the user's fork of it when they cannot push there, and opens the pull request. Never \
+    commit, push or open it yourself.",
+            "properties": {
+                "repository": {
+                    "type": "string",
+                    "description": "`owner/name` it merges into, such as the repository `pr` merges \
+    into, not a fork.",
+                },
+                "base": { "type": "string", "description": "The branch it merges into." },
+                "branch": {
+                    "type": "string",
+                    "description": "A new branch to commit it on, which neither `repository` nor \
+    the user's fork has.",
+                },
+                "title": { "type": "string" },
+                "body": {
+                    "type": "string",
+                    "description": "Markdown description, posted as the user. Must link `pr`.",
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "The change, as `git diff` prints it against `base`'s head.",
+                },
+                "message": { "type": "string", "description": "The commit message." },
+            },
+            "required": ["repository", "base", "branch", "title", "body", "patch", "message"],
+            "additionalProperties": false,
+        },
         "reply": {
             "type": "string",
             "description": "Markdown posted as the user, in the first person.",
@@ -552,8 +584,8 @@ fn propose_tool(subject: &Subject) -> Value {
         "name": "propose",
         "description": "Records a proposal for the user to approve or dismiss in gem. It is \
     checked first: an error says what is wrong, to fix and propose again. Approving runs its steps \
-    in this order: `follow_up`, `patch`, `other_patches`, `reply`, `resolve_thread`, `rerun`, \
-    `close_pull_request`.",
+    in this order: `follow_up`, `patch`, `other_patches`, `open_pull_request`, `reply`, \
+    `resolve_thread`, `rerun`, `close_pull_request`.",
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -619,6 +651,19 @@ mod tests {
 
         async fn check_patch(&self, _: &str, _: &str) -> Result<String, String> {
             Ok("abc".into())
+        }
+
+        async fn check_new_pull_request(
+            &self,
+            repository: &str,
+            base: &str,
+            branch: &str,
+            _: &str,
+        ) -> Result<String, String> {
+            match (repository, base, branch) {
+                ("o/r", "master", "test/fix") => Ok("def".into()),
+                _ => Err(format!("{repository} {base} {branch}")),
+            }
         }
 
         async fn render(&self, _: &str, markdown: &str) -> Result<String, String> {
@@ -859,6 +904,52 @@ mod tests {
         assert_eq!(proposal.investigation_id, "inv");
         assert_eq!(proposal.pull_request_url, OTHER);
         assert_eq!(proposal.comment, None);
+    }
+
+    #[tokio::test]
+    async fn a_proposal_opens_a_pull_request_that_links_its_own() {
+        let server = Server::new("open-pull-request");
+        let subject = Subject::Investigation {
+            id: "inv".into(),
+            prs: vec![PR.into()],
+        };
+        let token = server.token(&subject).await;
+        let open = |body: &str| {
+            json!({
+                "pr": PR,
+                "summary": "Fix the test on master",
+                "open_pull_request": {
+                    "repository": "https://github.com/o/r",
+                    "base": "master",
+                    "branch": "test/fix",
+                    "title": "Fix the test",
+                    "body": body,
+                    "patch": "diff --git a/x b/x\n",
+                    "message": "Fix the test",
+                },
+            })
+        };
+
+        for body in ["Fixes the test.".to_string(), format!("Found on {PR}0.")] {
+            let result = server.call(&token, "propose", open(&body)).await;
+            assert_eq!(result["isError"], true, "{result}");
+            assert!(server.proposals().is_empty());
+        }
+
+        let body = format!("Fixes the test that fails on {PR}.");
+        let result = server.call(&token, "propose", open(&body)).await;
+        assert_eq!(result["isError"], Value::Null, "{result}");
+        let [proposal] = &server.proposals()[..] else {
+            panic!("{:?}", server.proposals());
+        };
+        let new = proposal.open_pull_request.as_ref().unwrap();
+        assert_eq!(new.repository, "o/r");
+        assert_eq!(new.base, "master");
+        assert_eq!(new.branch, "test/fix");
+        assert_eq!(new.body_html, format!("<p>{body}</p>"));
+        let patch = new.patch.as_ref().unwrap();
+        assert_eq!(patch.head_oid, "def");
+        assert_eq!(patch.commit_message, "Fix the test");
     }
 
     #[tokio::test]
