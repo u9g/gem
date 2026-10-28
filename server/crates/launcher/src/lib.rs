@@ -1,8 +1,8 @@
 // What running the binary without a command starts: a watchdog that runs the server as a child
 // process, starts it again whenever it exits, and keeps it on the newest commit of main. Every
-// minute it fetches origin/main and, when main has moved, fast-forwards, builds, and restarts the
-// server onto the new build. It updates only a checkout on main that can fast-forward; a failed
-// build keeps the running one.
+// minute it fetches origin/main and, when main has moved, checks it out in a worktree of its own,
+// builds it, and restarts the server onto the new build. The branch the checkout is on never
+// matters: the server always runs origin/main. A failed build keeps the running one.
 //
 // The launcher itself stays one process for as long as it runs, so whatever started it keeps
 // watching the same process, and the environment it was started with, the LiveKit login from
@@ -40,9 +40,9 @@ pub fn run(dotenv: Vec<OsString>) -> ! {
     let mut release = exe.clone();
     if let Some(updates) = &mut updates {
         exe = releases::move_out_of_target(&exe);
-        // Commits can land while the launcher is down, and the checkout can be pulled by hand,
-        // so catch up before the first start. A build with nothing new to compile takes seconds.
-        let _ = updates.fast_forward();
+        // Commits can land while the launcher is down, so catch up before the first start. A
+        // build with nothing new to compile takes seconds.
+        let _ = updates.check_out_latest();
         release = releases::install(&updates.build().unwrap_or_else(|| exe.clone()));
         releases::prune(&[&exe, &release]);
     }
