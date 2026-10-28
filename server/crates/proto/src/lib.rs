@@ -4,11 +4,11 @@
 // their JSON is pbjson's: camelCase names, default values left out, 64-bit integers as strings,
 // enums by name, and Timestamps as RFC 3339.
 
+mod gem_v1;
 mod timestamp;
 
+pub use gem_v1::*;
 pub use timestamp::Timestamp;
-
-include!(concat!(env!("OUT_DIR"), "/gem.v1.rs"));
 
 // An integer field, from a JSON number or a string holding one.
 fn read_integer<T: TryFrom<i128>>(value: &gem_json::Value) -> Result<T, gem_json::Error> {
