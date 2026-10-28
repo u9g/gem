@@ -194,19 +194,16 @@ pub async fn has(id: &str) -> bool {
     load().await.iter().any(|investigation| investigation.id == id)
 }
 
+// Marked before sending, so the watcher never closes an agent that has a message it has not seen.
 pub async fn message(id: &str, message: &str) -> Result<(), String> {
-    let investigation = load()
-        .await
-        .into_iter()
-        .find(|i| i.id == id)
-        .ok_or(format!("no agent {id}"))?;
-    t3::send(&investigation.thread_id, message).await?;
+    let mut thread_id = None;
     update(id, |investigation| {
         investigation.working = true;
         investigation.messaged = true;
+        thread_id = Some(investigation.thread_id.clone());
         false
     });
-    Ok(())
+    t3::send(&thread_id.ok_or(format!("no agent {id}"))?, message).await
 }
 
 pub async fn close(id: &str) {
