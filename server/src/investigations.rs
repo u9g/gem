@@ -16,6 +16,11 @@ use gem_github::short;
 const SEARCH_LIMIT: usize = 10;
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+// T3 Code does not settle threads when they finish, and unsettles one when it is sent a message,
+// so an agent the user can message settles its thread after each answer.
+const SETTLE: &str = "When you are done, call the t3_thread_organize tool with action \"settle\" \
+and no threadId, to settle this thread. A message from the user unsettles it: settle it again \
+each time you have answered.";
 
 // An agent gem follows: an investigation, a follow-up, or the answer to the user's message about a
 // cluster. Saved as JSON with the names of the `Investigation` message it was before every agent
@@ -78,7 +83,9 @@ Link {pr} in the description of any pull request you open, so gem groups the two
 
 {login} follows this thread in an app that shows only your latest reply, so end each reply \
 with where things stand, such as a link to the pull request you opened. {login} may message you \
-afterwards in this thread.",
+afterwards in this thread.
+
+{SETTLE}",
         login = login(),
     );
     let thread_id = t3::start(title, &prompt, None).await?;
@@ -158,7 +165,9 @@ and propose nothing.
 
 {login} follows this thread in an app that shows only your latest reply, so end each reply with \
 where things stand, such as what you proposed. {login} may message you afterwards in this \
-thread, and you can record more proposals the same way.",
+thread, and you can record more proposals the same way.
+
+{SETTLE}",
         login = login(),
         snapshot = mcp::cluster_json(cluster),
         server = mcp::AGENT_NAME,
@@ -427,7 +436,9 @@ needs it), with a `summary` of \"<tool name>: <one line>\".
 says where things stand, and you can record more proposals the same way.
 
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals \
-later.",
+later.
+
+{SETTLE}",
         checks = listed(failure),
         head = failure.head_oid,
         login = login(),

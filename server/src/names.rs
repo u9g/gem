@@ -11,8 +11,6 @@ use crate::{
     t3,
 };
 
-// Naming threads are started in the project containing the server's working directory, which
-// must be inside the `gem` T3 Code project.
 const CONCURRENT_THREADS: usize = 4;
 
 const PROMPT: &str = "Give this cluster of related pull requests a short name (2-5 words) \
@@ -100,9 +98,16 @@ async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
         .map(|pr| format!("- {}#{}: {}", full_name(pr), pr.number, pr.title))
         .collect();
     let first = &prs[0];
+    // A cloud agent starts on one repository, and T3 Code picks none for a cluster spanning
+    // several, so the thread fails before the agent runs. Naming reads no code: any of the
+    // cluster's repositories will do.
     t3::ask(
         &format!("Name PR cluster {}#{}", full_name(first), first.number),
-        &format!("{PROMPT}\n\n{}", list.join("\n")),
+        &format!(
+            "{PROMPT}\n\nRun on the {} repository.\n\n{}",
+            full_name(first),
+            list.join("\n")
+        ),
     )
     .await
 }
