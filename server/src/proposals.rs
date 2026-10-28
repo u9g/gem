@@ -118,6 +118,7 @@ async fn approve_proposal(
         return Err(format!("no proposal {id}"));
     };
     tracing::Span::current().record("pull_request", proposal.pull_request_url.as_str());
+    record_decision(crate::db(), &proposal, "approved", reply, follow_up, diff);
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
@@ -202,7 +203,45 @@ pub async fn remove_on(urls: &[String]) {
 }
 
 pub async fn dismiss(id: &str) {
+    if let Some(proposal) = find(id).await {
+        record_decision(crate::db(), &proposal, "dismissed", "", "", "");
+    }
     delete(id);
+}
+
+// Keeps the user's first decision on a proposal: approving again after a failure finds the
+// proposal with its finished steps cleared.
+fn record_decision(
+    db: &Db,
+    proposal: &Proposal,
+    decision: &str,
+    reply: &str,
+    follow_up: &str,
+    diff: &str,
+) {
+    let decided_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let recorded = db.with(|db| {
+        db.execute(
+            "INSERT OR IGNORE INTO proposal_decisions
+             (id, proposal, decision, reply, follow_up, diff, decided_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                proposal.id,
+                serde_json::to_string(proposal).unwrap(),
+                decision,
+                reply,
+                follow_up,
+                diff,
+                decided_at
+            ],
+        )
+    });
+    if let Err(error) = recorded {
+        tracing::warn!(proposal = %proposal.id, %error, "cannot record decision");
+    }
 }
 
 // Logs a step of an approve starting and how it ended. A step that succeeded is saved as done
@@ -901,5 +940,37 @@ fn delete(id: &str) {
         crate::db().with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", [id]));
     if let Err(error) = deleted {
         tracing::warn!(proposal = id, %error, "cannot delete proposal");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_first_decision() {
+        let db = Db::open_in_memory().unwrap();
+        let mut proposal = Proposal {
+            id: "a".into(),
+            reply: "Fixed.".into(),
+            ..Default::default()
+        };
+        record_decision(&db, &proposal, "approved", "Fixed it.", "", "");
+        proposal.reply.clear();
+        record_decision(&db, &proposal, "approved", "", "", "");
+        let (json, decision, reply): (String, String, String) = db
+            .with(|db| {
+                db.query_row(
+                    "SELECT proposal, decision, reply FROM proposal_decisions WHERE id = 'a'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+            })
+            .unwrap();
+        let saved: Proposal = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            (saved.reply.as_str(), decision.as_str(), reply.as_str()),
+            ("Fixed.", "approved", "Fixed it.")
+        );
     }
 }
