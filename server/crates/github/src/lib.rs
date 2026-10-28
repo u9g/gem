@@ -2,54 +2,55 @@
 
 mod patch;
 
-use std::{process::Stdio, sync::OnceLock};
+use std::{
+    io::Write,
+    process::{Command, Output, Stdio},
+    sync::OnceLock,
+};
 
-use serde::de::DeserializeOwned;
-use tokio::{io::AsyncWriteExt, process::Command};
+use gem_json::FromJson;
+use gem_log::warn;
 
 pub use patch::{apply_patch, check_new_pull_request, open_pull_request, push_new_branch};
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
-// A caller that stops waiting, e.g. on a timeout, stops gh too.
-pub async fn gh(what: &str, args: &[&str]) -> Option<Vec<u8>> {
+pub fn gh(what: &str, args: &[&str]) -> Option<Vec<u8>> {
     let output = Command::new("gh")
         .args(args)
-        .kill_on_drop(true)
+        .stdin(Stdio::null())
         .output()
-        .await
-        .inspect_err(|error| tracing::warn!(%error, what, "cannot run gh"))
+        .inspect_err(|error| warn!("cannot run gh", error = error, what = what))
         .ok()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(stderr = %stderr.trim(), what, "gh failed");
+        warn!("gh failed", stderr = stderr.trim(), what = what);
         return None;
     }
     Some(output.stdout)
 }
 
-pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
-    serde_json::from_slice(&gh(what, args).await?)
-        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
+pub fn gh_json<T: FromJson>(what: &str, args: &[&str]) -> Option<T> {
+    gem_json::from_slice(&gh(what, args)?)
+        .inspect_err(|error| warn!("cannot read gh's output", error = error, what = what))
         .ok()
 }
 
 // gh's output parsed whatever its exit status. `gh api graphql` exits non-zero when any one field
 // errors, e.g. a repository behind SAML enforcement the token is not authorized for, but still
 // prints the other fields' data, which a query over many PRs wants rather than nothing.
-pub async fn gh_partial_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
+pub fn gh_partial_json<T: FromJson>(what: &str, args: &[&str]) -> Option<T> {
     let output = Command::new("gh")
         .args(args)
-        .kill_on_drop(true)
+        .stdin(Stdio::null())
         .output()
-        .await
-        .inspect_err(|error| tracing::warn!(%error, what, "cannot run gh"))
+        .inspect_err(|error| warn!("cannot run gh", error = error, what = what))
         .ok()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(stderr = %stderr.trim(), what, "gh failed; reading what it printed");
+        warn!("gh failed; reading what it printed", stderr = stderr.trim(), what = what);
     }
-    serde_json::from_slice(&output.stdout)
-        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
+    gem_json::from_slice(&output.stdout)
+        .inspect_err(|error| warn!("cannot read gh's output", error = error, what = what))
         .ok()
 }
 
@@ -86,7 +87,7 @@ pub fn repository(pr: &str) -> String {
 }
 
 // Markdown as GitHub renders it in a comment on the pull request at `pr`.
-pub async fn render(pr: &str, markdown: &str) -> Result<String, String> {
+pub fn render(pr: &str, markdown: &str) -> Result<String, String> {
     if markdown.is_empty() {
         return Ok(String::new());
     }
@@ -97,12 +98,11 @@ pub async fn render(pr: &str, markdown: &str) -> Result<String, String> {
             "api", "markdown", "-f", "mode=gfm", "-f", &context, "-F", "text=@-",
         ],
         Some(markdown),
-    )
-    .await?;
+    )?;
     Ok(String::from_utf8_lossy(&html).into_owned())
 }
 
-pub async fn graphql(query: &str, variables: &[(&str, &str)]) -> Result<Vec<u8>, String> {
+pub fn graphql(query: &str, variables: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let mut args = vec![
         "api".to_string(),
         "graphql".to_string(),
@@ -113,11 +113,11 @@ pub async fn graphql(query: &str, variables: &[(&str, &str)]) -> Result<Vec<u8>,
         args.extend(["-f".to_string(), format!("{name}={value}")]);
     }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    command("gh", &args, None).await
+    command("gh", &args, None)
 }
 
 // Fails with the command's stderr, which is what the user sees on a failed approval.
-pub async fn command(program: &str, args: &[&str], stdin: Option<&str>) -> Result<Vec<u8>, String> {
+pub fn command(program: &str, args: &[&str], stdin: Option<&str>) -> Result<Vec<u8>, String> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(if stdin.is_some() {
@@ -129,13 +129,21 @@ pub async fn command(program: &str, args: &[&str], stdin: Option<&str>) -> Resul
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
-    if let Some(input) = stdin {
+    // Written from another thread, so a child that prints a lot before it has read all of its
+    // input never blocks on a full stdout pipe while this blocks on its full stdin.
+    let writer = stdin.map(|input| {
         let mut pipe = child.stdin.take().unwrap();
-        pipe.write_all(input.as_bytes())
-            .await
-            .map_err(|e| e.to_string())?;
+        let input = input.to_string();
+        std::thread::spawn(move || pipe.write_all(input.as_bytes()))
+    });
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if let Some(writer) = writer {
+        writer.join().unwrap().map_err(|e| e.to_string())?;
     }
-    let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
+    finish(program, output)
+}
+
+fn finish(program: &str, output: Output) -> Result<Vec<u8>, String> {
     if output.status.success() {
         Ok(output.stdout)
     } else {

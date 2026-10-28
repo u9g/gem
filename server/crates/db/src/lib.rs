@@ -2,16 +2,23 @@
 // UTC time it was written, `YYYYMMDDHHMMSS_<what it does>.sql`, so migrations written on different
 // branches never take the same name. A file never changes once it has shipped; a change to the
 // schema is a new file.
+//
+// SQLite itself runs in gem-native (see sqlite.rs), as lust compiles no C; this is its client.
 
 use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
 
-pub use rusqlite;
-use rusqlite::{Connection, OptionalExtension, params};
+mod migrations;
+#[macro_use]
+mod sqlite;
 
-include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+use migrations::MIGRATIONS;
+pub use sqlite::{
+    Connection, Error, FromSql, OptionalExtension, Result, Row, SqlValue, Statement, ToSql,
+    Transaction,
+};
 
 // Each feature numbered its own migrations in `migrations (feature, version)` before they had
 // names: the name of each feature's numbered one.
@@ -26,22 +33,22 @@ const NUMBERED: &[(&str, i64, &str)] = &[
 pub struct Db(Arc<Mutex<Connection>>);
 
 impl Db {
-    pub fn open(path: impl AsRef<Path>) -> Result<Db, String> {
-        Self::new(Connection::open(path), MIGRATIONS)
+    pub fn open(path: impl AsRef<Path>) -> std::result::Result<Db, String> {
+        Self::new(Connection::open(&path.as_ref().to_string_lossy()), MIGRATIONS)
     }
 
-    pub fn open_in_memory() -> Result<Db, String> {
+    pub fn open_in_memory() -> std::result::Result<Db, String> {
         Self::new(Connection::open_in_memory(), MIGRATIONS)
     }
 
-    fn new(db: rusqlite::Result<Connection>, migrations: &[(&str, &str)]) -> Result<Db, String> {
+    fn new(db: Result<Connection>, migrations: &[(&str, &str)]) -> std::result::Result<Db, String> {
         let db = Db(Arc::new(Mutex::new(db.map_err(error)?)));
         db.with(|db| {
             let tx = db.unchecked_transaction()?;
             tx.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)")?;
             let numbered: bool = tx.query_row(
                 "SELECT count(*) > 0 FROM sqlite_master WHERE name = 'migrations'",
-                [],
+                params![],
                 |row| row.get(0),
             )?;
             if numbered {
@@ -61,11 +68,11 @@ impl Db {
     }
 
     // Runs each migration not run yet, oldest first, each in its own transaction.
-    fn migrate(&self, migrations: &[(&str, &str)]) -> Result<(), String> {
+    fn migrate(&self, migrations: &[(&str, &str)]) -> std::result::Result<(), String> {
         self.with(|db| {
             for (name, sql) in migrations {
                 let ran = db
-                    .query_row("SELECT 1 FROM schema_migrations WHERE name = ?1", [name], |_| {
+                    .query_row("SELECT 1 FROM schema_migrations WHERE name = ?1", params![name], |_| {
                         Ok(())
                     })
                     .optional()?
@@ -75,23 +82,20 @@ impl Db {
                 }
                 let tx = db.unchecked_transaction()?;
                 tx.execute_batch(sql)?;
-                tx.execute("INSERT INTO schema_migrations (name) VALUES (?1)", [name])?;
+                tx.execute("INSERT INTO schema_migrations (name) VALUES (?1)", params![name])?;
                 tx.commit()?;
             }
             Ok(())
         })
     }
 
-    // Queries touch a few rows of a local file, so they run on the async runtime's threads.
-    pub fn with<T>(
-        &self,
-        query: impl FnOnce(&Connection) -> rusqlite::Result<T>,
-    ) -> Result<T, String> {
+    // Queries touch a few rows of a local file, so they run on the caller's thread.
+    pub fn with<T>(&self, query: impl FnOnce(&Connection) -> Result<T>) -> std::result::Result<T, String> {
         query(&self.0.lock().unwrap()).map_err(error)
     }
 }
 
-fn error(error: rusqlite::Error) -> String {
+fn error(error: Error) -> String {
     format!("gem.sqlite: {error}")
 }
 
@@ -108,13 +112,13 @@ mod tests {
     ];
 
     fn count(db: &Db, sql: &str) -> i64 {
-        db.with(|db| db.query_row(sql, [], |row| row.get(0))).unwrap()
+        db.with(|db| db.query_row(sql, params![], |row| row.get(0))).unwrap()
     }
 
     #[test]
     fn runs_each_migration_once() {
         let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
-        db.with(|db| db.execute("INSERT INTO things (name) VALUES ('a')", []))
+        db.with(|db| db.execute("INSERT INTO things (name) VALUES ('a')", params![]))
             .unwrap();
         // A later build adds a migration; the first is not run again.
         db.migrate(MIGRATIONS).unwrap();
@@ -156,7 +160,7 @@ mod tests {
         let db = Db::new(Ok(connection), super::MIGRATIONS).unwrap();
         // Only merges' second migration had not run.
         assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 0);
-        db.with(|db| db.execute("INSERT INTO merges (url) VALUES ('a')", []))
+        db.with(|db| db.execute("INSERT INTO merges (url) VALUES ('a')", params![]))
             .unwrap();
         assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 1);
         assert_eq!(
@@ -171,7 +175,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let db = Db::open(&path).unwrap();
-            db.with(|db| db.execute("INSERT INTO proposals (id, proposal) VALUES ('a', '{}')", []))
+            db.with(|db| db.execute("INSERT INTO proposals (id, proposal) VALUES ('a', '{}')", params![]))
                 .unwrap();
         }
         let db = Db::open(&path).unwrap();

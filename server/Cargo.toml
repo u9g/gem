@@ -1,5 +1,10 @@
 # The server, and beside it in crates/ the layers that depend on nothing of the server's, so each
 # can be built and tested alone.
+#
+# Everything the server compiles is std-only Rust, so lust (https://github.com/t3dotgg/lust-lang)
+# checks and builds it as well as Cargo; see lust.sh. What lust cannot compile, the LiveKit room
+# (WebRTC) and SQLite (C), is in gem-native, a helper binary the server runs. Cargo builds it with
+# the server (the `native` feature, on by default); lust dev builds leave the feature out.
 [workspace]
 members = ["crates/*"]
 
@@ -7,33 +12,56 @@ members = ["crates/*"]
 name = "server"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[[bin]]
+name = "gem-native"
+path = "src/bin/native/main.rs"
+required-features = ["native"]
+
+[features]
+default = ["native"]
+native = [
+    "dep:livekit",
+    "dep:livekit-api",
+    "dep:rusqlite",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+]
+
+[package.metadata.lust]
+dev-exclude-features = ["native"]
 
 [dependencies]
-axum = "0.8.9"
-dotenvy = "0.15.7"
 gem-changes = { path = "crates/changes" }
 gem-cluster = { path = "crates/cluster" }
 gem-db = { path = "crates/db" }
+gem-env = { path = "crates/env" }
 gem-github = { path = "crates/github" }
 gem-http = { path = "crates/http" }
+gem-json = { path = "crates/json" }
 gem-launcher = { path = "crates/launcher" }
+gem-log = { path = "crates/log" }
 gem-merges = { path = "crates/merges" }
 gem-proto = { path = "crates/proto" }
 gem-rebases = { path = "crates/rebases" }
 gem-room = { path = "crates/room" }
 gem-t3 = { path = "crates/t3" }
-getrandom = "0.3.4"
-pbjson-types = "0.9"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
-rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "sync", "time", "fs", "io-util"] }
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
 
-[dev-dependencies]
-tower = { version = "0.5.3", features = ["util"] }
+# gem-native's.
+livekit = { version = "0.9.7", features = ["rustls-tls-native-roots"], optional = true }
+livekit-api = { version = "0.9.1", default-features = false, features = ["access-token", "services", "rustls-tls-native-roots"], optional = true }
+rusqlite = { version = "0.37.0", features = ["bundled"], optional = true }
+serde_json = { version = "1.0.154", optional = true }
+tokio = { version = "1.54.1", features = ["io-std", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"], optional = true }
+tracing = { version = "0.1.44", optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"], optional = true }
 
 # The launcher builds every new commit of main in release, and the server binary depends on every
 # crate, so any change recompiles it. Incremental reuses the unchanged parts: a one-line change
