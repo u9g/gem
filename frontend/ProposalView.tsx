@@ -14,6 +14,7 @@ import {
   FollowUpCard,
   Html,
   Login,
+  NewPullRequestCard,
   type ReplyDraft,
   RerunCard,
   ResolvesTag,
@@ -167,6 +168,7 @@ function ProposalView({
     proposal.rerun &&
     !proposal.patch &&
     !proposal.otherPatches.length &&
+    !proposal.openPullRequest &&
     !proposal.followUp && (
       <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
     );
@@ -294,7 +296,8 @@ function ProposalView({
             <RerunCard failure={proposal.checkFailure} />
           ) : (
             !proposal.followUp &&
-            !proposal.otherPatches.length && (
+            !proposal.otherPatches.length &&
+            !proposal.openPullRequest && (
               <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
             )
           )}
@@ -318,6 +321,7 @@ function ProposalView({
               </View>
             );
           })}
+          {proposal.openPullRequest && <NewPullRequestCard pullRequest={proposal.openPullRequest} />}
         </View>
       </View>
       {phone && <View style={styles.phoneActions}>{actions}</View>}

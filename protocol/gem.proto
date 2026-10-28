@@ -202,6 +202,26 @@ message Proposal {
   // Changes to other pull requests of its cluster, each committed and pushed
   // to its own pull request's head branch.
   repeated Patch other_patches = 20;
+  // A new pull request approving opens, such as a fix on the base branch for a
+  // test that fails there too.
+  NewPullRequest open_pull_request = 21;
+}
+
+// A pull request approving opens: `patch` committed on a new branch off
+// `base`, pushed to `repository` when the user can push to it and to their fork
+// of it otherwise.
+message NewPullRequest {
+  // owner/name.
+  string repository = 1;
+  string base = 2;
+  string branch = 3;
+  string title = 4;
+  // Markdown, which links the proposal's pull request so gem groups the two.
+  string body = 5;
+  // `body` as GitHub renders it.
+  string body_html = 6;
+  // `diff` against `base`, whose head when the diff was checked is `head_oid`.
+  Patch patch = 7;
 }
 
 // The checks that failed on a pull request's head commit, once all of its

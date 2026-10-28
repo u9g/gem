@@ -5,6 +5,7 @@ import {
   ChevronRight,
   CircleAlert,
   GitPullRequestClosed,
+  GitPullRequestCreate,
   Hammer,
   MessageCircle,
   MessageSquareQuote,
@@ -64,6 +65,7 @@ export function stepSentence(proposal: Proposal): string {
     const n = proposal.otherPatches.length;
     phrases.push(`change ${n} other ${n === 1 ? 'pull request' : 'pull requests'}`);
   }
+  if (proposal.openPullRequest) phrases.push('open a pull request');
   if (proposal.reply) phrases.push(proposal.threadId ? 'reply in thread' : 'quote reply');
   if (proposal.resolveThread) phrases.push('resolve');
   if (proposal.rerun) phrases.push('rerun failed jobs');
@@ -258,6 +260,7 @@ export function proposalIcon(proposal: Proposal) {
   if (proposal.error) return CircleAlert;
   if (proposal.requestedTool) return Hammer;
   if (proposal.patch || proposal.otherPatches.length) return SquarePen;
+  if (proposal.openPullRequest) return GitPullRequestCreate;
   if (proposal.followUp) return Bot;
   if (proposal.rerun) return RotateCcw;
   return MessageCircle;

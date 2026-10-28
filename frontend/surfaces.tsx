@@ -1,10 +1,21 @@
-import { Bot, CheckCheck, CircleX, ExternalLink, FileCode, GitPullRequestClosed, Hammer, RotateCcw, Undo2 } from 'lucide-react';
+import {
+  Bot,
+  CheckCheck,
+  CircleX,
+  ExternalLink,
+  FileCode,
+  GitPullRequestClosed,
+  GitPullRequestCreate,
+  Hammer,
+  RotateCcw,
+  Undo2,
+} from 'lucide-react';
 import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
 
-import type { CheckFailure, Comment, Proposal } from './gen/gem_pb';
+import type { CheckFailure, Comment, NewPullRequest, Proposal } from './gen/gem_pb';
 import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
@@ -506,6 +517,37 @@ export function FollowUpCard({
         max={130}
       />
       {draft.yours.trim() !== suggested.trim() && <Versions draft={draft} onChange={onChange} />}
+    </View>
+  );
+}
+
+// The pull request approving opens: where it goes, its title and description as GitHub renders
+// them, and the change it commits.
+export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullRequest }) {
+  const diff = pullRequest.patch?.diff ?? '';
+  const files = diffFiles(diff);
+  return (
+    <View style={styles.followUp}>
+      <View style={styles.followUpHeader}>
+        <Icon icon={GitPullRequestCreate} size={14} color={t3.primary} />
+        <Text style={styles.meta}>
+          <Text style={{ color: t3.foreground, fontWeight: '500' }}>New pull request</Text>
+          {'  '}
+          {pullRequest.repository} · {pullRequest.base} ← {pullRequest.branch}
+        </Text>
+      </View>
+      <Text style={{ color: t3.foreground, fontWeight: '600' }}>{pullRequest.title}</Text>
+      <Clamp max={130}>
+        <Html html={pullRequest.bodyHtml} />
+      </Clamp>
+      <Text style={styles.meta}>
+        {pullRequest.patch?.commitMessage}
+        {'  '}
+        <DiffStat added={files.reduce((n, f) => n + f.added, 0)} removed={files.reduce((n, f) => n + f.removed, 0)} />
+      </Text>
+      <Clamp max={130}>
+        <DiffSurface diff={diff} />
+      </Clamp>
     </View>
   );
 }
