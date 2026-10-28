@@ -576,6 +576,36 @@ impl From<Vec<Value>> for Value {
     }
 }
 
+// A literal in `json!`. Literals skip ToJson, whose impl for references leaves lust unable to type
+// an integer literal.
+pub trait Literal {
+    fn literal(self) -> Value;
+}
+
+impl Literal for &str {
+    fn literal(self) -> Value {
+        Value::String(self.to_string())
+    }
+}
+
+impl Literal for bool {
+    fn literal(self) -> Value {
+        Value::Bool(self)
+    }
+}
+
+macro_rules! literal {
+    ($($t:ty),*) => {$(
+        impl Literal for $t {
+            fn literal(self) -> Value {
+                self.to_json()
+            }
+        }
+    )*};
+}
+
+literal!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, f64);
+
 // Builds a Value from JSON-like syntax, as serde_json's `json!` does: `json!({"a": [1, x], "b":
 // null})`. A value that is not a literal is any expression of a type that implements `ToJson`,
 // written in parentheses when it is more than one token tree, e.g. `json!({"n": (a + b)})`. Keys
@@ -595,6 +625,7 @@ macro_rules! json {
         $crate::json_object!(object; $($tt)+);
         $crate::Value::Object(object)
     }};
+    ($literal:literal) => { $crate::Literal::literal($literal) };
     ($other:expr) => { $crate::ToJson::to_json(&$other) };
 }
 
@@ -612,6 +643,10 @@ macro_rules! json_array {
     };
     ($array:ident; { $($inner:tt)* } $(, $($rest:tt)*)?) => {
         $array.push($crate::json!({ $($inner)* }));
+        $crate::json_array!($array; $($($rest)*)?);
+    };
+    ($array:ident; $value:literal $(, $($rest:tt)*)?) => {
+        $array.push($crate::Literal::literal($value));
         $crate::json_array!($array; $($($rest)*)?);
     };
     ($array:ident; $value:expr $(, $($rest:tt)*)?) => {
@@ -645,6 +680,10 @@ macro_rules! json_value {
     };
     ($object:ident; $key:expr; { $($inner:tt)* } $(, $($rest:tt)*)?) => {
         $object.insert($key, $crate::json!({ $($inner)* }));
+        $crate::json_object!($object; $($($rest)*)?);
+    };
+    ($object:ident; $key:expr; $value:literal $(, $($rest:tt)*)?) => {
+        $object.insert($key, $crate::Literal::literal($value));
         $crate::json_object!($object; $($($rest)*)?);
     };
     ($object:ident; $key:expr; $value:expr $(, $($rest:tt)*)?) => {

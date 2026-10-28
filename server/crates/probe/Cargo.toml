@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 gem-json = { path = "../json" }
 gem-proto = { path = "../proto" }
+gem-log = { path = "../log" }

@@ -751,6 +751,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-log"
+version = "0.1.0"
+dependencies = [
+ "gem-json",
+ "gem-proto",
+]
+
+[[package]]
 name = "gem-merges"
 version = "0.1.0"
 dependencies = [
@@ -763,6 +771,7 @@ name = "gem-probe"
 version = "0.1.0"
 dependencies = [
  "gem-json",
+ "gem-log",
  "gem-proto",
 ]
 
