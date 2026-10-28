@@ -93,7 +93,24 @@ query($endCursor: String, $q: String!) {
 // A fork's head branch can share a name with a base-repo branch (e.g. `main`), so only
 // same-repository heads can have dependents. Search keeps matching `is:open` for a while after a
 // merge or close, but each node's state is current.
-const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
+//
+// Whether checks pass or fail comes from the counts, not statusCheckRollup.state: search rolls a
+// CANCELLED check up as FAILURE, so a run cancelled by a newer one on the same commit (a workflow's
+// concurrency group) failed the PR although every check of the newer run passed. A cancelled check
+// counts as neither, as it does for investigations. ACTION_REQUIRED, a run waiting on a maintainer's
+// approval to start, is done but has not passed.
+const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN")
+| (.commits.nodes[0].commit.statusCheckRollup.contexts
+  | if . == null then {total: 0, done: 0, failed: 0, blocked: 0} else
+    [.checkRunCountsByState[], .statusContextCountsByState[]] as $by
+    | (.checkRunCount + .statusContextCount) as $total
+    | {
+      total: $total,
+      done: ($total - ([$by[] | select(.state | IN("QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED", "EXPECTED")) | .count] | add // 0)),
+      failed: ([$by[] | select(.state | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR")) | .count] | add // 0),
+      blocked: ([$by[] | select(.state == "ACTION_REQUIRED") | .count] | add // 0)
+    } end) as $checks
+| {
   id, repository: {owner: .repository.owner.login, name: .repository.name}, number, title, body, url,
   head: (if .headRepository.nameWithOwner == .repository.nameWithOwner then .headRefName else null end),
   head_oid: .headRefOid,
@@ -102,17 +119,9 @@ const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN") | {
   updated_at: .updatedAt,
   approved: (.reviewDecision == "APPROVED"),
   admin: (.repository.viewerPermission == "ADMIN"),
-  checks_passing: (.commits.nodes[0].commit.statusCheckRollup.state | . == null or . == "SUCCESS"),
-  checks_failing: (.commits.nodes[0].commit.statusCheckRollup.state | . == "FAILURE" or . == "ERROR"),
-  checks: (.commits.nodes[0].commit.statusCheckRollup.contexts
-    | if . == null then {total: 0, done: 0, failed: 0} else
-      [.checkRunCountsByState[], .statusContextCountsByState[]] as $by
-      | (.checkRunCount + .statusContextCount) as $total
-      | {
-        total: $total,
-        done: ($total - ([$by[] | select(.state | IN("QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED", "EXPECTED")) | .count] | add // 0)),
-        failed: ([$by[] | select(.state | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR")) | .count] | add // 0)
-      } end),
+  checks_passing: ($checks.done == $checks.total and $checks.failed == 0 and $checks.blocked == 0),
+  checks_failing: ($checks.failed > 0),
+  checks: ($checks | del(.blocked)),
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
