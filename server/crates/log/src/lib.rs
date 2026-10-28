@@ -134,8 +134,8 @@ mod tests {
     #[test]
     fn macros_take_display_fields() {
         let error = std::io::Error::other("boom");
-        crate::warn!("cannot run gh", error = error, what = "repos");
-        crate::info!(format!("{} done", 1));
-        crate::debug!("quiet", n = 3,);
+        warn!("cannot run gh", error = error, what = "repos");
+        info!(format!("{} done", 1));
+        debug!("quiet", n = 3,);
     }
 }

@@ -9,6 +9,7 @@ use std::{
 };
 
 use gem_json::{FromJson, ToJson, Value, json};
+use gem_log::info;
 use gem_proto::{MergeBy, PullRequest, Repository, Timestamp};
 
 type Handler = Box<dyn Fn(&Value) -> Result<Value, (u16, String)> + Send + Sync>;
@@ -25,7 +26,7 @@ fn main() {
     for value in gem_json::parse_stream("{\"a\":1} {\"a\":2}").unwrap() {
         println!("{}", value["a"]);
     }
-    gem_log::info!("probe", n = 3, what = "log");
+    info!("probe", n = 3, what = "log");
 
     // Routes as boxed closures.
     let mut routes: HashMap<String, Handler> = HashMap::new();
