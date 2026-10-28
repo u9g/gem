@@ -8,7 +8,7 @@ use gem_db::{
     Db,
     xitdb::{Json, Map},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::Instrument;
 
 use crate::proto::{CheckFailure, Comment, NewPullRequest, Patch, Proposal, PullRequestCluster};
@@ -124,6 +124,7 @@ async fn approve_proposal(
     if proposal.error == STALE {
         return Err(STALE.to_string());
     }
+    record_decision(crate::db(), &proposal, "approved", reply, follow_up, diff);
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
@@ -219,7 +220,43 @@ pub async fn remove_on(urls: &[String]) {
 }
 
 pub async fn dismiss(id: &str) {
+    if let Some(proposal) = find(id).await {
+        record_decision(crate::db(), &proposal, "dismissed", "", "", "");
+    }
     delete(id);
+}
+
+// Keeps the user's first decision on a proposal: approving again after a failure finds the
+// proposal with its finished steps cleared.
+fn record_decision(
+    db: &Db,
+    proposal: &Proposal,
+    decision: &str,
+    reply: &str,
+    follow_up: &str,
+    diff: &str,
+) {
+    let decided_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let decision = Decision {
+        proposal: proposal.clone(),
+        decision: decision.to_string(),
+        reply: reply.to_string(),
+        follow_up: follow_up.to_string(),
+        diff: diff.to_string(),
+        decided_at,
+    };
+    let recorded = db.write(|moment| {
+        if !DECISIONS.contains(moment, &proposal.id)? {
+            DECISIONS.put(moment, &proposal.id, &decision)?;
+        }
+        Ok(())
+    });
+    if let Err(error) = recorded {
+        tracing::warn!(proposal = %proposal.id, %error, "cannot record decision");
+    }
 }
 
 // Logs a step of an approve starting and how it ended. A step that succeeded is saved as done
@@ -942,6 +979,25 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
 // In the database's moment, each proposal by its ID.
 const PROPOSALS: Map<str, Json<Proposal>> = Map::new("proposals");
 
+// What the user decided on each proposal they approved or dismissed, by its ID, kept after the
+// proposal is gone. Proposals cleared without the user deciding on them, such as stale ones, have
+// none.
+const DECISIONS: Map<str, Json<Decision>> = Map::new("proposal-decisions");
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Decision {
+    // The proposal as the user saw it when deciding.
+    proposal: Proposal,
+    // "approved" or "dismissed".
+    decision: String,
+    // The user's rewrites approved in place of the proposal's own; empty when approved as proposed.
+    reply: String,
+    follow_up: String,
+    diff: String,
+    // Seconds since the epoch.
+    decided_at: i64,
+}
+
 // One that doesn't decode is left out, so the others still show.
 pub fn load(db: &Db) -> Vec<Proposal> {
     let proposals = db.read(|moment| Ok(PROPOSALS.iter(moment)?.collect::<Vec<_>>()));
@@ -973,5 +1029,28 @@ fn delete(id: &str) {
     let deleted = crate::db().write(|moment| PROPOSALS.remove(moment, id));
     if let Err(error) = deleted {
         tracing::warn!(proposal = id, %error, "cannot delete proposal");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_the_first_decision() {
+        let db = Db::open_in_memory().unwrap();
+        let mut proposal = Proposal {
+            id: "a".into(),
+            reply: "Fixed.".into(),
+            ..Default::default()
+        };
+        record_decision(&db, &proposal, "approved", "Fixed it.", "", "");
+        proposal.reply.clear();
+        record_decision(&db, &proposal, "approved", "", "", "");
+        let saved = db.read(|moment| DECISIONS.get(moment, "a")).unwrap().unwrap();
+        assert_eq!(
+            (saved.proposal.reply.as_str(), saved.decision.as_str(), saved.reply.as_str()),
+            ("Fixed.", "approved", "Fixed it.")
+        );
     }
 }
