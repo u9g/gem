@@ -84,7 +84,8 @@ message PullRequest {
   bool approved = 5;
   // Every check on the head commit passed. True when the head commit has no checks.
   bool checks_passing = 6;
-  // A check on the head commit failed or errored. False while checks are only pending.
+  // A check on the head commit failed or errored. False while checks are only pending, and for a
+  // cancelled check, such as one a newer run on the same commit replaced.
   bool checks_failing = 7;
   // Proposed answers to conversations on this PR that still wait on the user.
   repeated Proposal proposals = 8;
