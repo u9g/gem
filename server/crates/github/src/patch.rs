@@ -96,10 +96,14 @@ pub async fn check_new_pull_request(
         let name = repository.split('/').nth(1).unwrap_or_default();
         pushes_to.push(format!("{}/{name}", String::from_utf8_lossy(&login).trim()));
     }
+    // A branch name can hold what a URL path cannot.
+    let path = (branch.replace('%', "%25"))
+        .replace('#', "%23")
+        .replace('?', "%3F");
     for repo in pushes_to {
         let found = command(
             "gh",
-            &["api", &format!("repos/{repo}/git/ref/heads/{branch}")],
+            &["api", &format!("repos/{repo}/git/ref/heads/{path}")],
             None,
         )
         .await;
