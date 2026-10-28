@@ -7,8 +7,8 @@ use gem_db::Db;
 use gem_rebases::{Host, Progress, Rebases, Refs};
 
 use crate::agents::Running;
-use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
-use crate::{Cache, gh, t3};
+use crate::{Cache, gh};
+use gem_proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 
 static REBASES: OnceLock<Rebases<Server>> = OnceLock::new();
 
@@ -18,15 +18,18 @@ struct Server {
 
 impl Host for Server {
     fn refs(&self, url: &str) -> Option<Refs> {
-        let refs = gh("refs", &[
-            "pr",
-            "view",
-            url,
-            "--json",
-            "baseRefName,headRefName,headRefOid",
-            "--jq",
-            r#".baseRefName + " " + .headRefName + " " + .headRefOid"#,
-        ])?;
+        let refs = gh(
+            "refs",
+            &[
+                "pr",
+                "view",
+                url,
+                "--json",
+                "baseRefName,headRefName,headRefOid",
+                "--jq",
+                r#".baseRefName + " " + .headRefName + " " + .headRefOid"#,
+            ],
+        )?;
         let refs = String::from_utf8_lossy(&refs);
         let [base, branch, head] = refs.split_whitespace().collect::<Vec<_>>()[..] else {
             return None;
@@ -39,11 +42,11 @@ impl Host for Server {
     }
 
     fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
-        t3::start(title, prompt, None)
+        gem_t3::start(title, prompt, None)
     }
 
     fn progress(&self, thread_id: &str) -> Option<Progress> {
-        let (done, question) = t3::progress(thread_id)?;
+        let (done, question) = gem_t3::progress(thread_id)?;
         Some(Progress { done, question })
     }
 
@@ -115,7 +118,10 @@ pub fn running() -> Vec<Running> {
 }
 
 pub fn forget(thread_id: &str) -> Result<(), String> {
-    REBASES.get().ok_or("rebases are not ready")?.forget(thread_id)
+    REBASES
+        .get()
+        .ok_or("rebases are not ready")?
+        .forget(thread_id)
 }
 
 fn all() -> std::collections::BTreeMap<String, gem_rebases::Rebase> {

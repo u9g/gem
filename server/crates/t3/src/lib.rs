@@ -1,5 +1,4 @@
 use std::{
-
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
@@ -80,7 +79,12 @@ pub fn start_in(
     // must not lose it: a caller that thought it failed would start another.
     let output = String::from_utf8_lossy(&output);
     (output.lines().rev())
-        .find_map(|line| gem_json::parse(line.trim()).ok()?.field::<String>("threadId").ok())
+        .find_map(|line| {
+            gem_json::parse(line.trim())
+                .ok()?
+                .field::<String>("threadId")
+                .ok()
+        })
         .ok_or_else(|| format!("t3: {}", output.trim()))
 }
 

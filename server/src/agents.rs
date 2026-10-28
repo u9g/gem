@@ -12,8 +12,8 @@ use std::{
 use gem_proto::Timestamp;
 
 use crate::conversations::Conversations;
-use crate::proto::{Agent, AgentState, ListOpenPullRequestsResponse, PullRequestCluster};
-use crate::{investigations, merges, rebases, t3};
+use crate::{investigations, merges, rebases};
+use gem_proto::{Agent, AgentState, ListOpenPullRequestsResponse, PullRequestCluster};
 
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -177,7 +177,7 @@ pub fn message(conversations: &Conversations, id: &str, message: &str) -> Result
     } else {
         return investigations::message(id, message);
     };
-    t3::send(&thread_id, message)?;
+    gem_t3::send(&thread_id, message)?;
     SHOWN.write().unwrap().entry(thread_id).or_default().working = true;
     Ok(())
 }
@@ -219,7 +219,7 @@ pub fn watch(conversations: Conversations) {
                 .unwrap()
                 .retain(|thread_id, _| threads.contains_key(thread_id));
             for (thread_id, pr) in threads {
-                let Some((working, reply)) = t3::show(&thread_id) else {
+                let Some((working, reply)) = gem_t3::show(&thread_id) else {
                     continue;
                 };
                 let known = SHOWN.read().unwrap().get(&thread_id).cloned();
@@ -245,7 +245,7 @@ pub fn watch(conversations: Conversations) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::PullRequest;
+    use gem_proto::PullRequest;
 
     fn cluster(prs: &[(u32, i64)]) -> PullRequestCluster {
         PullRequestCluster {

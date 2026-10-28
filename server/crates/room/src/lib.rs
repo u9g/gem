@@ -59,7 +59,9 @@ type Stdin = Arc<Mutex<ChildStdin>>;
 
 fn write(stdin: &Stdin, message: &Value) -> bool {
     let mut stdin = stdin.lock().unwrap();
-    writeln!(stdin, "{message}").and_then(|()| stdin.flush()).is_ok()
+    writeln!(stdin, "{message}")
+        .and_then(|()| stdin.flush())
+        .is_ok()
 }
 
 // Answers the frontends' requests with `handler`, which is given each request's payload and
@@ -114,12 +116,17 @@ where
         let message = match gem_json::parse(&line) {
             Ok(message) => message,
             Err(error) => {
-                warn!("unreadable message from the room helper", error = error, line = line);
+                warn!(
+                    "unreadable message from the room helper",
+                    error = error,
+                    line = line
+                );
                 continue;
             }
         };
         let request = &message["request"];
-        let (Some(id), Some(payload)) = (request["id"].as_str(), request["payload"].as_str()) else {
+        let (Some(id), Some(payload)) = (request["id"].as_str(), request["payload"].as_str())
+        else {
             continue;
         };
         let (id, payload) = (id.to_string(), payload.to_string());
@@ -127,7 +134,9 @@ where
         thread::spawn(move || {
             let reply = match handler(payload) {
                 Ok(ok) => json!({"reply": {"id": id, "ok": ok}}),
-                Err((code, message)) => json!({"reply": {"id": id, "code": code, "message": message}}),
+                Err((code, message)) => {
+                    json!({"reply": {"id": id, "code": code, "message": message}})
+                }
             };
             write(&stdin, &reply);
         });
@@ -151,7 +160,10 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
             sender.send("a".to_string());
         });
-        assert_eq!(snapshots.next(0, Duration::from_secs(5)), Some((1, "a".to_string())));
+        assert_eq!(
+            snapshots.next(0, Duration::from_secs(5)),
+            Some((1, "a".to_string()))
+        );
         assert_eq!(snapshots.current(), "a");
     }
 }

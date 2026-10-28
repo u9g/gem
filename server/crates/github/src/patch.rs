@@ -18,9 +18,10 @@ struct Head {
 
 impl FromJson for Head {
     fn from_json(value: &Value) -> Result<Head, Error> {
-        let name: String = (value["headRepository"].field("name")).map_err(|e| e.at("headRepository"))?;
-        let owner: String =
-            (value["headRepositoryOwner"].field("login")).map_err(|e| e.at("headRepositoryOwner"))?;
+        let name: String =
+            (value["headRepository"].field("name")).map_err(|e| e.at("headRepository"))?;
+        let owner: String = (value["headRepositoryOwner"].field("login"))
+            .map_err(|e| e.at("headRepositoryOwner"))?;
         Ok(Head {
             state: value.field("state")?,
             branch: value.field("headRefName")?,
@@ -32,11 +33,7 @@ impl FromJson for Head {
 // Applies the diff to the head of the PR's branch in a fresh worktree, then commits and pushes
 // when given a commit message, or only checks that it applies when not. Returns the head commit
 // the diff was applied to.
-pub fn apply_patch(
-    pr: &str,
-    diff: &str,
-    commit_message: Option<&str>,
-) -> Result<String, String> {
+pub fn apply_patch(pr: &str, diff: &str, commit_message: Option<&str>) -> Result<String, String> {
     let head = command(
         "gh",
         &[
@@ -59,8 +56,7 @@ pub fn apply_patch(
             return Ok(());
         };
         commit(&worktree, message)?;
-        command("git", &["-C", &worktree, "push", "origin", &refspec], None)
-            .map(drop)
+        command("git", &["-C", &worktree, "push", "origin", &refspec], None).map(drop)
     })
 }
 
@@ -260,12 +256,7 @@ fn commit(worktree: &str, message: &str) -> Result<(), String> {
 // only checks that it applies when `work` does nothing, then runs `work` in it. Returns the head
 // commit the diff was applied to. Each repository is cloned once and kept outside any T3 Code
 // project.
-fn on_branch<W>(
-    full_name: &str,
-    branch: &str,
-    diff: &str,
-    work: W,
-) -> Result<String, String>
+fn on_branch<W>(full_name: &str, branch: &str, diff: &str, work: W) -> Result<String, String>
 where
     W: FnOnce(String) -> Result<(), String>,
 {

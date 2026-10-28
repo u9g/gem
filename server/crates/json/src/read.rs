@@ -6,7 +6,10 @@ use crate::{Error, Map, Number, Value};
 const MAX_DEPTH: usize = 128;
 
 pub fn parse(text: &str) -> Result<Value, Error> {
-    let mut reader = Reader { bytes: text.as_bytes(), at: 0 };
+    let mut reader = Reader {
+        bytes: text.as_bytes(),
+        at: 0,
+    };
     let value = reader.value(0)?;
     reader.space();
     if reader.at != reader.bytes.len() {
@@ -22,7 +25,10 @@ pub fn parse_bytes(bytes: &[u8]) -> Result<Value, Error> {
 
 // Every value in `text`, one after another, separated by whitespace or nothing.
 pub fn parse_stream(text: &str) -> Result<Vec<Value>, Error> {
-    let mut reader = Reader { bytes: text.as_bytes(), at: 0 };
+    let mut reader = Reader {
+        bytes: text.as_bytes(),
+        at: 0,
+    };
     let mut values = Vec::new();
     loop {
         reader.space();
@@ -40,7 +46,10 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     fn error(&self, what: &str) -> Error {
-        let line = 1 + self.bytes[..self.at.min(self.bytes.len())].iter().filter(|b| **b == b'\n').count();
+        let line = 1 + self.bytes[..self.at.min(self.bytes.len())]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count();
         Error::new(format!("{what} at line {line}, byte {}", self.at))
     }
 
@@ -175,7 +184,11 @@ impl Reader<'_> {
         if !float {
             if negative {
                 if let Ok(n) = text.parse::<i64>() {
-                    return Ok(Value::Number(if n == 0 { Number::U(0) } else { Number::I(n) }));
+                    return Ok(Value::Number(if n == 0 {
+                        Number::U(0)
+                    } else {
+                        Number::I(n)
+                    }));
                 }
             } else if let Ok(n) = text.parse::<u64>() {
                 return Ok(Value::Number(Number::U(n)));

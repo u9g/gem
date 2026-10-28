@@ -42,7 +42,11 @@ fn max_level() -> Level {
     *MAX.get_or_init(|| {
         let filter = std::env::var("RUST_LOG").unwrap_or_default();
         let mut max = Level::Info;
-        for directive in filter.split(',').map(str::trim).filter(|d| !d.contains('=')) {
+        for directive in filter
+            .split(',')
+            .map(str::trim)
+            .filter(|d| !d.contains('='))
+        {
             max = match directive.to_ascii_lowercase().as_str() {
                 "error" => Level::Error,
                 "warn" => Level::Warn,
@@ -68,7 +72,10 @@ pub fn line(level: Level, message: &str, fields: &[(&str, String)]) -> String {
         object.insert(key.to_string(), Value::String(value.clone()));
     }
     let mut event = Map::new();
-    event.insert("timestamp".to_string(), Value::String(Timestamp::now().to_rfc3339()));
+    event.insert(
+        "timestamp".to_string(),
+        Value::String(Timestamp::now().to_rfc3339()),
+    );
     event.insert("level".to_string(), Value::String(level.name().to_string()));
     event.insert("fields".to_string(), Value::Object(object));
     event.insert("target".to_string(), Value::String("gem".to_string()));

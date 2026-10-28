@@ -1,17 +1,16 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        LazyLock, Mutex, mpsc,
+        LazyLock, Mutex,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
 };
 
-use crate::{
-    gh,
-    proto::{FileDiff, PullRequest, PullRequestCluster},
-};
+use crate::gh;
+use gem_proto::{FileDiff, PullRequest, PullRequestCluster};
 
 // How long a PR whose diff could not be fetched waits before it is asked for again, and how long a
 // fetch may take before it counts as failed.
@@ -80,7 +79,10 @@ fn diff(pr: &PullRequest) -> Vec<FileDiff> {
         _ => Vec::new(),
     };
     let fetch_id = FETCHES.fetch_add(1, Ordering::Relaxed);
-    diffs.insert(pr.url.clone(), (of(pr), fetch_id, Diff::Fetching(previous.clone())));
+    diffs.insert(
+        pr.url.clone(),
+        (of(pr), fetch_id, Diff::Fetching(previous.clone())),
+    );
     let pr = pr.clone();
     thread::spawn(move || {
         let (sender, receiver) = mpsc::channel();
@@ -104,15 +106,18 @@ fn diff(pr: &PullRequest) -> Vec<FileDiff> {
 
 fn fetch(pr: &PullRequest) -> Option<Vec<FileDiff>> {
     let repo = pr.repository.as_ref()?;
-    let stdout = gh("files", &[
-        "api",
-        "--paginate",
-        &format!(
-            "repos/{}/{}/pulls/{}/files?per_page=100",
-            repo.owner, repo.name, pr.number
-        ),
-        "--jq",
-        ".[] | {path: .filename, patch: (.patch // \"\")}",
-    ])?;
+    let stdout = gh(
+        "files",
+        &[
+            "api",
+            "--paginate",
+            &format!(
+                "repos/{}/{}/pulls/{}/files?per_page=100",
+                repo.owner, repo.name, pr.number
+            ),
+            "--jq",
+            ".[] | {path: .filename, patch: (.patch // \"\")}",
+        ],
+    )?;
     gem_json::from_stream::<FileDiff>(&stdout).ok()
 }

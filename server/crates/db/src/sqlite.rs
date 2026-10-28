@@ -73,7 +73,10 @@ impl SqlValue {
             SqlValue::Text(s) => Value::String(s.clone()),
             SqlValue::Blob(bytes) => {
                 let mut blob = Map::new();
-                blob.insert("blob".to_string(), Value::Array(bytes.iter().map(|b| json!(*b)).collect()));
+                blob.insert(
+                    "blob".to_string(),
+                    Value::Array(bytes.iter().map(|b| json!(*b)).collect()),
+                );
                 Value::Object(blob)
             }
         }
@@ -83,11 +86,18 @@ impl SqlValue {
         Ok(match value {
             Value::Null => SqlValue::Null,
             Value::Number(Number::F(n)) => SqlValue::Real(*n),
-            Value::Number(n) => SqlValue::Integer(n.as_i64().ok_or_else(|| Error::Io(format!("integer {value} out of range")))?),
+            Value::Number(n) => SqlValue::Integer(
+                n.as_i64()
+                    .ok_or_else(|| Error::Io(format!("integer {value} out of range")))?,
+            ),
             Value::String(s) => SqlValue::Text(s.clone()),
             Value::Object(o) if o.contains_key("blob") => {
                 let bytes = (value["blob"].as_array().into_iter().flatten())
-                    .map(|b| b.as_u64().map(|b| b as u8).ok_or_else(|| Error::Io("bad blob".to_string())))
+                    .map(|b| {
+                        b.as_u64()
+                            .map(|b| b as u8)
+                            .ok_or_else(|| Error::Io("bad blob".to_string()))
+                    })
                     .collect::<Result<Vec<u8>>>()?;
                 SqlValue::Blob(bytes)
             }
@@ -180,7 +190,10 @@ pub trait FromSql: Sized {
 }
 
 fn mismatch<T>(value: &SqlValue, wanted: &str) -> Result<T> {
-    Err(Error::Type(format!("Invalid column type {} for {wanted}", value.kind())))
+    Err(Error::Type(format!(
+        "Invalid column type {} for {wanted}",
+        value.kind()
+    )))
 }
 
 impl FromSql for SqlValue {
@@ -292,7 +305,13 @@ impl Connection {
             .map_err(|e| Error::Io(format!("cannot run {}: {e}", gem_native::path().display())))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        let connection = Connection { io: Mutex::new(Io { child, stdin, stdout }) };
+        let connection = Connection {
+            io: Mutex::new(Io {
+                child,
+                stdin,
+                stdout,
+            }),
+        };
         // gem-native answers once the file is open, or says why it is not.
         connection.request("batch", "", Vec::new())?;
         Ok(connection)
@@ -308,7 +327,10 @@ impl Connection {
             "sql": sql,
             "params": (Value::Array(params.iter().map(SqlValue::to_json).collect())),
         });
-        let mut io = self.io.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut io = self
+            .io
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let gone = |e: &dyn fmt::Display| Error::Io(format!("gem-native sqlite: {e}"));
         writeln!(io.stdin, "{request}").map_err(|e| gone(&e))?;
         io.stdin.flush().map_err(|e| gone(&e))?;
@@ -355,13 +377,19 @@ impl Connection {
     }
 
     pub fn prepare(&self, sql: &str) -> Result<Statement<'_>> {
-        Ok(Statement { connection: self, sql: sql.to_string() })
+        Ok(Statement {
+            connection: self,
+            sql: sql.to_string(),
+        })
     }
 
     // Begins a transaction, which rolls back unless committed.
     pub fn unchecked_transaction(&self) -> Result<Transaction<'_>> {
         self.execute_batch("BEGIN")?;
-        Ok(Transaction { connection: self, done: false })
+        Ok(Transaction {
+            connection: self,
+            done: false,
+        })
     }
 
     pub fn transaction(&mut self) -> Result<Transaction<'_>> {
@@ -371,7 +399,10 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        let io = self.io.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let io = self
+            .io
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // gem-native exits when its stdin closes; it is waited for so the file is closed after.
         let _ = writeln!(io.stdin, "{}", json!({"op": "close"}));
         let _ = io.child.wait();
@@ -396,7 +427,11 @@ impl Statement<'_> {
     }
 
     // Every row, each read by `read`. The rows are all read before the first is returned.
-    pub fn query_map<T, F>(&mut self, params: Vec<SqlValue>, read: F) -> Result<std::vec::IntoIter<Result<T>>>
+    pub fn query_map<T, F>(
+        &mut self,
+        params: Vec<SqlValue>,
+        read: F,
+    ) -> Result<std::vec::IntoIter<Result<T>>>
     where
         F: Fn(&Row) -> Result<T>,
     {

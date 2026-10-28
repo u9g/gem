@@ -11,7 +11,12 @@ mod sqlite;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["sqlite", path] => sqlite::serve(path),
         ["room"] => room::serve(),
         _ => {

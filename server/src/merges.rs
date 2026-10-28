@@ -6,8 +6,7 @@ use gem_db::Db;
 use gem_merges::{Host, Merges, Progress};
 
 use crate::agents::Running;
-use crate::proto::{MergeBy, PullRequestCluster};
-use crate::t3;
+use gem_proto::{MergeBy, PullRequestCluster};
 
 static MERGES: OnceLock<Merges<Server>> = OnceLock::new();
 
@@ -15,11 +14,11 @@ struct Server;
 
 impl Host for Server {
     fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
-        t3::start(title, prompt, None)
+        gem_t3::start(title, prompt, None)
     }
 
     fn progress(&self, thread_id: &str) -> Option<Progress> {
-        let (done, question) = t3::progress(thread_id)?;
+        let (done, question) = gem_t3::progress(thread_id)?;
         Some(Progress { done, question })
     }
 }
@@ -80,7 +79,10 @@ pub fn running() -> Vec<Running> {
 }
 
 pub fn forget(thread_id: &str) -> Result<(), String> {
-    MERGES.get().ok_or("merges are not ready")?.forget(thread_id)
+    MERGES
+        .get()
+        .ok_or("merges are not ready")?
+        .forget(thread_id)
 }
 
 fn all() -> std::collections::BTreeMap<String, gem_merges::Merge> {

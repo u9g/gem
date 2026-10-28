@@ -12,7 +12,7 @@ if [ -n "$LUST_PROBE" ]; then
   step lust run crates/probe/src/main.rs --manifest-path crates/probe/Cargo.toml --bin gem-probe
 fi
 if [ -z "$LUST_SKIP_SERVER" ]; then
-  step lust check src/main.rs --bin server
+  step lust check src/main.rs --bin server --max-errors 0
   step lust build src/main.rs --bin server -o target/gem-server-lust
 fi
 if [ ${#failed[@]} -ne 0 ]; then

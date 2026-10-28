@@ -13,10 +13,9 @@ use crate::{
     SearchedPullRequest,
     agents::Running,
     gh, investigations, login, mcp, proposals,
-    proto::{CheckFailure, Comment, PullRequestCluster},
-    t3,
     tokens::{Subject, Tokens},
 };
+use gem_proto::{CheckFailure, Comment, PullRequestCluster};
 
 const CONCURRENT_AGENTS: usize = 4;
 
@@ -517,7 +516,7 @@ impl Conversations {
                     let (title, prompt) = conversation.prompt(&pr);
                     let subject = conversation.subject(&pr.url);
                     let started = match mcp::agent_config(&subject) {
-                        Ok(config) => t3::start(&title, &prompt, Some(&config)),
+                        Ok(config) => gem_t3::start(&title, &prompt, Some(&config)),
                         Err(error) => Err(error),
                     };
                     match started {
@@ -525,7 +524,7 @@ impl Conversations {
                             if let Some(answering) = this.0.answering.lock().unwrap().get_mut(id) {
                                 answering.thread_id = Some(thread_id.clone());
                             }
-                            let reply = t3::wait(&thread_id);
+                            let reply = gem_t3::wait(&thread_id);
                             if let Conversation::Checks { check_failure } = &conversation {
                                 let reply = reply.trim();
                                 investigations::archive(&title, &pr.url, check_failure, reply);

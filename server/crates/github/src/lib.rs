@@ -47,7 +47,11 @@ pub fn gh_partial_json<T: FromJson>(what: &str, args: &[&str]) -> Option<T> {
         .ok()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("gh failed; reading what it printed", stderr = stderr.trim(), what = what);
+        warn!(
+            "gh failed; reading what it printed",
+            stderr = stderr.trim(),
+            what = what
+        );
     }
     gem_json::from_slice(&output.stdout)
         .inspect_err(|error| warn!("cannot read gh's output", error = error, what = what))

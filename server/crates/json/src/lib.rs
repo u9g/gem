@@ -201,7 +201,10 @@ impl Value {
     // error unless `T` accepts null, as an `Option` does.
     pub fn field<T: FromJson>(&self, name: &str) -> Result<T, Error> {
         if !self.is_object() {
-            return Err(Error::new(format!("expected an object with {name}, found {}", self.kind())));
+            return Err(Error::new(format!(
+                "expected an object with {name}, found {}",
+                self.kind()
+            )));
         }
         T::from_json(self.get(name).unwrap_or(&NULL)).map_err(|e| e.at(name))
     }
@@ -373,7 +376,10 @@ impl FromJson for String {
     fn from_json(value: &Value) -> Result<String, Error> {
         match value {
             Value::String(s) => Ok(s.clone()),
-            other => Err(Error::new(format!("expected a string, found {}", other.kind()))),
+            other => Err(Error::new(format!(
+                "expected a string, found {}",
+                other.kind()
+            ))),
         }
     }
 }
@@ -388,7 +394,10 @@ impl FromJson for bool {
     fn from_json(value: &Value) -> Result<bool, Error> {
         match value {
             Value::Bool(b) => Ok(*b),
-            other => Err(Error::new(format!("expected a boolean, found {}", other.kind()))),
+            other => Err(Error::new(format!(
+                "expected a boolean, found {}",
+                other.kind()
+            ))),
         }
     }
 }
@@ -441,7 +450,9 @@ impl ToJson for f64 {
 
 impl FromJson for f64 {
     fn from_json(value: &Value) -> Result<f64, Error> {
-        value.as_f64().ok_or_else(|| Error::new(format!("expected a number, found {}", value.kind())))
+        value
+            .as_f64()
+            .ok_or_else(|| Error::new(format!("expected a number, found {}", value.kind())))
     }
 }
 
@@ -485,7 +496,10 @@ impl<T: FromJson> FromJson for Vec<T> {
                 }
                 Ok(out)
             }
-            other => Err(Error::new(format!("expected an array, found {}", other.kind()))),
+            other => Err(Error::new(format!(
+                "expected an array, found {}",
+                other.kind()
+            ))),
         }
     }
 }
@@ -698,7 +712,8 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let text = r#"{"a":[1,-2,3.5,true,false,null],"b":{"c":"d\n\"é\u0001"},"e":18446744073709551615}"#;
+        let text =
+            r#"{"a":[1,-2,3.5,true,false,null],"b":{"c":"d\n\"é\u0001"},"e":18446744073709551615}"#;
         let value = parse(text).unwrap();
         assert_eq!(value.to_string(), text.replace("\\u0001", "\\u0001"));
         assert_eq!(value["a"][1], -2i64);
@@ -737,7 +752,10 @@ mod tests {
             [name]: (x + 1),
             "o": Some("y"),
         });
-        assert_eq!(value.to_string(), r#"{"a":[1,3,null,{"b":true}],"n":4,"o":"y","s":"text"}"#);
+        assert_eq!(
+            value.to_string(),
+            r#"{"a":[1,3,null,{"b":true}],"n":4,"o":"y","s":"text"}"#
+        );
         assert_eq!(json!([]).to_string(), "[]");
         assert_eq!(json!({}).to_string(), "{}");
     }
@@ -745,7 +763,10 @@ mod tests {
     #[test]
     fn writes_pretty() {
         let value = json!({"a": [1, 2], "b": {}});
-        assert_eq!(value.to_string_pretty(), "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": {}\n}");
+        assert_eq!(
+            value.to_string_pretty(),
+            "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": {}\n}"
+        );
     }
 
     #[test]

@@ -23,8 +23,8 @@ use gem_log::{error, info, warn};
 
 use crate::investigations;
 use crate::proposals::{self, GitHub};
-use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::tokens::{Subject, Tokens};
+use gem_proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 
 const NAME: &str = "gem";
 
@@ -585,8 +585,8 @@ mod tests {
 
     use super::*;
     use crate::proposals::FetchedComment;
-    use crate::proto::{CheckFailure, Comment, FailedCheck, Proposal};
     use crate::tokens::tests::{db, temp_dir, token};
+    use gem_proto::{CheckFailure, Comment, FailedCheck, Proposal};
 
     const PR: &str = "https://github.com/o/r/pull/1";
     const OTHER: &str = "https://github.com/o/r/pull/2";
@@ -999,7 +999,7 @@ mod tests {
         let server = Server::new("other-patches");
         let cluster = |urls: &[&str]| PullRequestCluster {
             pull_requests: (urls.iter())
-                .map(|url| crate::proto::PullRequest {
+                .map(|url| gem_proto::PullRequest {
                     url: url.to_string(),
                     ..Default::default()
                 })

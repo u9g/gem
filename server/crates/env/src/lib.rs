@@ -17,7 +17,9 @@ fn set_here() -> &'static Mutex<BTreeMap<String, String>> {
 
 // The variable from the real environment, or as the server set it.
 pub fn var(name: &str) -> Option<String> {
-    std::env::var(name).ok().or_else(|| set_here().lock().unwrap().get(name).cloned())
+    std::env::var(name)
+        .ok()
+        .or_else(|| set_here().lock().unwrap().get(name).cloned())
 }
 
 pub fn is_set(name: &str) -> bool {
@@ -27,7 +29,10 @@ pub fn is_set(name: &str) -> bool {
 // Sets the variable unless the real environment has it, which wins.
 pub fn set(name: &str, value: &str) {
     if std::env::var_os(name).is_none() {
-        set_here().lock().unwrap().insert(name.to_string(), value.to_string());
+        set_here()
+            .lock()
+            .unwrap()
+            .insert(name.to_string(), value.to_string());
     }
 }
 
@@ -64,7 +69,11 @@ pub fn parse_dotenv(text: &str) -> Result<Vec<(String, String)>, String> {
             return Err(format!("line {}: expected NAME=value", i + 1));
         };
         let name = name.trim();
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
             return Err(format!("line {}: invalid name {name:?}", i + 1));
         }
         let value = value.trim();
@@ -87,7 +96,12 @@ pub fn parse_dotenv(text: &str) -> Result<Vec<(String, String)>, String> {
             out
         } else {
             // An unquoted value ends at a comment.
-            value.split(" #").next().unwrap_or_default().trim().to_string()
+            value
+                .split(" #")
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
         };
         vars.push((name.to_string(), value));
     }
@@ -100,7 +114,9 @@ mod tests {
 
     #[test]
     fn reads_dotenv() {
-        let vars = parse_dotenv("# x\nA=1\nexport B = 'two words'\nC=\"q\\\"d\\n\" \nD=v # comment\n\n").unwrap();
+        let vars =
+            parse_dotenv("# x\nA=1\nexport B = 'two words'\nC=\"q\\\"d\\n\" \nD=v # comment\n\n")
+                .unwrap();
         let expected = [("A", "1"), ("B", "two words"), ("C", "q\"d\n"), ("D", "v")];
         assert_eq!(vars, expected.map(|(n, v)| (n.to_string(), v.to_string())));
         assert!(parse_dotenv("nope").is_err());

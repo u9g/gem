@@ -5,10 +5,10 @@ use gem_json::{Error, FromJson, ToJson, Value, json};
 use gem_log::{info, warn};
 use gem_proto::Timestamp;
 
-use crate::proto::{Agent, AgentState, CheckFailure, PullRequestCluster};
 use crate::tokens::{Subject, Tokens};
-use crate::{login, mcp, proposals, t3};
+use crate::{login, mcp, proposals};
 use gem_github::short;
+use gem_proto::{Agent, AgentState, CheckFailure, PullRequestCluster};
 
 // The most investigations a search returns, so its answer fits in an agent's context.
 const SEARCH_LIMIT: usize = 10;
@@ -127,7 +127,7 @@ afterwards in this thread.
 {SETTLE}",
         login = login(),
     );
-    let thread_id = t3::start(title, &prompt, None)?;
+    let thread_id = gem_t3::start(title, &prompt, None)?;
     track(
         now(),
         title.to_string(),
@@ -260,7 +260,7 @@ pub fn message(id: &str, message: &str) -> Result<(), String> {
         thread_id = Some(investigation.thread_id.clone());
         false
     });
-    t3::send(&thread_id.ok_or(format!("no agent {id}"))?, message)
+    gem_t3::send(&thread_id.ok_or(format!("no agent {id}"))?, message)
 }
 
 pub fn close(id: &str) {
@@ -302,7 +302,7 @@ pub fn watch() {
     std::thread::spawn(move || {
         loop {
             for investigation in load() {
-                let Some((working, reply)) = t3::show(&investigation.thread_id) else {
+                let Some((working, reply)) = gem_t3::show(&investigation.thread_id) else {
                     continue;
                 };
                 // Read after `show`: an agent records its proposals before it stops working.
@@ -351,7 +351,7 @@ pub fn watch() {
 // Starts an agent that proposes on `subject` through `gem-agent`. Returns the thread's id.
 fn start_proposing(title: &str, prompt: &str, subject: &Subject) -> Result<String, String> {
     let config = mcp::agent_config(subject)?;
-    let started = t3::start(title, prompt, Some(&config));
+    let started = gem_t3::start(title, prompt, Some(&config));
     if started.is_err() {
         Tokens::here().revoke(subject.id());
     }

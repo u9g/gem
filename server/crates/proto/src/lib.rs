@@ -4,6 +4,7 @@
 // their JSON is pbjson's: camelCase names, default values left out, 64-bit integers as strings,
 // enums by name, and Timestamps as RFC 3339.
 
+#[rustfmt::skip]
 mod gem_v1;
 mod timestamp;
 
@@ -37,8 +38,9 @@ fn read_each<T>(
     value: &gem_json::Value,
     read: impl Fn(&gem_json::Value) -> Result<T, gem_json::Error>,
 ) -> Result<Vec<T>, gem_json::Error> {
-    let items = (value.as_array())
-        .ok_or_else(|| gem_json::Error::new(format!("expected an array, found {}", value.kind())))?;
+    let items = (value.as_array()).ok_or_else(|| {
+        gem_json::Error::new(format!("expected an array, found {}", value.kind()))
+    })?;
     items.iter().map(read).collect()
 }
 
@@ -50,11 +52,17 @@ mod tests {
     #[test]
     fn writes_proto3_json() {
         let pr = PullRequest {
-            repository: Some(Repository { owner: "u9g".into(), name: "gem".into() }),
+            repository: Some(Repository {
+                owner: "u9g".into(),
+                name: "gem".into(),
+            }),
             number: 7,
             merge_by: MergeBy::Admin as i32,
             checks_passing: true,
-            created_at: Some(Timestamp { seconds: 1_700_000_000, nanos: 5_000_000 }),
+            created_at: Some(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 5_000_000,
+            }),
             ..Default::default()
         };
         assert_eq!(
@@ -67,7 +75,10 @@ mod tests {
                 "createdAt": "2023-11-14T22:13:20.005Z",
             })
         );
-        let check = FailedCheck { workflow_run_id: 12, ..Default::default() };
+        let check = FailedCheck {
+            workflow_run_id: 12,
+            ..Default::default()
+        };
         assert_eq!(check.to_json(), json!({"workflowRunId": "12"}));
         assert_eq!(MessageAgentResponse {}.to_json(), json!({}));
     }
@@ -86,9 +97,18 @@ mod tests {
         assert_eq!(pr.number, 7);
         assert_eq!(pr.merge_by(), MergeBy::Approval);
         assert_eq!(pr.checks.unwrap().total, 3);
-        assert_eq!(pr.created_at, Some(Timestamp { seconds: 1_700_000_000, nanos: 0 }));
+        assert_eq!(
+            pr.created_at,
+            Some(Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0
+            })
+        );
         assert_eq!(pr.title, "");
-        assert_eq!(Agent::from_json(&json!({"state": 2})).unwrap().state(), AgentState::Waiting);
+        assert_eq!(
+            Agent::from_json(&json!({"state": 2})).unwrap().state(),
+            AgentState::Waiting
+        );
         assert!(PullRequest::from_json(&json!({"number": "x"})).is_err());
     }
 }

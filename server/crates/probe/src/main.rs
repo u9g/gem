@@ -15,12 +15,19 @@ use gem_proto::{MergeBy, PullRequest, Repository, Timestamp};
 type Handler = Box<dyn Fn(&Value) -> Result<Value, (u16, String)> + Send + Sync>;
 
 fn main() {
-    let text = std::env::args().nth(1).unwrap_or_else(|| r#"{"number":7,"mergeBy":"MERGE_BY_ADMIN","createdAt":"2023-11-14T22:13:20.005Z"}"#.to_string());
+    let text = std::env::args().nth(1).unwrap_or_else(|| {
+        r#"{"number":7,"mergeBy":"MERGE_BY_ADMIN","createdAt":"2023-11-14T22:13:20.005Z"}"#
+            .to_string()
+    });
     let pr = PullRequest::from_json(&gem_json::parse(&text).unwrap()).unwrap();
     assert_eq!(pr.merge_by(), MergeBy::Admin);
     let mut pr = pr;
-    pr.repository = Some(Repository { owner: "u9g".into(), name: "gem".into() });
-    let value = json!({"pr": pr, "now": (Timestamp::now().seconds > 0), "list": [1, null, {"a": "b"}]});
+    pr.repository = Some(Repository {
+        owner: "u9g".into(),
+        name: "gem".into(),
+    });
+    let value =
+        json!({"pr": pr, "now": (Timestamp::now().seconds > 0), "list": [1, null, {"a": "b"}]});
     println!("{}", value);
     println!("{}", gem_json::to_string(&pr.to_json()));
     for value in gem_json::parse_stream("{\"a\":1} {\"a\":2}").unwrap() {
@@ -42,16 +49,33 @@ fn main() {
     println!("{}", routes["/count"](&json!({"x": 1})).unwrap());
 
     // A child process over pipes, read line by line.
-    let mut child = Command::new("cat").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new("cat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
-    let reader = thread::spawn(move || BufReader::new(stdout).lines().map(|l| l.unwrap()).collect::<Vec<_>>());
+    let reader = thread::spawn(move || {
+        BufReader::new(stdout)
+            .lines()
+            .map(|l| l.unwrap())
+            .collect::<Vec<_>>()
+    });
     writeln!(stdin, "{}", json!({"type": "hello"})).unwrap();
     drop(stdin);
     println!("child said {:?}", reader.join().unwrap());
     child.wait().unwrap();
-    let output = Command::new("sh").args(["-c", "echo out; echo err >&2; exit 3"]).output().unwrap();
-    println!("{} {:?} {:?}", output.status.success(), output.status.code(), String::from_utf8_lossy(&output.stdout));
+    let output = Command::new("sh")
+        .args(["-c", "echo out; echo err >&2; exit 3"])
+        .output()
+        .unwrap();
+    println!(
+        "{} {:?} {:?}",
+        output.status.success(),
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout)
+    );
 
     // A condition variable with a timeout, and a channel.
     let pair = Arc::new((Mutex::new(false), Condvar::new()));
@@ -62,7 +86,9 @@ fn main() {
         notifier.1.notify_all();
     });
     let (lock, cvar) = &*pair;
-    let (flag, timeout) = cvar.wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(5), |f| !*f).unwrap();
+    let (flag, timeout) = cvar
+        .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(5), |f| !*f)
+        .unwrap();
     println!("notified {} timed out {}", *flag, timeout.timed_out());
     let (tx, rx) = mpsc::channel();
     thread::scope(|s| {
@@ -88,10 +114,17 @@ fn main() {
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let body = "{\"ok\":true}";
-        write!(stream, "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
     });
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-    stream.write_all(b"GET / HTTP/1.1\r\nhost: x\r\n\r\n").unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nhost: x\r\n\r\n")
+        .unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     println!("{}", response.lines().last().unwrap());

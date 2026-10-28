@@ -25,10 +25,14 @@ pub fn serve(path: &str) {
             return;
         }
         let reply = match &connection {
-            Ok(connection) => run(connection, &request).unwrap_or_else(|error| json!({"error": error.to_string()})),
+            Ok(connection) => run(connection, &request)
+                .unwrap_or_else(|error| json!({"error": error.to_string()})),
             Err(error) => json!({"error": error.to_string()}),
         };
-        if writeln!(stdout, "{reply}").and_then(|()| stdout.flush()).is_err() {
+        if writeln!(stdout, "{reply}")
+            .and_then(|()| stdout.flush())
+            .is_err()
+        {
             return;
         }
     }
@@ -36,10 +40,16 @@ pub fn serve(path: &str) {
 
 fn run(connection: &Connection, request: &Value) -> rusqlite::Result<Value> {
     let sql = request["sql"].as_str().unwrap_or_default();
-    let params: Vec<Sql> = (request["params"].as_array().into_iter().flatten()).map(to_sql).collect();
+    let params: Vec<Sql> = (request["params"].as_array().into_iter().flatten())
+        .map(to_sql)
+        .collect();
     match request["op"].as_str() {
-        Some("execute") => Ok(json!({"changes": connection.execute(sql, params_from_iter(params))?})),
-        Some("batch") => connection.execute_batch(sql).map(|()| json!({"changes": 0})),
+        Some("execute") => {
+            Ok(json!({"changes": connection.execute(sql, params_from_iter(params))?}))
+        }
+        Some("batch") => connection
+            .execute_batch(sql)
+            .map(|()| json!({"changes": 0})),
         Some("query") => {
             let mut statement = connection.prepare(sql)?;
             let columns = statement.column_count();
@@ -67,9 +77,12 @@ fn to_sql(value: &Value) -> Sql {
         },
         Value::String(s) => Sql::Text(s.clone()),
         Value::Object(o) => Sql::Blob(
-            (o.get("blob").and_then(Value::as_array).into_iter().flatten())
-                .map(|b| b.as_u64().unwrap_or_default() as u8)
-                .collect(),
+            (o.get("blob")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten())
+            .map(|b| b.as_u64().unwrap_or_default() as u8)
+            .collect(),
         ),
         Value::Array(_) => Sql::Null,
     }

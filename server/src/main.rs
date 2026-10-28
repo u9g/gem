@@ -15,18 +15,17 @@ use gem_proto::Timestamp;
 
 use conversations::Conversations;
 use gem_changes::Changes;
-use names::Names;
-use proto::{
-    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest,
-    CloseAgentResponse, DismissProposalRequest, DismissProposalResponse, InvestigateRequest,
-    InvestigateResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, MergeBy,
-    MergeClusterRequest, MergeClusterResponse, MessageAgentRequest, MessageAgentResponse,
-    MessageClusterRequest, MessageClusterResponse, PullRequest, PullRequestCluster,
-    RebaseClusterRequest,
+use gem_proto::{
+    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest, CloseAgentResponse,
+    DismissProposalRequest, DismissProposalResponse, InvestigateRequest, InvestigateResponse,
+    ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, MergeBy, MergeClusterRequest,
+    MergeClusterResponse, MessageAgentRequest, MessageAgentResponse, MessageClusterRequest,
+    MessageClusterResponse, PullRequest, PullRequestCluster, RebaseClusterRequest,
     RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse,
     RenderMarkdownRequest, RenderMarkdownResponse, Repository, RestartClusterRequest,
     RestartClusterResponse, SearchPullRequestsRequest, SearchPullRequestsResponse,
 };
+use names::Names;
 
 mod agents;
 mod conversations;
@@ -43,8 +42,6 @@ mod tokens;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
 use gem_github::{gh, gh_json, gh_partial_json, login, render};
-use gem_proto as proto;
-use gem_t3 as t3;
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
@@ -209,7 +206,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("serve") => {
-            (load_op_item().and_then(|()| load_typesafe_key())).unwrap_or_else(|error| panic!("{error}"));
+            (load_op_item().and_then(|()| load_typesafe_key()))
+                .unwrap_or_else(|error| panic!("{error}"));
             run_server()
         }
         Some("mcp") => mcp::serve(&args[1..]),
@@ -281,7 +279,9 @@ fn load_op_item() -> Result<(), String> {
     }
     impl FromJson for Item {
         fn from_json(value: &Value) -> Result<Item, Error> {
-            Ok(Item { fields: value.field("fields")? })
+            Ok(Item {
+                fields: value.field("fields")?,
+            })
         }
     }
     impl FromJson for Field {
@@ -350,7 +350,10 @@ fn load_typesafe_key() -> Result<(), String> {
         return Ok(());
     }
     let output = std::process::Command::new("op")
-        .args(["read", &format!("{}/credential", reference.trim_end_matches('/'))])
+        .args([
+            "read",
+            &format!("{}/credential", reference.trim_end_matches('/')),
+        ])
         .output()
         .map_err(|error| format!("cannot run op: {error}"))?;
     if !output.status.success() {
@@ -412,8 +415,12 @@ fn run_server() -> ! {
     });
     let snapshots = gem_room::Snapshots::new();
     {
-        let (snapshots, prs, names, conversations) =
-            (snapshots.clone(), prs.clone(), names.clone(), conversations.clone());
+        let (snapshots, prs, names, conversations) = (
+            snapshots.clone(),
+            prs.clone(),
+            names.clone(),
+            conversations.clone(),
+        );
         thread::spawn(move || {
             loop {
                 if let Some(response) = filled(&prs, &names, &conversations) {
@@ -511,7 +518,11 @@ fn run_server() -> ! {
                         closed_pull_request = format!("{closed:?}")
                     ),
                     Err(error) => {
-                        warn!("proposal approve failed", proposal = request.id, error = error)
+                        warn!(
+                            "proposal approve failed",
+                            proposal = request.id,
+                            error = error
+                        )
                     }
                 }
                 // Search can list a PR as open for a while after it closes, so drop it here
@@ -614,9 +625,15 @@ fn acted_on<'a>(
     urls: &[String],
 ) -> Result<&'a PullRequestCluster, (u16, String)> {
     let cluster = (response.iter().flat_map(|r| &r.clusters))
-        .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == urls.first()))
+        .find(|c| {
+            c.pull_requests
+                .iter()
+                .any(|pr| Some(&pr.url) == urls.first())
+        })
         .ok_or((404, "the cluster is gone".to_string()))?;
-    let mut now: Vec<&str> = (cluster.pull_requests.iter()).map(|pr| pr.url.as_str()).collect();
+    let mut now: Vec<&str> = (cluster.pull_requests.iter())
+        .map(|pr| pr.url.as_str())
+        .collect();
     let mut seen: Vec<&str> = urls.iter().map(String::as_str).collect();
     now.sort();
     seen.sort();
@@ -654,17 +671,20 @@ fn open_pull_requests(
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
     let search = gem_env::var("GEM_SEARCH").unwrap_or_default();
-    let stdout = gh("open pull requests", &[
-        "api",
-        "graphql",
-        "--paginate",
-        "-f",
-        &format!("query={PRS_QUERY}"),
-        "-f",
-        &format!("q=is:pr is:open author:{} {search}", login()),
-        "--jq",
-        PRS_JQ,
-    ])?;
+    let stdout = gh(
+        "open pull requests",
+        &[
+            "api",
+            "graphql",
+            "--paginate",
+            "-f",
+            &format!("query={PRS_QUERY}"),
+            "-f",
+            &format!("q=is:pr is:open author:{} {search}", login()),
+            "--jq",
+            PRS_JQ,
+        ],
+    )?;
     let mut prs = gem_json::from_stream::<SearchedPullRequest>(&stdout)
         .inspect_err(|error| warn!("cannot read open pull requests", error = error))
         .ok()?;

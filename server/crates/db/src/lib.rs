@@ -10,6 +10,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[rustfmt::skip]
 mod migrations;
 #[macro_use]
 mod sqlite;
@@ -34,7 +35,10 @@ pub struct Db(Arc<Mutex<Connection>>);
 
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> std::result::Result<Db, String> {
-        Self::new(Connection::open(&path.as_ref().to_string_lossy()), MIGRATIONS)
+        Self::new(
+            Connection::open(&path.as_ref().to_string_lossy()),
+            MIGRATIONS,
+        )
     }
 
     pub fn open_in_memory() -> std::result::Result<Db, String> {
@@ -45,7 +49,9 @@ impl Db {
         let db = Db(Arc::new(Mutex::new(db.map_err(error)?)));
         db.with(|db| {
             let tx = db.unchecked_transaction()?;
-            tx.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)")?;
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)",
+            )?;
             let numbered: bool = tx.query_row(
                 "SELECT count(*) > 0 FROM sqlite_master WHERE name = 'migrations'",
                 params![],
@@ -72,9 +78,11 @@ impl Db {
         self.with(|db| {
             for (name, sql) in migrations {
                 let ran = db
-                    .query_row("SELECT 1 FROM schema_migrations WHERE name = ?1", params![name], |_| {
-                        Ok(())
-                    })
+                    .query_row(
+                        "SELECT 1 FROM schema_migrations WHERE name = ?1",
+                        params![name],
+                        |_| Ok(()),
+                    )
                     .optional()?
                     .is_some();
                 if ran {
@@ -82,7 +90,10 @@ impl Db {
                 }
                 let tx = db.unchecked_transaction()?;
                 tx.execute_batch(sql)?;
-                tx.execute("INSERT INTO schema_migrations (name) VALUES (?1)", params![name])?;
+                tx.execute(
+                    "INSERT INTO schema_migrations (name) VALUES (?1)",
+                    params![name],
+                )?;
                 tx.commit()?;
             }
             Ok(())
@@ -90,7 +101,10 @@ impl Db {
     }
 
     // Queries touch a few rows of a local file, so they run on the caller's thread.
-    pub fn with<T>(&self, query: impl FnOnce(&Connection) -> Result<T>) -> std::result::Result<T, String> {
+    pub fn with<T>(
+        &self,
+        query: impl FnOnce(&Connection) -> Result<T>,
+    ) -> std::result::Result<T, String> {
         query(&self.0.lock().unwrap()).map_err(error)
     }
 }
@@ -104,7 +118,10 @@ mod tests {
     use super::*;
 
     const MIGRATIONS: &[(&str, &str)] = &[
-        ("20260101000000_create_things", "CREATE TABLE things (name TEXT PRIMARY KEY)"),
+        (
+            "20260101000000_create_things",
+            "CREATE TABLE things (name TEXT PRIMARY KEY)",
+        ),
         (
             "20260102000000_add_sizes",
             "ALTER TABLE things ADD COLUMN size INTEGER NOT NULL DEFAULT 0",
@@ -112,7 +129,8 @@ mod tests {
     ];
 
     fn count(db: &Db, sql: &str) -> i64 {
-        db.with(|db| db.query_row(sql, params![], |row| row.get(0))).unwrap()
+        db.with(|db| db.query_row(sql, params![], |row| row.get(0)))
+            .unwrap()
     }
 
     #[test]
@@ -131,7 +149,10 @@ mod tests {
     fn runs_a_migration_older_than_the_last_one_run() {
         let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
         // Merged after a newer one from another branch had already run.
-        let older = ("20251231000000_create_others", "CREATE TABLE others (id INTEGER)");
+        let older = (
+            "20251231000000_create_others",
+            "CREATE TABLE others (id INTEGER)",
+        );
         db.migrate(&[older, MIGRATIONS[0]]).unwrap();
         assert_eq!(count(&db, "SELECT count(*) FROM others"), 0);
     }
@@ -139,7 +160,10 @@ mod tests {
     #[test]
     fn a_failed_migration_is_run_again_next_time() {
         let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
-        assert!(db.migrate(&[MIGRATIONS[0], ("20260102000000_bad", "NOT SQL")]).is_err());
+        assert!(
+            db.migrate(&[MIGRATIONS[0], ("20260102000000_bad", "NOT SQL")])
+                .is_err()
+        );
         assert_eq!(count(&db, "SELECT count(*) FROM schema_migrations"), 1);
     }
 
@@ -159,12 +183,21 @@ mod tests {
             .unwrap();
         let db = Db::new(Ok(connection), super::MIGRATIONS).unwrap();
         // Only merges' second migration had not run.
-        assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 0);
+        assert_eq!(
+            count(&db, "SELECT count(*) FROM merges WHERE title = ''"),
+            0
+        );
         db.with(|db| db.execute("INSERT INTO merges (url) VALUES ('a')", params![]))
             .unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 1);
         assert_eq!(
-            count(&db, "SELECT count(*) FROM sqlite_master WHERE name = 'migrations'"),
+            count(&db, "SELECT count(*) FROM merges WHERE title = ''"),
+            1
+        );
+        assert_eq!(
+            count(
+                &db,
+                "SELECT count(*) FROM sqlite_master WHERE name = 'migrations'"
+            ),
             0
         );
     }
@@ -175,8 +208,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let db = Db::open(&path).unwrap();
-            db.with(|db| db.execute("INSERT INTO proposals (id, proposal) VALUES ('a', '{}')", params![]))
-                .unwrap();
+            db.with(|db| {
+                db.execute(
+                    "INSERT INTO proposals (id, proposal) VALUES ('a', '{}')",
+                    params![],
+                )
+            })
+            .unwrap();
         }
         let db = Db::open(&path).unwrap();
         assert_eq!(count(&db, "SELECT count(*) FROM proposals"), 1);

@@ -13,8 +13,13 @@ pub struct Timestamp {
 
 impl Timestamp {
     pub fn now() -> Timestamp {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        Timestamp { seconds: now.as_secs() as i64, nanos: now.subsec_nanos() as i32 }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        Timestamp {
+            seconds: now.as_secs() as i64,
+            nanos: now.subsec_nanos() as i32,
+        }
     }
 
     pub fn to_rfc3339(&self) -> String {
@@ -74,8 +79,12 @@ impl Timestamp {
             }
             _ => return None,
         };
-        let seconds = days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60 + s - offset * 60;
-        Some(Timestamp { seconds, nanos: nanos as i32 })
+        let seconds =
+            days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60 + s - offset * 60;
+        Some(Timestamp {
+            seconds,
+            nanos: nanos as i32,
+        })
     }
 }
 
@@ -110,9 +119,12 @@ impl ToJson for Timestamp {
 
 impl FromJson for Timestamp {
     fn from_json(value: &Value) -> Result<Timestamp, Error> {
-        let text = value
-            .as_str()
-            .ok_or_else(|| Error::new(format!("expected an RFC 3339 timestamp, found {}", value.kind())))?;
+        let text = value.as_str().ok_or_else(|| {
+            Error::new(format!(
+                "expected an RFC 3339 timestamp, found {}",
+                value.kind()
+            ))
+        })?;
         Timestamp::parse(text).ok_or_else(|| Error::new(format!("invalid timestamp {text:?}")))
     }
 }
@@ -123,11 +135,22 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        for text in ["1970-01-01T00:00:00Z", "2026-10-28T20:38:33.123Z", "1999-12-31T23:59:59.000001Z", "2024-02-29T12:00:00.000000001Z"] {
+        for text in [
+            "1970-01-01T00:00:00Z",
+            "2026-10-28T20:38:33.123Z",
+            "1999-12-31T23:59:59.000001Z",
+            "2024-02-29T12:00:00.000000001Z",
+        ] {
             assert_eq!(Timestamp::parse(text).unwrap().to_rfc3339(), text);
         }
-        assert_eq!(Timestamp::parse("2026-10-28T22:38:33+02:00"), Timestamp::parse("2026-10-28T20:38:33Z"));
-        assert_eq!(Timestamp::parse("1969-12-31T23:59:59Z").unwrap().seconds, -1);
+        assert_eq!(
+            Timestamp::parse("2026-10-28T22:38:33+02:00"),
+            Timestamp::parse("2026-10-28T20:38:33Z")
+        );
+        assert_eq!(
+            Timestamp::parse("1969-12-31T23:59:59Z").unwrap().seconds,
+            -1
+        );
         assert!(Timestamp::parse("2026-13-01T00:00:00Z").is_none());
         assert!(Timestamp::parse("2026-10-28").is_none());
     }

@@ -7,10 +7,7 @@ use std::{
 use gem_db::params;
 use gem_log::warn;
 
-use crate::{
-    proto::{PullRequest, PullRequestCluster},
-    t3,
-};
+use gem_proto::{PullRequest, PullRequestCluster};
 
 const CONCURRENT_THREADS: usize = 4;
 
@@ -122,7 +119,7 @@ fn ask_t3(prs: &[PullRequest]) -> Option<String> {
     // A cloud agent starts on one repository, and T3 Code picks none for a cluster spanning
     // several, so the thread fails before the agent runs. Naming reads no code: any of the
     // cluster's repositories will do.
-    t3::ask(
+    gem_t3::ask(
         &format!("Name PR cluster {}#{}", full_name(first), first.number),
         &format!(
             "{PROMPT}\n\nRun on the {} repository.\n\n{}",

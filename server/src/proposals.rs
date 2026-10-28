@@ -7,13 +7,13 @@ use gem_db::{Db, params};
 use gem_json::{Error, FromJson, Value};
 use gem_log::{Level, warn};
 
-use crate::proto::{CheckFailure, Comment, NewPullRequest, Patch, Proposal, PullRequestCluster};
 use crate::tokens::Subject;
 use crate::{conversations, investigations};
 use gem_github::{
     apply_patch, check_new_pull_request, command, graphql, open_pull_request, push_new_branch,
     render, repository,
 };
+use gem_proto::{CheckFailure, Comment, NewPullRequest, Patch, Proposal, PullRequestCluster};
 
 // Agents make proposals with the `propose` tool of the `gem-agent` MCP server, which checks them
 // first.

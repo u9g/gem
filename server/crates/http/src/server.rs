@@ -28,7 +28,10 @@ pub struct Request {
 impl Request {
     pub fn header(&self, name: &str) -> Option<&str> {
         let name = name.to_ascii_lowercase();
-        self.headers.iter().find(|(n, _)| *n == name).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -40,11 +43,17 @@ pub struct Response {
 
 impl Response {
     pub fn new(status: u16) -> Response {
-        Response { status, headers: Vec::new(), body: Vec::new() }
+        Response {
+            status,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     }
 
     pub fn json(status: u16, body: &gem_json::Value) -> Response {
-        Response::new(status).header("content-type", "application/json").body(body.to_string().into_bytes())
+        Response::new(status)
+            .header("content-type", "application/json")
+            .body(body.to_string().into_bytes())
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Response {
@@ -111,7 +120,9 @@ where
                 return Ok(());
             }
         };
-        let close = request.header("connection").is_some_and(|c| c.eq_ignore_ascii_case("close"));
+        let close = request
+            .header("connection")
+            .is_some_and(|c| c.eq_ignore_ascii_case("close"));
         let response = handler(request);
         write_response(&mut writer, response, !close)?;
         if close {
@@ -131,7 +142,8 @@ fn read_request<R: BufRead>(reader: &mut R) -> Result<Option<Request>, Refused> 
         Ok(_) => {}
     }
     let mut parts = line.split_whitespace();
-    let (Some(method), Some(path), Some(_version)) = (parts.next(), parts.next(), parts.next()) else {
+    let (Some(method), Some(path), Some(_version)) = (parts.next(), parts.next(), parts.next())
+    else {
         return Err(Refused(400));
     };
     let (method, path) = (method.to_string(), path.to_string());
@@ -161,11 +173,24 @@ fn read_request<R: BufRead>(reader: &mut R) -> Result<Option<Request>, Refused> 
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body).map_err(|_| Refused(400))?;
-    Ok(Some(Request { method, path, headers, body }))
+    Ok(Some(Request {
+        method,
+        path,
+        headers,
+        body,
+    }))
 }
 
-fn write_response<W: Write>(writer: &mut W, response: Response, keep_alive: bool) -> std::io::Result<()> {
-    let mut head = format!("HTTP/1.1 {} {}\r\n", response.status, reason(response.status));
+fn write_response<W: Write>(
+    writer: &mut W,
+    response: Response,
+    keep_alive: bool,
+) -> std::io::Result<()> {
+    let mut head = format!(
+        "HTTP/1.1 {} {}\r\n",
+        response.status,
+        reason(response.status)
+    );
     for (name, value) in &response.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -191,13 +216,30 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             serve(listener, |request: Request| {
-                let auth = request.header("Authorization").unwrap_or_default().to_string();
-                Response::new(200).body(format!("{} {} {auth} {}", request.method, request.path, request.body.len()).into_bytes())
+                let auth = request
+                    .header("Authorization")
+                    .unwrap_or_default()
+                    .to_string();
+                Response::new(200).body(
+                    format!(
+                        "{} {} {auth} {}",
+                        request.method,
+                        request.path,
+                        request.body.len()
+                    )
+                    .into_bytes(),
+                )
             })
         });
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        stream.write_all(b"POST /mcp HTTP/1.1\r\nAuthorization: Bearer t\r\nContent-Length: 2\r\n\r\n{}").unwrap();
-        stream.write_all(b"GET /x HTTP/1.1\r\nConnection: close\r\n\r\n").unwrap();
+        stream
+            .write_all(
+                b"POST /mcp HTTP/1.1\r\nAuthorization: Bearer t\r\nContent-Length: 2\r\n\r\n{}",
+            )
+            .unwrap();
+        stream
+            .write_all(b"GET /x HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
         assert!(response.contains("POST /mcp Bearer t 2"), "{response}");

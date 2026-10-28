@@ -38,7 +38,11 @@ impl Router {
         F: Fn() -> Reply + Send + Sync + 'static,
     {
         let handler: Handler = Box::new(move |_: Value| handler());
-        self.routes.push(Route { method: "GET", path: path.to_string(), handler });
+        self.routes.push(Route {
+            method: "GET",
+            path: path.to_string(),
+            handler,
+        });
         self
     }
 
@@ -56,13 +60,21 @@ impl Router {
                 format!("Failed to deserialize the JSON body into the target type: {error}"),
             )),
         });
-        self.routes.push(Route { method: "POST", path: path.to_string(), handler });
+        self.routes.push(Route {
+            method: "POST",
+            path: path.to_string(),
+            handler,
+        });
         self
     }
 
     // The status and body of the answer to `method` on `path`.
     pub fn handle(&self, method: &str, path: &str, body: Value) -> (u16, String) {
-        let mut on_path = self.routes.iter().filter(|route| route.path == path).peekable();
+        let mut on_path = self
+            .routes
+            .iter()
+            .filter(|route| route.path == path)
+            .peekable();
         if on_path.peek().is_none() {
             return (404, String::new());
         }
@@ -84,9 +96,19 @@ pub fn respond(app: &Router, request: &str) -> Result<String, (u32, String)> {
     let (status, body) = app.handle(&request.method, &request.path, request.body);
     // `/prs` is asked for after every action and on every reconnect.
     if request.path == "/prs" {
-        debug!("request", method = request.method, path = request.path, status = status);
+        debug!(
+            "request",
+            method = request.method,
+            path = request.path,
+            status = status
+        );
     } else {
-        info!("request", method = request.method, path = request.path, status = status);
+        info!(
+            "request",
+            method = request.method,
+            path = request.path,
+            status = status
+        );
     }
     if (200..300).contains(&status) {
         Ok(body)
@@ -129,7 +151,9 @@ mod tests {
 
     impl FromJson for Echo {
         fn from_json(value: &Value) -> Result<Echo, gem_json::Error> {
-            Ok(Echo { text: value.field("text")? })
+            Ok(Echo {
+                text: value.field("text")?,
+            })
         }
     }
 
@@ -157,9 +181,24 @@ mod tests {
             request(json!({"method": "POST", "path": "/echo", "body": {"text": ""}})),
             Err((400, "empty".to_string()))
         );
-        assert_eq!(request(json!({"method": "POST", "path": "/echo", "body": {}})).unwrap_err().0, 422);
-        assert_eq!(request(json!({"method": "GET", "path": "/echo", "body": null})).unwrap_err().0, 405);
-        assert_eq!(request(json!({"method": "GET", "path": "/nope", "body": null})).unwrap_err().0, 404);
+        assert_eq!(
+            request(json!({"method": "POST", "path": "/echo", "body": {}}))
+                .unwrap_err()
+                .0,
+            422
+        );
+        assert_eq!(
+            request(json!({"method": "GET", "path": "/echo", "body": null}))
+                .unwrap_err()
+                .0,
+            405
+        );
+        assert_eq!(
+            request(json!({"method": "GET", "path": "/nope", "body": null}))
+                .unwrap_err()
+                .0,
+            404
+        );
         assert_eq!(respond(&app(), "not json").unwrap_err().0, 400);
     }
 }

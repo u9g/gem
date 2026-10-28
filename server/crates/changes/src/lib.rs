@@ -99,7 +99,18 @@ fn etag_of(path: &str, token: &str, etag: Option<&String>) -> Option<String> {
     let url = format!("https://api.github.com/{path}");
     // The headers go on stdin, so the token is not in the process list.
     let mut child = Command::new("curl")
-        .args(["--silent", "--max-time", "30", "--output", null, "--dump-header", "-", "--header", "@-", &url])
+        .args([
+            "--silent",
+            "--max-time",
+            "30",
+            "--output",
+            null,
+            "--dump-header",
+            "-",
+            "--header",
+            "@-",
+            &url,
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
