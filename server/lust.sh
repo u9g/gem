@@ -16,7 +16,7 @@ parity() {
   state=$(mktemp -d)
   # The first run makes the database; the snapshot then goes in as the running server saves it.
   "$CARGO_SERVER" mcp --state "$state" < /dev/null || return 1
-  sqlite3 "$state/gem.sqlite" "INSERT OR REPLACE INTO snapshot (id, response) VALUES (0, readfile('tests/lust/snapshot.json'))" || return 1
+  sqlite3 "$state/gem.sqlite" "INSERT OR REPLACE INTO snapshot (id, response) VALUES (0, CAST(readfile('tests/lust/snapshot.json') AS TEXT))" || return 1
   cp -r "$state" "$state-lust"
   "$CARGO_SERVER" mcp --state "$state" < tests/lust/requests.jsonl > "$state.cargo.jsonl" || return 1
   target/gem-server-lust mcp --state "$state-lust" < tests/lust/requests.jsonl > "$state.lust.jsonl" || return 1
