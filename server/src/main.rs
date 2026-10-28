@@ -1,3 +1,10 @@
+// The macros of these crates are in every module's scope, as `lust test` does not resolve a macro
+// a module imports from another crate with `use`.
+#[macro_use]
+extern crate gem_json;
+#[macro_use]
+extern crate gem_log;
+
 use std::{
     cmp::Reverse,
     collections::HashMap,
