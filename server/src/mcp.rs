@@ -1,5 +1,5 @@
 // gem's MCP servers. `server mcp --state <dir>` speaks MCP over stdio, so agents can read the
-// clusters gem shows, and answers from the snapshot the running server keeps in <dir>. The server
+// clusters gem shows, and answers from the snapshot the running server keeps in <dir>'s database. The server
 // registers it with Claude Code, as the user-scope server `gem`, whenever it starts.
 //
 // The agents gem starts to propose answers get `gem-agent` instead, over HTTP on the loopback
@@ -24,25 +24,44 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use gem_db::{
+    Db,
+    rusqlite::{OptionalExtension, params},
+};
 use serde_json::{Value, json};
 
 use crate::investigations;
 use crate::proposals::{self, GitHub};
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
-use crate::tokens::{self, Subject, Tokens};
+use crate::tokens::{Subject, Tokens};
 
-// The clusters as gem last showed them, with their names and proposals, relative to the
-// server's working directory.
-const SNAPSHOT: &str = "clusters.json";
 const NAME: &str = "gem";
 
-// Called after every refresh. A reader never sees a half-written snapshot.
+// Called after every refresh.
 pub async fn save(response: &ListOpenPullRequestsResponse) {
-    let json = serde_json::to_vec(response).unwrap();
-    let partial = format!("{SNAPSHOT}.partial");
-    if tokio::fs::write(&partial, json).await.is_ok() {
-        let _ = tokio::fs::rename(&partial, SNAPSHOT).await;
+    save_to(crate::db(), response);
+}
+
+fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
+    let saved = db.with(|db| {
+        db.execute(
+            "INSERT OR REPLACE INTO snapshot (id, response) VALUES (0, ?1)",
+            params![serde_json::to_string(response).unwrap()],
+        )
+    });
+    if let Err(error) = saved {
+        tracing::warn!(%error, "cannot save the snapshot");
     }
+}
+
+// The snapshot's JSON, once the server saved one.
+fn snapshot(db: &Db) -> Option<String> {
+    db.with(|db| {
+        db.query_row("SELECT response FROM snapshot", [], |row| row.get(0))
+            .optional()
+    })
+    .ok()
+    .flatten()
 }
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
@@ -85,13 +104,14 @@ pub fn register() {
 
 // Answers MCP requests on stdin until it closes.
 pub fn serve(args: &[String]) {
-    let state = match args {
-        [flag, dir] if flag == "--state" => PathBuf::from(dir),
+    let db = match args {
+        [flag, dir] if flag == "--state" => Db::open(Path::new(dir).join(crate::DB_FILE)),
         _ => {
             eprintln!("usage: server mcp --state <the server's working directory>");
             std::process::exit(2);
         }
-    };
+    }
+    .unwrap_or_else(|error| panic!("{error}"));
     let mut stdout = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -102,13 +122,13 @@ pub fn serve(args: &[String]) {
         let Some(id) = request.get("id").cloned() else {
             continue;
         };
-        let response = response(id, handle(&state, &request));
+        let response = response(id, handle(&db, &request));
         let _ = writeln!(stdout, "{response}");
         let _ = stdout.flush();
     }
 }
 
-fn handle(state: &Path, request: &Value) -> Result<Value, (i64, String)> {
+fn handle(db: &Db, request: &Value) -> Result<Value, (i64, String)> {
     let params = &request["params"];
     match request["method"].as_str().unwrap_or_default() {
         "initialize" => Ok(initialize(
@@ -120,7 +140,7 @@ fn handle(state: &Path, request: &Value) -> Result<Value, (i64, String)> {
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools() })),
         "tools/call" => Ok(tool_result(call(
-            state,
+            db,
             params["name"].as_str().unwrap_or_default(),
             &params["arguments"],
         ))),
@@ -188,10 +208,10 @@ fn get_cluster() -> Value {
     )
 }
 
-fn call(state: &Path, tool: &str, arguments: &Value) -> Result<String, String> {
-    let snapshot = std::fs::read(state.join(SNAPSHOT))
-        .map_err(|_| "gem has not listed any clusters yet; is its server running?".to_string())?;
-    let mut snapshot: Value = serde_json::from_slice(&snapshot).map_err(|e| e.to_string())?;
+fn call(db: &Db, tool: &str, arguments: &Value) -> Result<String, String> {
+    let snapshot = snapshot(db)
+        .ok_or("gem has not listed any clusters yet; is its server running?".to_string())?;
+    let mut snapshot: Value = serde_json::from_str(&snapshot).map_err(|e| e.to_string())?;
     // Rendered HTML repeats the markdown next to it.
     strip_view(&mut snapshot);
     let clusters = snapshot["clusters"].as_array().cloned().unwrap_or_default();
@@ -231,11 +251,10 @@ fn call(state: &Path, tool: &str, arguments: &Value) -> Result<String, String> {
 }
 
 // The URLs of the pull requests in the snapshot's cluster holding `pr`, or none when it holds none.
-fn cluster_of(state: &Path, pr: &str) -> Vec<String> {
+fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
     let pr = pr.trim().trim_end_matches('/');
-    let snapshot: ListOpenPullRequestsResponse = std::fs::read(state.join(SNAPSHOT))
-        .ok()
-        .and_then(|json| serde_json::from_slice(&json).ok())
+    let snapshot: ListOpenPullRequestsResponse = snapshot(db)
+        .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
     (snapshot.clusters.into_iter())
         .map(|cluster| {
@@ -286,8 +305,9 @@ fn url() -> String {
     format!("http://127.0.0.1:{}/mcp", port())
 }
 
-// The --mcp-config of a new agent answering `subject`, as the path of a file in the state
-// directory: T3 Code's CLI is a batch file on Windows, which cannot take JSON as an argument.
+// The --mcp-config of a new agent answering `subject`, as the path of a file in the server's
+// working directory: T3 Code's CLI is a batch file on Windows, which cannot take JSON as an
+// argument.
 pub async fn agent_config(subject: &Subject) -> Result<String, String> {
     let path = Tokens::here().issue(subject, &url()).await?;
     Ok(path.to_string_lossy().into_owned())
@@ -296,7 +316,7 @@ pub async fn agent_config(subject: &Subject) -> Result<String, String> {
 // Serves `gem-agent` on the loopback interface until the server stops. A server restarting for an
 // update can start before the one it replaces has let go of the port, so it keeps trying.
 pub async fn listen() {
-    let app = router(env::current_dir().unwrap(), proposals::Live);
+    let app = router(crate::db().clone(), Tokens::here(), proposals::Live);
     let port = port();
     let listener = loop {
         match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
@@ -314,19 +334,15 @@ pub async fn listen() {
 }
 
 struct Endpoint<G> {
-    // The server's working directory, with the snapshot, proposals and tokens.
-    state: PathBuf,
+    // With the snapshot, proposals and investigations.
+    db: Db,
     tokens: Tokens,
     github: G,
 }
 
 // Streamable HTTP without streams: each POST to /mcp is one JSON-RPC message, answered with JSON.
-fn router(state: PathBuf, github: impl GitHub) -> Router {
-    let endpoint = Arc::new(Endpoint {
-        tokens: Tokens::new(state.join(tokens::DIR)),
-        state,
-        github,
-    });
+fn router(db: Db, tokens: Tokens, github: impl GitHub) -> Router {
+    let endpoint = Arc::new(Endpoint { db, tokens, github });
     Router::new()
         .route("/mcp", post(answer))
         .with_state(endpoint)
@@ -387,13 +403,11 @@ async fn handle_agent<G: GitHub>(
             let arguments = &params["arguments"];
             Ok(tool_result(
                 match params["name"].as_str().unwrap_or_default() {
-                    "get_cluster" => call(&endpoint.state, "get_cluster", arguments),
+                    "get_cluster" => call(&endpoint.db, "get_cluster", arguments),
                     "search_investigations" => match arguments["query"].as_str() {
-                        Some(query) if !query.trim().is_empty() => Ok(investigations::search(
-                            &endpoint.state.join(investigations::PAST_DIR),
-                            query,
-                        )
-                        .await),
+                        Some(query) if !query.trim().is_empty() => {
+                            Ok(investigations::search(&endpoint.db, query).await)
+                        }
                         _ => Err("`query` must be words to search for".into()),
                     },
                     "propose" => propose(endpoint, subject, arguments).await,
@@ -412,9 +426,9 @@ async fn propose<G: GitHub>(
 ) -> Result<String, String> {
     let request: proposals::Request =
         serde_json::from_value(arguments.clone()).map_err(|e| e.to_string())?;
-    let dir = endpoint.state.join(proposals::DIR);
-    let cluster = cluster_of(&endpoint.state, &request.pr);
-    let proposed = proposals::propose(&endpoint.github, &dir, subject, &cluster, request).await;
+    let cluster = cluster_of(&endpoint.db, &request.pr);
+    let proposed =
+        proposals::propose(&endpoint.github, &endpoint.db, subject, &cluster, request).await;
     match &proposed {
         Ok(id) => tracing::info!(proposal = %id, subject = subject.id(), "proposal recorded"),
         Err(error) => tracing::info!(subject = subject.id(), %error, "proposal rejected"),
@@ -557,7 +571,7 @@ mod tests {
     use super::*;
     use crate::proposals::FetchedComment;
     use crate::proto::{CheckFailure, Comment, FailedCheck, Proposal};
-    use crate::tokens::tests::{temp_dir, token};
+    use crate::tokens::tests::{db, temp_dir, token};
 
     const PR: &str = "https://github.com/o/r/pull/1";
     const OTHER: &str = "https://github.com/o/r/pull/2";
@@ -613,24 +627,31 @@ mod tests {
     }
 
     struct Server {
-        state: PathBuf,
+        db: Db,
+        tokens: Tokens,
         app: Router,
     }
 
     impl Server {
         fn new(name: &str) -> Self {
-            let state = temp_dir(name);
+            let db = db();
+            let tokens = Tokens::new(db.clone(), temp_dir(name));
             Self {
-                app: router(state.clone(), Fake),
-                state,
+                app: router(db.clone(), tokens.clone(), Fake),
+                db,
+                tokens,
             }
+        }
+
+        fn db(&self) -> &Db {
+            &self.db
         }
 
         // A token for an agent answering `subject`.
         async fn token(&self, subject: &Subject) -> String {
-            let tokens = Tokens::new(self.state.join(tokens::DIR));
             token(
-                &tokens
+                &self
+                    .tokens
                     .issue(subject, "http://127.0.0.1:1/mcp")
                     .await
                     .unwrap(),
@@ -669,12 +690,7 @@ mod tests {
         }
 
         fn proposals(&self) -> Vec<Proposal> {
-            let Ok(entries) = std::fs::read_dir(self.state.join(proposals::DIR)) else {
-                return Vec::new();
-            };
-            (entries.flatten())
-                .map(|entry| serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap())
-                .collect()
+            proposals::load(self.db())
         }
     }
 
@@ -710,9 +726,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response["result"]["serverInfo"]["name"], AGENT_NAME);
 
-        Tokens::new(server.state.join(tokens::DIR))
-            .revoke("PRRC_1")
-            .await;
+        server.tokens.revoke("PRRC_1").await;
         assert_eq!(
             server.post(Some(&token), initialize()).await.0,
             StatusCode::UNAUTHORIZED
@@ -945,11 +959,7 @@ mod tests {
             clusters: vec![cluster(&[PR, OTHER]), cluster(&[ELSEWHERE])],
             ..Default::default()
         };
-        std::fs::write(
-            server.state.join(SNAPSHOT),
-            serde_json::to_vec(&snapshot).unwrap(),
-        )
-        .unwrap();
+        save_to(server.db(), &snapshot);
         let token = server.token(&in_thread()).await;
         let other_patch = |pr: &str| {
             json!({
@@ -992,7 +1002,15 @@ mod tests {
             "name": "Renames",
             "pullRequests": [{ "url": PR, "title": "Rename", "titleHtml": "<p>Rename</p>" }],
         }] });
-        std::fs::write(server.state.join(SNAPSHOT), snapshot.to_string()).unwrap();
+        server
+            .db()
+            .with(|db| {
+                db.execute(
+                    "INSERT INTO snapshot (id, response) VALUES (0, ?1)",
+                    [snapshot.to_string()],
+                )
+            })
+            .unwrap();
         let token = server.token(&in_thread()).await;
         let result = server
             .call(&token, "get_cluster", json!({ "pull_request_url": PR }))
@@ -1005,15 +1023,21 @@ mod tests {
     #[tokio::test]
     async fn search_investigations_reads_the_closed_investigations() {
         let server = Server::new("search");
-        let dir = server.state.join(investigations::PAST_DIR);
-        std::fs::create_dir_all(&dir).unwrap();
         let investigation = json!({
             "id": "18f",
             "title": "Investigate test on r#1",
             "pullRequestUrl": PR,
             "reply": "test_join times out when the room closes first.",
         });
-        std::fs::write(dir.join("18f.json"), investigation.to_string()).unwrap();
+        server
+            .db()
+            .with(|db| {
+                db.execute(
+                    "INSERT INTO investigations (id, investigation, closed) VALUES ('18f', ?1, 1)",
+                    [investigation.to_string()],
+                )
+            })
+            .unwrap();
         let token = server.token(&in_thread()).await;
         let result = server
             .call(&token, "search_investigations", json!({ "query": "test_join" }))

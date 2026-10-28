@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     future::Future,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -35,6 +35,7 @@ use proto::{
 mod agents;
 mod conversations;
 mod files;
+mod import;
 mod investigations;
 mod mcp;
 mod merges;
@@ -50,6 +51,15 @@ use gem_proto as proto;
 use gem_t3 as t3;
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
+
+// The server's own database, in its working directory, with its state.
+const DB_FILE: &str = "gem.sqlite";
+static DB: OnceLock<gem_db::Db> = OnceLock::new();
+
+// Opened when the server starts, before anything reads its state.
+fn db() -> &'static gem_db::Db {
+    DB.get().expect("the database is not open")
+}
 
 // Without an owner, gh lists the authenticated user's repositories.
 const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
@@ -158,7 +168,7 @@ pub(crate) fn cluster_merge_by(cluster: &PullRequestCluster) -> MergeBy {
 
 // A refresh costs one GitHub API request per 100 results, far under GitHub's hourly limits.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
-// Building the snapshot reads only memory and the state directory.
+// Building the snapshot reads only memory and the database.
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(2);
 
 // `serve` runs the server, `mcp` serves its clusters to agents over MCP, and no command runs the
@@ -327,10 +337,14 @@ async fn run_server() {
     // Before anything uses it, so a server without gh signed in panics now, not on a request.
     login();
 
+    let db = gem_db::Db::open(DB_FILE).unwrap_or_else(|error| panic!("{error}"));
+    import::import(&db).unwrap_or_else(|error| panic!("{error}"));
+    let _ = DB.set(db.clone());
+
     // Nothing watches the repositories for changes.
     let repos: Cache<Value> = cached(|| gh_json("repositories", REPOS), Changes::default());
-    let names = Names::load().await;
-    let conversations = Conversations::load().await;
+    let names = Names::load().unwrap_or_else(|error| panic!("{error}"));
+    let conversations = Conversations::load().unwrap_or_else(|error| panic!("{error}"));
     let changes = Changes::default();
     changes.poll();
     let prs: Cache<ListOpenPullRequestsResponse> = {
@@ -340,13 +354,11 @@ async fn run_server() {
             changes,
         )
     };
-    // The server's own database, next to its other state.
-    let db = gem_db::Db::open("gem.sqlite").unwrap_or_else(|error| panic!("{error}"));
     rebases::init(db.clone(), prs.clone()).unwrap_or_else(|error| panic!("{error}"));
     merges::init(db).unwrap_or_else(|error| panic!("{error}"));
 
     // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
-    // change. Proposals and investigations change on disk, so the snapshot is compared rather than
+    // change. Proposals and investigations change in the database, so the snapshot is compared rather than
     // announced. The agents gem starts propose through `gem-agent`.
     tokio::task::spawn_blocking(mcp::register);
     tokio::spawn(mcp::listen());

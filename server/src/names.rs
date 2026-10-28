@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use gem_db::rusqlite::params;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
@@ -10,9 +11,8 @@ use crate::{
     t3,
 };
 
-// Relative to the server's working directory, which must be inside the `gem` T3 Code project:
-// naming threads are started in the project containing ".".
-const NAMES_FILE: &str = "cluster-names.json";
+// Naming threads are started in the project containing the server's working directory, which
+// must be inside the `gem` T3 Code project.
 const CONCURRENT_THREADS: usize = 4;
 
 const PROMPT: &str = "Give this cluster of related pull requests a short name (2-5 words) \
@@ -34,16 +34,17 @@ struct Inner {
 }
 
 impl Names {
-    pub async fn load() -> Self {
-        let known = match tokio::fs::read(NAMES_FILE).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
-            Err(_) => HashMap::new(),
-        };
-        Self(Arc::new(Inner {
+    pub fn load() -> Result<Self, String> {
+        let known = crate::db().with(|db| {
+            db.prepare("SELECT key, name FROM cluster_names")?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })?;
+        Ok(Self(Arc::new(Inner {
             known: RwLock::new(known),
             requested: Mutex::default(),
             threads: Semaphore::new(CONCURRENT_THREADS),
-        }))
+        })))
     }
 
     pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
@@ -68,11 +69,16 @@ impl Names {
             tokio::spawn(async move {
                 let _permit = names.0.threads.acquire().await.unwrap();
                 if let Some(name) = ask_t3(&prs).await {
-                    let mut known = names.0.known.write().await;
-                    known.insert(key, name);
-                    let _ =
-                        tokio::fs::write(NAMES_FILE, serde_json::to_vec_pretty(&*known).unwrap())
-                            .await;
+                    let saved = crate::db().with(|db| {
+                        db.execute(
+                            "INSERT OR REPLACE INTO cluster_names (key, name) VALUES (?1, ?2)",
+                            params![key, name],
+                        )
+                    });
+                    if let Err(error) = saved {
+                        tracing::warn!(%error, "cannot save a cluster's name");
+                    }
+                    names.0.known.write().await.insert(key, name);
                 }
             });
         }

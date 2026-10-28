@@ -1,5 +1,7 @@
-// The server's own SQLite database. Each feature owns its tables and migrates them under its own
-// name, so features add tables without coordinating with each other or with this crate.
+// The server's own SQLite database. Its schema is the SQL files in migrations/, each named by the
+// UTC time it was written, `YYYYMMDDHHMMSS_<what it does>.sql`, so migrations written on different
+// branches never take the same name. A file never changes once it has shipped; a change to the
+// schema is a new file.
 
 use std::{
     path::Path,
@@ -9,50 +11,71 @@ use std::{
 pub use rusqlite;
 use rusqlite::{Connection, OptionalExtension, params};
 
+include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+
+// Each feature numbered its own migrations in `migrations (feature, version)` before they had
+// names: the name of each feature's numbered one.
+const NUMBERED: &[(&str, i64, &str)] = &[
+    ("rebases", 1, "20261025101253_create_rebases"),
+    ("merges", 1, "20261025161634_create_merges"),
+    ("rebases", 2, "20261027073443_add_rebase_titles"),
+    ("merges", 2, "20261027073443_add_merge_titles"),
+];
+
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Connection>>);
 
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Db, String> {
-        Self::new(Connection::open(path))
+        Self::new(Connection::open(path), MIGRATIONS)
     }
 
     pub fn open_in_memory() -> Result<Db, String> {
-        Self::new(Connection::open_in_memory())
+        Self::new(Connection::open_in_memory(), MIGRATIONS)
     }
 
-    fn new(db: rusqlite::Result<Connection>) -> Result<Db, String> {
-        let db = db.map_err(error)?;
-        db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS migrations (
-                feature TEXT PRIMARY KEY,
-                version INTEGER NOT NULL
-            )",
-        )
-        .map_err(error)?;
-        Ok(Db(Arc::new(Mutex::new(db))))
+    fn new(db: rusqlite::Result<Connection>, migrations: &[(&str, &str)]) -> Result<Db, String> {
+        let db = Db(Arc::new(Mutex::new(db.map_err(error)?)));
+        db.with(|db| {
+            let tx = db.unchecked_transaction()?;
+            tx.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)")?;
+            let numbered: bool = tx.query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE name = 'migrations'",
+                [],
+                |row| row.get(0),
+            )?;
+            if numbered {
+                for (feature, version, name) in NUMBERED {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO schema_migrations (name)
+                         SELECT ?3 FROM migrations WHERE feature = ?1 AND version >= ?2",
+                        params![feature, version, name],
+                    )?;
+                }
+                tx.execute_batch("DROP TABLE migrations")?;
+            }
+            tx.commit()
+        })?;
+        db.migrate(migrations)?;
+        Ok(db)
     }
 
-    // Runs the feature's migrations it has not run yet, each in its own transaction. A feature
-    // appends to its list; it never edits an entry that has shipped.
-    pub fn migrate(&self, feature: &str, migrations: &[&str]) -> Result<(), String> {
+    // Runs each migration not run yet, oldest first, each in its own transaction.
+    fn migrate(&self, migrations: &[(&str, &str)]) -> Result<(), String> {
         self.with(|db| {
-            let version: usize = db
-                .query_row(
-                    "SELECT version FROM migrations WHERE feature = ?1",
-                    [feature],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            for (index, migration) in migrations.iter().enumerate().skip(version) {
+            for (name, sql) in migrations {
+                let ran = db
+                    .query_row("SELECT 1 FROM schema_migrations WHERE name = ?1", [name], |_| {
+                        Ok(())
+                    })
+                    .optional()?
+                    .is_some();
+                if ran {
+                    continue;
+                }
                 let tx = db.unchecked_transaction()?;
-                tx.execute_batch(migration)?;
-                tx.execute(
-                    "INSERT INTO migrations (feature, version) VALUES (?1, ?2)
-                     ON CONFLICT (feature) DO UPDATE SET version = excluded.version",
-                    params![feature, index + 1],
-                )?;
+                tx.execute_batch(sql)?;
+                tx.execute("INSERT INTO schema_migrations (name) VALUES (?1)", [name])?;
                 tx.commit()?;
             }
             Ok(())
@@ -76,9 +99,12 @@ fn error(error: rusqlite::Error) -> String {
 mod tests {
     use super::*;
 
-    const MIGRATIONS: &[&str] = &[
-        "CREATE TABLE things (name TEXT PRIMARY KEY)",
-        "ALTER TABLE things ADD COLUMN size INTEGER NOT NULL DEFAULT 0",
+    const MIGRATIONS: &[(&str, &str)] = &[
+        ("20260101000000_create_things", "CREATE TABLE things (name TEXT PRIMARY KEY)"),
+        (
+            "20260102000000_add_sizes",
+            "ALTER TABLE things ADD COLUMN size INTEGER NOT NULL DEFAULT 0",
+        ),
     ];
 
     fn count(db: &Db, sql: &str) -> i64 {
@@ -87,37 +113,55 @@ mod tests {
 
     #[test]
     fn runs_each_migration_once() {
-        let db = Db::open_in_memory().unwrap();
-        db.migrate("things", &MIGRATIONS[..1]).unwrap();
+        let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
         db.with(|db| db.execute("INSERT INTO things (name) VALUES ('a')", []))
             .unwrap();
-        // A later build appends a migration; the first is not run again.
-        db.migrate("things", MIGRATIONS).unwrap();
-        db.migrate("things", MIGRATIONS).unwrap();
+        // A later build adds a migration; the first is not run again.
+        db.migrate(MIGRATIONS).unwrap();
+        db.migrate(MIGRATIONS).unwrap();
         assert_eq!(count(&db, "SELECT count(*) FROM things WHERE size = 0"), 1);
-        assert_eq!(
-            count(&db, "SELECT version FROM migrations WHERE feature = 'things'"),
-            2
-        );
+        assert_eq!(count(&db, "SELECT count(*) FROM schema_migrations"), 2);
     }
 
     #[test]
-    fn features_migrate_independently() {
-        let db = Db::open_in_memory().unwrap();
-        db.migrate("things", MIGRATIONS).unwrap();
-        db.migrate("others", &["CREATE TABLE others (id INTEGER)"])
+    fn runs_a_migration_older_than_the_last_one_run() {
+        let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
+        // Merged after a newer one from another branch had already run.
+        let older = ("20251231000000_create_others", "CREATE TABLE others (id INTEGER)");
+        db.migrate(&[older, MIGRATIONS[0]]).unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM others"), 0);
+    }
+
+    #[test]
+    fn a_failed_migration_is_run_again_next_time() {
+        let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
+        assert!(db.migrate(&[MIGRATIONS[0], ("20260102000000_bad", "NOT SQL")]).is_err());
+        assert_eq!(count(&db, "SELECT count(*) FROM schema_migrations"), 1);
+    }
+
+    #[test]
+    fn names_the_migrations_features_numbered() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE migrations (feature TEXT PRIMARY KEY, version INTEGER NOT NULL);
+                 INSERT INTO migrations VALUES ('rebases', 2), ('merges', 1);
+                 CREATE TABLE rebases (url TEXT PRIMARY KEY, head TEXT NOT NULL, thread_id TEXT,
+                     question INTEGER NOT NULL DEFAULT 0, pushed INTEGER NOT NULL DEFAULT 0,
+                     title TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL DEFAULT 0);
+                 CREATE TABLE merges (url TEXT PRIMARY KEY, thread_id TEXT,
+                     question INTEGER NOT NULL DEFAULT 0);",
+            )
             .unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM migrations"), 2);
-    }
-
-    #[test]
-    fn a_failed_migration_leaves_its_version() {
-        let db = Db::open_in_memory().unwrap();
-        db.migrate("things", &MIGRATIONS[..1]).unwrap();
-        assert!(db.migrate("things", &[MIGRATIONS[0], "NOT SQL"]).is_err());
+        let db = Db::new(Ok(connection), super::MIGRATIONS).unwrap();
+        // Only merges' second migration had not run.
+        assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 0);
+        db.with(|db| db.execute("INSERT INTO merges (url) VALUES ('a')", []))
+            .unwrap();
+        assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 1);
         assert_eq!(
-            count(&db, "SELECT version FROM migrations WHERE feature = 'things'"),
-            1
+            count(&db, "SELECT count(*) FROM sqlite_master WHERE name = 'migrations'"),
+            0
         );
     }
 
@@ -127,13 +171,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         {
             let db = Db::open(&path).unwrap();
-            db.migrate("things", MIGRATIONS).unwrap();
-            db.with(|db| db.execute("INSERT INTO things (name) VALUES ('a')", []))
+            db.with(|db| db.execute("INSERT INTO proposals (id, proposal) VALUES ('a', '{}')", []))
                 .unwrap();
         }
         let db = Db::open(&path).unwrap();
-        db.migrate("things", MIGRATIONS).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM things"), 1);
+        assert_eq!(count(&db, "SELECT count(*) FROM proposals"), 1);
         drop(db);
         let _ = std::fs::remove_file(&path);
     }

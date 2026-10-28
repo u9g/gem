@@ -22,23 +22,6 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // dropped and the pull request can be rebased again.
 const MAX_FAILED_READS: u32 = 30;
 
-const MIGRATIONS: &[&str] = &["
-    CREATE TABLE rebases (
-        url TEXT PRIMARY KEY,
-        -- The head commit when the rebase started.
-        head TEXT NOT NULL,
-        -- NULL while the thread is starting.
-        thread_id TEXT,
-        question INTEGER NOT NULL DEFAULT 0,
-        pushed INTEGER NOT NULL DEFAULT 0
-    );
-", "
-    -- The thread's title, and when the agent started in seconds since the epoch, so the rebase
-    -- shows like any other agent.
-    ALTER TABLE rebases ADD COLUMN title TEXT NOT NULL DEFAULT '';
-    ALTER TABLE rebases ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;
-"];
-
 // The agent can ask the user only in its reply: gem shows the reply and sends the answer back as
 // the user's next message.
 const ASK: &str = "If you need the user to decide something, ask it in your reply and end your \
@@ -112,7 +95,6 @@ impl<H> Clone for Rebases<H> {
 
 impl<H: Host> Rebases<H> {
     pub fn new(db: Db, host: H) -> Result<Self, String> {
-        db.migrate("rebases", MIGRATIONS)?;
         Ok(Rebases {
             db,
             host: Arc::new(host),

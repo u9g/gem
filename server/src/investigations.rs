@@ -1,29 +1,25 @@
-use std::{
-    path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use gem_db::{
+    Db,
+    rusqlite::{OptionalExtension, params},
+};
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 use crate::proto::{Agent, AgentState, CheckFailure, PullRequestCluster};
 use crate::tokens::{Subject, Tokens};
 use crate::{login, mcp, proposals, t3};
 use gem_github::short;
 
-// One `<id>.json` file per open investigation, relative to the server's working directory.
-const DIR: &str = "investigations";
-// Where a closed investigation's file moves, so later agents can search what it found.
-pub const PAST_DIR: &str = "past-investigations";
 // The most investigations a search returns, so its answer fits in an agent's context.
 const SEARCH_LIMIT: usize = 10;
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
-// An agent gem follows in a file of its own: an investigation, a follow-up, or the answer to the
-// user's message about a cluster. Saved as JSON with the names of the `Investigation` message it
-// was before every agent was one `Agent`, so files saved then still load.
+// An agent gem follows: an investigation, a follow-up, or the answer to the user's message about a
+// cluster. Saved as JSON with the names of the `Investigation` message it was before every agent
+// was one `Agent`, so ones saved then still load.
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct Investigation {
@@ -46,10 +42,6 @@ struct Investigation {
     reply: String,
     reply_html: String,
 }
-
-// Held across each read-modify-write of an investigation's file, so a refresh never brings back
-// a closed investigation or undoes a message's `working`.
-static FILES: Mutex<()> = Mutex::const_new(());
 
 // Approves the rerun first, so the pull request is not held up by the investigation.
 pub async fn start(proposal_id: &str) -> Result<(), String> {
@@ -194,15 +186,12 @@ pub async fn archive(title: &str, pr: &str, failure: &CheckFailure, reply: &str)
         reply: reply.to_string(),
         ..Default::default()
     };
-    let _ = tokio::fs::create_dir_all(PAST_DIR).await;
-    let json = serde_json::to_vec_pretty(&investigation).unwrap();
-    let path = Path::new(PAST_DIR).join(format!("{}.json", investigation.id));
-    let _ = tokio::fs::write(path, json).await;
+    insert(&investigation, true);
 }
 
 // Whether `id` is one of these agents.
 pub async fn has(id: &str) -> bool {
-    tokio::fs::try_exists(path(id)).await.unwrap_or(false)
+    load().await.iter().any(|investigation| investigation.id == id)
 }
 
 pub async fn message(id: &str, message: &str) -> Result<(), String> {
@@ -212,24 +201,21 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
         .find(|i| i.id == id)
         .ok_or(format!("no agent {id}"))?;
     t3::send(&investigation.thread_id, message).await?;
-    let _files = FILES.lock().await;
-    if let Some(mut investigation) = load().await.into_iter().find(|i| i.id == id) {
+    update(id, |investigation| {
         investigation.working = true;
         investigation.messaged = true;
-        save(&investigation).await;
-    }
+        false
+    });
     Ok(())
 }
 
 pub async fn close(id: &str) {
-    let _files = FILES.lock().await;
-    close_held(id).await;
+    update(id, |_| true);
+    closed(id).await;
 }
 
-// `close`, with `FILES` already held.
-async fn close_held(id: &str) {
-    let _ = tokio::fs::create_dir_all(PAST_DIR).await;
-    let _ = tokio::fs::rename(path(id), Path::new(PAST_DIR).join(format!("{id}.json"))).await;
+// What goes with the investigation `id` once it is closed.
+async fn closed(id: &str) {
     proposals::remove_of_investigation(id).await;
     Tokens::here().revoke(id).await;
 }
@@ -272,16 +258,17 @@ pub fn watch() {
                         .await
                         .contains_key(&investigation.id)
                 {
-                    // Rechecked under the lock: the user may have messaged it since it was loaded.
-                    // The archive keeps what it found, which may have come since the last refresh.
-                    let _files = FILES.lock().await;
-                    if let Some(mut current) =
-                        load().await.into_iter().find(|i| i.id == investigation.id)
-                        && !current.messaged
-                    {
+                    // Rechecked as it closes: the user may have messaged it since it was loaded. The
+                    // archive keeps what it found, which may have come since the last refresh.
+                    let finished = update(&investigation.id, |current| {
+                        if current.messaged {
+                            return false;
+                        }
                         current.reply = reply;
-                        save(&current).await;
-                        close_held(&investigation.id).await;
+                        true
+                    });
+                    if finished {
+                        closed(&investigation.id).await;
                         tracing::info!(investigation = %investigation.id, "finished investigation closed");
                     }
                     continue;
@@ -296,15 +283,12 @@ pub fn watch() {
                         .await
                         .unwrap_or_default()
                 };
-                let _files = FILES.lock().await;
-                if let Some(mut current) =
-                    load().await.into_iter().find(|i| i.id == investigation.id)
-                {
+                update(&investigation.id, |current| {
                     current.working = working;
                     current.reply = reply;
                     current.reply_html = reply_html;
-                    save(&current).await;
-                }
+                    false
+                });
             }
             tokio::time::sleep(REFRESH_INTERVAL).await;
         }
@@ -349,8 +333,7 @@ async fn track(
     failed_checks: String,
     thread_id: String,
 ) {
-    let _files = FILES.lock().await;
-    save(&Investigation {
+    let investigation = Investigation {
         id: id(nanos),
         title,
         pull_request_url: prs[0].clone(),
@@ -360,8 +343,8 @@ async fn track(
         started_at: Some(timestamp(nanos)),
         working: true,
         ..Default::default()
-    })
-    .await;
+    };
+    insert(&investigation, false);
 }
 
 // Each of `failure`'s checks, with its run and log excerpt, as a markdown list.
@@ -447,11 +430,11 @@ later.",
     )
 }
 
-// The newest `SEARCH_LIMIT` closed investigations in `dir` whose title, failed checks or reply has
-// every word of `query`, ignoring case, as JSON, with how many older ones match too.
-pub async fn search(dir: &Path, query: &str) -> String {
+// The newest `SEARCH_LIMIT` closed investigations whose title, failed checks or reply has every
+// word of `query`, ignoring case, as JSON, with how many older ones match too.
+pub async fn search(db: &Db, query: &str) -> String {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let mut found: Vec<Investigation> = (load_from(dir).await.into_iter())
+    let mut found: Vec<Investigation> = (load_from(db, true).into_iter())
         .filter(|investigation| {
             let text = format!(
                 "{}\n{}\n{}",
@@ -481,33 +464,69 @@ pub async fn search(dir: &Path, query: &str) -> String {
     serde_json::to_string_pretty(&found).unwrap()
 }
 
-fn path(id: &str) -> PathBuf {
-    Path::new(DIR).join(format!("{id}.json"))
-}
-
+// The open investigations.
 async fn load() -> Vec<Investigation> {
-    load_from(Path::new(DIR)).await
+    load_from(crate::db(), false)
 }
 
-async fn load_from(dir: &Path) -> Vec<Investigation> {
-    let mut investigations = Vec::new();
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        return investigations;
-    };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if let Ok(json) = tokio::fs::read(entry.path()).await
-            && let Ok(investigation) = serde_json::from_slice(&json)
-        {
-            investigations.push(investigation);
+fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
+    let investigations = db.with(|db| {
+        db.prepare("SELECT investigation FROM investigations WHERE closed = ?1")?
+            .query_map([closed], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()
+    });
+    match investigations {
+        Ok(investigations) => (investigations.iter())
+            .filter_map(|json| serde_json::from_str(json).ok())
+            .collect(),
+        Err(error) => {
+            tracing::warn!(%error, "cannot read investigations");
+            Vec::new()
         }
     }
-    investigations
 }
 
-async fn save(investigation: &Investigation) {
-    let _ = tokio::fs::create_dir_all(DIR).await;
-    let json = serde_json::to_vec_pretty(investigation).unwrap();
-    let _ = tokio::fs::write(path(&investigation.id), json).await;
+fn insert(investigation: &Investigation, closed: bool) {
+    let saved = crate::db().with(|db| {
+        db.execute(
+            "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
+            params![investigation.id, serde_json::to_string(investigation).unwrap(), closed],
+        )
+    });
+    if let Err(error) = saved {
+        tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
+    }
+}
+
+// Changes the investigation `id` while it is open, and closes it when `change` returns true, at
+// once, so a refresh never brings back a closed investigation or undoes a message's `working`.
+// Returns whether it closed it.
+fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
+    let updated = crate::db().with(|db| {
+        let tx = db.unchecked_transaction()?;
+        let json: Option<String> = tx
+            .query_row(
+                "SELECT investigation FROM investigations WHERE id = ?1 AND closed = 0",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
+        else {
+            return Ok(false);
+        };
+        let close = change(&mut investigation);
+        tx.execute(
+            "UPDATE investigations SET investigation = ?2, closed = ?3 WHERE id = ?1",
+            params![id, serde_json::to_string(&investigation).unwrap(), close],
+        )?;
+        tx.commit()?;
+        Ok(close)
+    });
+    updated.unwrap_or_else(|error| {
+        tracing::warn!(investigation = id, %error, "cannot save investigation");
+        false
+    })
 }
 
 #[cfg(test)]
@@ -536,8 +555,8 @@ mod tests {
 
     #[tokio::test]
     async fn search_finds_closed_investigations_with_every_word_newest_first() {
-        let dir = crate::tokens::tests::temp_dir("search");
-        let write = |id: &str, title: &str, failed_checks: &str, reply: &str| {
+        let db = crate::tokens::tests::db();
+        let write = |id: &str, title: &str, failed_checks: &str, reply: &str, closed: bool| {
             let investigation = Investigation {
                 id: id.into(),
                 title: title.into(),
@@ -546,16 +565,23 @@ mod tests {
                 reply: reply.into(),
                 ..Default::default()
             };
-            let json = serde_json::to_vec(&investigation).unwrap();
-            std::fs::write(dir.join(format!("{id}.json")), json).unwrap();
+            let json = serde_json::to_string(&investigation).unwrap();
+            db.with(|db| {
+                db.execute(
+                    "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
+                    params![id, json, closed],
+                )
+            })
+            .unwrap();
         };
-        write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.");
-        write("2", "Investigate lint on r#2", "", "A new clippy lint.");
-        write("3", "Investigate test on r#3", "TEST_JOIN: timed out", "The room closes first.");
+        write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.", true);
+        write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);
+        write("3", "Investigate test on r#3", "TEST_JOIN: timed out", "The room closes first.", true);
+        write("4", "Investigate test on r#4", "", "test_join still times out.", false);
         let query = "test_join time";
 
         let found: serde_json::Value =
-            serde_json::from_str(&search(&dir, query).await).unwrap();
+            serde_json::from_str(&search(&db, query).await).unwrap();
         let urls: Vec<&str> = (found["investigations"].as_array().unwrap().iter())
             .map(|f| f["pullRequestUrls"][0].as_str().unwrap())
             .collect();
