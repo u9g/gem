@@ -512,11 +512,13 @@ fn run_server() -> ! {
                     &request.diff,
                 );
                 match &closed {
-                    Ok(closed) => info!(
-                        "proposal approved",
-                        proposal = request.id,
-                        closed_pull_request = format!("{closed:?}")
-                    ),
+                    Ok(closed) => {
+                        info!(
+                            "proposal approved",
+                            proposal = request.id,
+                            closed_pull_request = format!("{closed:?}")
+                        );
+                    }
                     Err(error) => {
                         warn!(
                             "proposal approve failed",

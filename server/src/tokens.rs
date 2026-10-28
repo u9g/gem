@@ -170,7 +170,9 @@ impl Tokens {
     pub fn retain(&self, keep: impl Fn(&Subject) -> bool) {
         match self.remove(|subject| !keep(subject), None) {
             Ok(revoked) => self.remove_configs(revoked),
-            Err(error) => warn!("cannot revoke tokens", error = error),
+            Err(error) => {
+                warn!("cannot revoke tokens", error = error);
+            }
         }
     }
 

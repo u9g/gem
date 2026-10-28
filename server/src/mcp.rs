@@ -415,8 +415,12 @@ fn propose<G: GitHub>(
     let cluster = cluster_of(&endpoint.db, &request.pr);
     let proposed = proposals::propose(&endpoint.github, &endpoint.db, subject, &cluster, request);
     match &proposed {
-        Ok(id) => info!("proposal recorded", proposal = id, subject = subject.id()),
-        Err(error) => info!("proposal rejected", subject = subject.id(), error = error),
+        Ok(id) => {
+            info!("proposal recorded", proposal = id, subject = subject.id());
+        }
+        Err(error) => {
+            info!("proposal rejected", subject = subject.id(), error = error);
+        }
     }
     proposed.map(|id| format!("Recorded proposal {id}."))
 }
