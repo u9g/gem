@@ -12,7 +12,8 @@ use crate::proto::{CheckFailure, Comment, NewPullRequest, Patch, Proposal, PullR
 use crate::tokens::Subject;
 use crate::{conversations, investigations};
 use gem_github::{
-    apply_patch, check_new_pull_request, command, graphql, open_pull_request, render, repository,
+    apply_patch, check_new_pull_request, command, graphql, open_pull_request, push_new_branch,
+    render, repository,
 };
 
 // Agents make proposals with the `propose` tool of the `gem-agent` MCP server, which checks them
@@ -262,23 +263,35 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
         proposal.other_patches.remove(0);
         save(crate::db(), proposal);
     }
+    // The pushed branch's patch is dropped, so a retry opens the pull request without pushing
+    // again.
+    if let Some(new) = &proposal.open_pull_request
+        && let Some(patch) = &new.patch
+    {
+        step(
+            "push_new_branch",
+            push_new_branch(
+                &new.repository,
+                &new.base,
+                &new.branch,
+                &patch.diff,
+                &patch.commit_message,
+            ),
+        )
+        .instrument(tracing::info_span!("new", repository = %new.repository, branch = %new.branch))
+        .await?;
+        if let Some(new) = &mut proposal.open_pull_request {
+            new.patch = None;
+        }
+        save(crate::db(), proposal);
+    }
     if let Some(new) = &proposal.open_pull_request {
-        let diff = new
-            .patch
-            .as_ref()
-            .map(|p| p.diff.as_str())
-            .unwrap_or_default();
-        let message = (new.patch.as_ref())
-            .map(|p| p.commit_message.as_str())
-            .unwrap_or_default();
         let url = step(
             "open_pull_request",
             open_pull_request(
                 &new.repository,
                 &new.base,
                 &new.branch,
-                diff,
-                message,
                 &new.title,
                 &new.body,
             ),
@@ -744,11 +757,11 @@ async fn check_open_pull_request(
         .trim_start_matches("https://github.com/")
         .trim_end_matches('/')
         .trim_end_matches(".git");
-    if repository
-        .split('/')
-        .filter(|part| !part.is_empty())
-        .count()
-        != 2
+    let parts: Vec<&str> = repository.split('/').collect();
+    if parts.len() != 2
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || part.starts_with('.'))
     {
         return Err(format!(
             "`open_pull_request.repository` is `owner/name`, not `{}`",
@@ -771,7 +784,12 @@ async fn check_open_pull_request(
     if branch == base {
         return Err("`open_pull_request.branch` must be a new branch, not `base`".into());
     }
-    if !new.body.contains(pr) {
+    // A link to the pull request, not one to a longer number that starts the same.
+    let links = new
+        .body
+        .match_indices(pr)
+        .any(|(at, _)| !(new.body[at + pr.len()..].starts_with(|c: char| c.is_ascii_digit())));
+    if !links {
         return Err(format!(
             "`open_pull_request.body` must link {pr}, so gem groups the two pull requests"
         ));
@@ -785,7 +803,8 @@ async fn check_open_pull_request(
         base: base.to_string(),
         branch: branch.to_string(),
         title: new.title.trim().to_string(),
-        body_html: github.render(pr, &new.body).await?,
+        // Rendered where it is posted, so `#123` links an issue of that repository.
+        body_html: (github.render(&format!("https://github.com/{repository}"), &new.body)).await?,
         body: new.body,
         patch: Some(Patch {
             diff: new.patch,

@@ -7,7 +7,7 @@ use std::{process::Stdio, sync::OnceLock};
 use serde::de::DeserializeOwned;
 use tokio::{io::AsyncWriteExt, process::Command};
 
-pub use patch::{apply_patch, check_new_pull_request, open_pull_request};
+pub use patch::{apply_patch, check_new_pull_request, open_pull_request, push_new_branch};
 
 // Requires an authenticated `gh` on PATH. gh's default limit is 30, below the repo and PR counts.
 // A caller that stops waiting, e.g. on a timeout, stops gh too.

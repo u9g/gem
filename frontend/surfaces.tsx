@@ -522,7 +522,7 @@ export function FollowUpCard({
 }
 
 // The pull request approving opens: where it goes, its title and description as GitHub renders
-// them, and the change it commits.
+// them, and the change it commits, until an approve that failed after pushing it.
 export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullRequest }) {
   const diff = pullRequest.patch?.diff ?? '';
   const files = diffFiles(diff);
@@ -540,14 +540,20 @@ export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullReques
       <Clamp max={130}>
         <Html html={pullRequest.bodyHtml} />
       </Clamp>
-      <Text style={styles.meta}>
-        {pullRequest.patch?.commitMessage}
-        {'  '}
-        <DiffStat added={files.reduce((n, f) => n + f.added, 0)} removed={files.reduce((n, f) => n + f.removed, 0)} />
-      </Text>
-      <Clamp max={130}>
-        <DiffSurface diff={diff} />
-      </Clamp>
+      {pullRequest.patch ? (
+        <>
+          <Text style={styles.meta}>
+            {pullRequest.patch.commitMessage}
+            {'  '}
+            <DiffStat added={files.reduce((n, f) => n + f.added, 0)} removed={files.reduce((n, f) => n + f.removed, 0)} />
+          </Text>
+          <Clamp max={130}>
+            <DiffSurface diff={diff} />
+          </Clamp>
+        </>
+      ) : (
+        <Text style={styles.meta}>Pushed {pullRequest.branch}; approving again opens the pull request.</Text>
+      )}
     </View>
   );
 }

@@ -504,9 +504,16 @@ fn propose_tool(subject: &Subject) -> Value {
     or to the user's fork of it when they cannot push there, and opens the pull request. Never \
     commit, push or open it yourself.",
             "properties": {
-                "repository": { "type": "string", "description": "`owner/name` to open it on." },
+                "repository": {
+                    "type": "string",
+                    "description": "`owner/name` it merges into, such as the repository `pr` merges \
+    into, not a fork.",
+                },
                 "base": { "type": "string", "description": "The branch it merges into." },
-                "branch": { "type": "string", "description": "A new branch to commit it on." },
+                "branch": {
+                    "type": "string",
+                    "description": "A new branch to commit it on. Approving fails when it exists.",
+                },
                 "title": { "type": "string" },
                 "body": {
                     "type": "string",
@@ -918,11 +925,11 @@ mod tests {
             })
         };
 
-        let result = server
-            .call(&token, "propose", open("Fixes the test."))
-            .await;
-        assert_eq!(result["isError"], true, "{result}");
-        assert!(server.proposals().is_empty());
+        for body in ["Fixes the test.".to_string(), format!("Found on {PR}0.")] {
+            let result = server.call(&token, "propose", open(&body)).await;
+            assert_eq!(result["isError"], true, "{result}");
+            assert!(server.proposals().is_empty());
+        }
 
         let body = format!("Fixes the test that fails on {PR}.");
         let result = server.call(&token, "propose", open(&body)).await;

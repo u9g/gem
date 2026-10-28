@@ -3,7 +3,7 @@
 use std::{
     env,
     future::Future,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Deserialize;
@@ -79,18 +79,124 @@ pub async fn check_new_pull_request(
     on_branch(repository, base, diff, |_| async { Ok(()) }).await
 }
 
-// Commits the diff on a new branch off `base` in the repository `owner/name` and opens a pull
-// request from it. The branch goes to the repository when the user can push to it, and to their
-// fork of it otherwise, which GitHub makes on first use. Returns the pull request's URL.
-pub async fn open_pull_request(
+// Commits the diff on a new branch off `base` in the repository `owner/name`, and pushes it to
+// the repository when the user can push to it, or to their fork of it otherwise. Fails rather than
+// move a branch that already exists there.
+pub async fn push_new_branch(
     repository: &str,
     base: &str,
     branch: &str,
     diff: &str,
     message: &str,
+) -> Result<(), String> {
+    let head_repository = head_repository(repository).await?;
+    let lease = format!("--force-with-lease=refs/heads/{branch}:");
+    let refspec = format!("HEAD:refs/heads/{branch}");
+    on_branch(repository, base, diff, |worktree| async move {
+        commit(&worktree, message).await?;
+        if head_repository == repository {
+            return command(
+                "git",
+                &["-C", &worktree, "push", &lease, "origin", &refspec],
+                None,
+            )
+            .await
+            .map(drop);
+        }
+        // gh's token pushes to the fork, whichever protocol origin was cloned with. A fork GitHub
+        // has only just made can take a while to accept pushes.
+        let remote = format!("https://github.com/{head_repository}.git");
+        let mut attempt = 0;
+        loop {
+            let pushed = command(
+                "git",
+                &[
+                    "-C",
+                    &worktree,
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.helper=!gh auth git-credential",
+                    "push",
+                    &lease,
+                    &remote,
+                    &refspec,
+                ],
+                None,
+            )
+            .await;
+            match pushed {
+                Ok(_) => return Ok(()),
+                Err(e) if attempt == 5 || e.contains("[rejected]") => return Err(e),
+                Err(_) => attempt += 1,
+            }
+            tokio::time::sleep(Duration::from_secs(5 * attempt)).await;
+        }
+    })
+    .await
+    .map(drop)
+}
+
+// Opens a pull request into `base` of the repository `owner/name` from `branch`, which
+// `push_new_branch` pushed, or finds the one an earlier try opened. Returns its URL.
+pub async fn open_pull_request(
+    repository: &str,
+    base: &str,
+    branch: &str,
     title: &str,
     body: &str,
 ) -> Result<String, String> {
+    let head_repository = head_repository(repository).await?;
+    let owner = head_repository.split('/').next().unwrap_or_default();
+    let head = format!("head={owner}:{branch}");
+    let base = format!("base={base}");
+    let pulls = format!("repos/{repository}/pulls");
+    let opened = command(
+        "gh",
+        &[
+            "api",
+            "-X",
+            "GET",
+            &pulls,
+            "-f",
+            &head,
+            "-f",
+            &base,
+            "--jq",
+            ".[0].html_url // empty",
+        ],
+        None,
+    )
+    .await?;
+    let opened = String::from_utf8_lossy(&opened).trim().to_string();
+    if !opened.is_empty() {
+        return Ok(opened);
+    }
+    let url = command(
+        "gh",
+        &[
+            "api",
+            &pulls,
+            "-f",
+            &format!("title={title}"),
+            "-f",
+            &head,
+            "-f",
+            &base,
+            "-F",
+            "body=@-",
+            "--jq",
+            ".html_url",
+        ],
+        Some(body),
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&url).trim().to_string())
+}
+
+// The repository a new branch for the repository `owner/name` goes to: that one when the user can
+// push to it, and their fork of it otherwise, which GitHub makes on first use and returns after.
+async fn head_repository(repository: &str) -> Result<String, String> {
     let can_push = command(
         "gh",
         &[
@@ -102,54 +208,23 @@ pub async fn open_pull_request(
         None,
     )
     .await?;
-    let head_repository = if String::from_utf8_lossy(&can_push).trim() == "true" {
-        repository.to_string()
-    } else {
-        let fork = command(
-            "gh",
-            &[
-                "api",
-                "-X",
-                "POST",
-                &format!("repos/{repository}/forks"),
-                "--jq",
-                ".full_name",
-            ],
-            None,
-        )
-        .await?;
-        String::from_utf8_lossy(&fork).trim().to_string()
-    };
-    let remote = format!("https://github.com/{head_repository}.git");
-    let refspec = format!("HEAD:refs/heads/{branch}");
-    on_branch(repository, base, diff, |worktree| async move {
-        commit(&worktree, message).await?;
-        command("git", &["-C", &worktree, "push", &remote, &refspec], None)
-            .await
-            .map(drop)
-    })
-    .await?;
-    let owner = head_repository.split('/').next().unwrap_or_default();
-    let url = command(
+    if String::from_utf8_lossy(&can_push).trim() == "true" {
+        return Ok(repository.to_string());
+    }
+    let fork = command(
         "gh",
         &[
             "api",
-            &format!("repos/{repository}/pulls"),
-            "-f",
-            &format!("title={title}"),
-            "-f",
-            &format!("head={owner}:{branch}"),
-            "-f",
-            &format!("base={base}"),
-            "-F",
-            "body=@-",
+            "-X",
+            "POST",
+            &format!("repos/{repository}/forks"),
             "--jq",
-            ".html_url",
+            ".full_name",
         ],
-        Some(body),
+        None,
     )
     .await?;
-    Ok(String::from_utf8_lossy(&url).trim().to_string())
+    Ok(String::from_utf8_lossy(&fork).trim().to_string())
 }
 
 async fn commit(worktree: &str, message: &str) -> Result<(), String> {
