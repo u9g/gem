@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use gem_db::{Db, rusqlite::params};
+use gem_db::rusqlite::params;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
@@ -13,13 +13,6 @@ use crate::{
 
 // Naming threads are started in the project containing the server's working directory, which
 // must be inside the `gem` T3 Code project.
-const MIGRATIONS: &[&str] = &["
-    CREATE TABLE cluster_names (
-        -- See `key`.
-        key TEXT PRIMARY KEY,
-        name TEXT NOT NULL
-    );
-"];
 const CONCURRENT_THREADS: usize = 4;
 
 const PROMPT: &str = "Give this cluster of related pull requests a short name (2-5 words) \
@@ -38,10 +31,6 @@ struct Inner {
     // Never cleared, so a failed thread is not retried every refresh; a restart retries it.
     requested: Mutex<HashSet<String>>,
     threads: Semaphore,
-}
-
-pub fn migrate(db: &Db) -> Result<(), String> {
-    db.migrate("cluster_names", MIGRATIONS)
 }
 
 impl Names {

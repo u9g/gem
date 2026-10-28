@@ -61,16 +61,6 @@ fn db() -> &'static gem_db::Db {
     DB.get().expect("the database is not open")
 }
 
-// Makes the tables of the state the server keeps.
-fn migrate(db: &gem_db::Db) -> Result<(), String> {
-    names::migrate(db)?;
-    conversations::migrate(db)?;
-    proposals::migrate(db)?;
-    investigations::migrate(db)?;
-    tokens::migrate(db)?;
-    mcp::migrate(db)
-}
-
 // Without an owner, gh lists the authenticated user's repositories.
 const REPOS: &[&str] = &["repo", "list", "--limit", "1000", "--json", "name,url"];
 
@@ -348,7 +338,7 @@ async fn run_server() {
     login();
 
     let db = gem_db::Db::open(DB_FILE).unwrap_or_else(|error| panic!("{error}"));
-    (migrate(&db).and_then(|()| import::import(&db))).unwrap_or_else(|error| panic!("{error}"));
+    import::import(&db).unwrap_or_else(|error| panic!("{error}"));
     let _ = DB.set(db.clone());
 
     // Nothing watches the repositories for changes.

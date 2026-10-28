@@ -22,20 +22,6 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // dropped and the cluster can be merged again.
 const MAX_FAILED_READS: u32 = 30;
 
-const MIGRATIONS: &[&str] = &["
-    CREATE TABLE merges (
-        url TEXT PRIMARY KEY,
-        -- Shared by the cluster's pull requests. NULL while the thread is starting.
-        thread_id TEXT,
-        question INTEGER NOT NULL DEFAULT 0
-    );
-", "
-    -- The thread's title, and when the agent started in seconds since the epoch, so the merge
-    -- shows like any other agent.
-    ALTER TABLE merges ADD COLUMN title TEXT NOT NULL DEFAULT '';
-    ALTER TABLE merges ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;
-"];
-
 // The agent can ask the user only in its reply: gem shows the reply and sends the answer back as
 // the user's next message.
 const ASK: &str = "If you need the user to decide something, ask it in your reply and end your \
@@ -96,7 +82,6 @@ impl<H> Clone for Merges<H> {
 
 impl<H: Host> Merges<H> {
     pub fn new(db: Db, host: H) -> Result<Self, String> {
-        db.migrate("merges", MIGRATIONS)?;
         Ok(Merges {
             db,
             host: Arc::new(host),

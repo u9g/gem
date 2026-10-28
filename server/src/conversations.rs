@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, rusqlite::params};
+use gem_db::rusqlite::params;
 use pbjson_types::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -18,15 +18,6 @@ use crate::{
     tokens::{Subject, Tokens},
 };
 
-const MIGRATIONS: &[&str] = &["
-    -- The conversations an agent was started for: the persisted part of `handled`.
-    CREATE TABLE started_conversations (id TEXT PRIMARY KEY);
-    -- Why each agent answering failed checks proposed nothing, by the ID of the checks it answered.
-    CREATE TABLE no_proposal_reasons (
-        id TEXT PRIMARY KEY,
-        reason TEXT NOT NULL
-    );
-"];
 const CONCURRENT_AGENTS: usize = 4;
 
 // Fetched only for PRs whose updatedAt or failing checks moved, which any new comment, review
@@ -221,10 +212,6 @@ struct Answering {
     thread_id: Option<String>,
     // Seconds since the epoch.
     queued_at: i64,
-}
-
-pub fn migrate(db: &Db) -> Result<(), String> {
-    db.migrate("conversations", MIGRATIONS)
 }
 
 // Runs `sql` once per set of `params`. The memory it mirrors stays right when it fails.

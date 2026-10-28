@@ -35,19 +35,7 @@ use crate::proposals::{self, GitHub};
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 use crate::tokens::{Subject, Tokens};
 
-const MIGRATIONS: &[&str] = &["
-    -- The clusters as gem last showed them, with their names and proposals: one row.
-    CREATE TABLE snapshot (
-        id INTEGER PRIMARY KEY CHECK (id = 0),
-        -- The ListOpenPullRequestsResponse, as JSON.
-        response TEXT NOT NULL
-    );
-"];
 const NAME: &str = "gem";
-
-pub fn migrate(db: &Db) -> Result<(), String> {
-    db.migrate("snapshot", MIGRATIONS)
-}
 
 // Called after every refresh.
 pub async fn save(response: &ListOpenPullRequestsResponse) {

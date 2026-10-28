@@ -15,17 +15,6 @@ use gem_github::{apply_patch, command, graphql, render, repository};
 
 // Agents make proposals with the `propose` tool of the `gem-agent` MCP server, which checks them
 // first.
-const MIGRATIONS: &[&str] = &["
-    CREATE TABLE proposals (
-        id TEXT PRIMARY KEY,
-        -- The Proposal message, as JSON.
-        proposal TEXT NOT NULL
-    );
-"];
-
-pub fn migrate(db: &Db) -> Result<(), String> {
-    db.migrate("proposals", MIGRATIONS)
-}
 
 // The conversation or investigation a proposal answers.
 fn subject(proposal: &Proposal) -> Option<&str> {

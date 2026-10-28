@@ -14,22 +14,10 @@ use gem_db::{
 };
 use serde::{Deserialize, Serialize};
 
-const MIGRATIONS: &[&str] = &["
-    CREATE TABLE agent_tokens (
-        token TEXT PRIMARY KEY,
-        -- A Subject, as JSON.
-        subject TEXT NOT NULL
-    );
-"];
-
 // The --mcp-config each token's agent was started with, as `<token>.mcp.json` in this directory,
 // relative to the server's working directory: T3 Code reads it from a file, again for as long as
 // the token lasts.
 pub const DIR: &str = "agent-tokens";
-
-pub fn migrate(db: &Db) -> Result<(), String> {
-    db.migrate("agent_tokens", MIGRATIONS)
-}
 
 // What an agent answers, and so what it may propose on.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -216,9 +204,7 @@ pub mod tests {
 
     // A database with every table the server's state needs, and nothing in them.
     pub fn db() -> Db {
-        let db = Db::open_in_memory().unwrap();
-        crate::migrate(&db).unwrap();
-        db
+        Db::open_in_memory().unwrap()
     }
 
     // Tokens in a fresh database, with their configs in a fresh directory.

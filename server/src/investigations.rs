@@ -12,15 +12,6 @@ use crate::tokens::{Subject, Tokens};
 use crate::{login, mcp, proposals, t3};
 use gem_github::short;
 
-const MIGRATIONS: &[&str] = &["
-    CREATE TABLE investigations (
-        id TEXT PRIMARY KEY,
-        -- The Investigation, as JSON.
-        investigation TEXT NOT NULL,
-        -- A closed investigation stays, so later agents can search what it found.
-        closed INTEGER NOT NULL DEFAULT 0
-    );
-"];
 // The most investigations a search returns, so its answer fits in an agent's context.
 const SEARCH_LIMIT: usize = 10;
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
@@ -50,10 +41,6 @@ struct Investigation {
     failed_checks: String,
     reply: String,
     reply_html: String,
-}
-
-pub fn migrate(db: &Db) -> Result<(), String> {
-    db.migrate("investigations", MIGRATIONS)
 }
 
 // Approves the rerun first, so the pull request is not held up by the investigation.
