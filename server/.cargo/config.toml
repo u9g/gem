@@ -1,3 +1,8 @@
 # LiveKit's prebuilt libwebrtc for Windows links the static C runtime.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# libwebrtc's Objective-C categories are dropped unless gem-native links with -ObjC. Here rather
+# than in a build script, which lust would run with the native feature on.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-ObjC"]

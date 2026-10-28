@@ -225,9 +225,19 @@ impl Tokens {
     }
 }
 
-// 32 random bytes, in hex. std keys each RandomState's SipHash with random bits from the OS, so
-// what it hashes comes out as unpredictable as those keys.
+// 32 random bytes, in hex, from the OS's random source: /dev/urandom where there is one, which
+// std can read without the unsafe code a call to the OS needs.
 fn random_token() -> String {
+    use std::io::Read;
+
+    let mut bytes = [0u8; 32];
+    let read = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
+    if read.is_ok() {
+        return bytes.iter().map(|b| format!("{b:02x}")).collect();
+    }
+    // Windows has none. std keys each thread's first RandomState's SipHash with random bits from
+    // the OS, and each later one's with those plus one, so each hash also takes the time and the
+    // process.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
