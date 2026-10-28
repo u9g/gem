@@ -513,11 +513,13 @@ comment ({comment_url}):
 
 {quoted}
 Read the conversation and the pull request with `gh`, work out how {login} should answer, and \
-record it with the `propose` tool of the `{server}` MCP server, with `pr` {url}. A proposal can \
-change the code (`patch`: what `git diff` prints in a clone at the pull request's head), reply as \
-{login} in the first person (`reply`){resolve}, hand bigger work to another agent (`follow_up`), \
-open a new pull request (`open_pull_request`), or close this one (`close_pull_request`). Propose \
-once per reasonable alternative. If the comment needs nothing from {login}, propose nothing.
+record it with `gem.propose`, with `pr` {url}. A proposal can change the code (`patch`: what \
+`git diff` prints in a clone at the pull request's head), reply as {login} in the first person \
+(`reply`){resolve}, hand bigger work to another agent (`follow_up`), open a new pull request \
+(`open_pull_request`), or close this one (`close_pull_request`). Propose once per reasonable \
+alternative. If the comment needs nothing from {login}, propose nothing.
+
+{EXECUTE}
 
 Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
@@ -528,7 +530,7 @@ settle this thread. Then reply with one line saying what you proposed.",
         url = pr.url,
         title = pr.title,
         comment_url = comment.url,
-        server = mcp::AGENT_NAME,
+        EXECUTE = mcp::EXECUTE,
     );
     let title = format!(
         "Answer {} on {}#{}",
@@ -559,9 +561,9 @@ fn fix(pr: &Target, failure: &CheckFailure) -> (String, String) {
 
 {checks}
 Find the root cause of each failure before you choose an answer:
-- Read what earlier investigations found: the `search_investigations` tool of the `{server}` MCP \
-server finds them by the failing test's name or words of the error. Ones that fail the same way \
-may already know the root cause, or a fix that did not hold.
+- Read what earlier investigations found: `gem.investigations()` lists them, to filter by the \
+failing test's name or words of the error. Ones that fail the same way may already know the root \
+cause, or a fix that did not hold.
 - Read why it failed: `gh run view <run> --log-failed -R {full_name}` prints a GitHub Actions \
 run's failed steps.
 - Check whether this pull request caused it: compare the failing test or step with what \
@@ -583,8 +585,8 @@ when they need different answers, such as a fix for one and a rerun for another.
 check's command locally when you can, to show the fix works. Never commit or push.
 - change other pull requests of this one's cluster, with `other_patches`: when the fix belongs on \
 them, alone or with `patch`, such as in a pull request this one depends on or that produces what \
-this one consumes. Make each patch the same way, against its own pull request. The \
-`get_cluster` tool of the `{server}` MCP server lists the cluster's pull requests.
+this one consumes. Make each patch the same way, against its own pull request. \
+`gem.cluster({url:?})` lists the cluster's pull requests.
 - open a new pull request, with `open_pull_request`: when the fix belongs in a pull request of its \
 own, such as a test that fails the same way on the base branch. Make its `patch` the same way \
 against the latest `origin/<base branch>`, and link {url} in its description.
@@ -600,14 +602,15 @@ it), and how to verify it. The agent must be able to finish without anyone else 
 something first: when the fix waits on that, such as another pull request that needs review or a \
 dependency that has not been released, propose nothing for that check.
 
-Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {url}, \
-a `summary` of one line saying what approving does, linking the pull request of each earlier \
-investigation into the same failure, its `excerpts`, and its steps. Call it once per answer, and \
-once per alternative when more than one answer is reasonable. It checks the proposal and returns \
-an error with the reason when something is wrong: fix it and call it again. If the failure needs \
-nothing from {login}, propose nothing.
+{EXECUTE}
 
-If answering well needs something these steps cannot do, call `propose` with its `excerpts` and \
+Record each proposal with `gem.propose`, with `pr` {url}, a `summary` of one line saying what \
+approving does, linking the pull request of each earlier investigation into the same failure, its \
+`excerpts`, and its steps. Propose once per answer, and once per alternative when more than one \
+answer is reasonable. It checks the proposal and throws an Error with the reason when something \
+is wrong: fix it and propose again. If the failure needs nothing from {login}, propose nothing.
+
+If answering well needs something these steps cannot do, propose with its `excerpts` and \
 `request_tool` instead of steps: markdown describing the missing tool (what it would do and why \
 this failure needs it), with a `summary` of \"<tool name>: <one line>\".
 
@@ -617,14 +620,14 @@ When you are done, call the t3_thread_organize tool with action \"settle\" and n
 settle this thread. Then reply in one or two sentences: first what you proposed, or, when you \
 proposed nothing, why, then the root cause, naming the failing test or error, with the pull \
 request of each earlier investigation into the same failure. {login} reads its start next to the \
-failed checks, and later agents find it with `search_investigations`.",
+failed checks, and later agents find it in `gem.investigations()`.",
         head = failure.head_oid,
         login = login(),
         url = pr.url,
         title = pr.title,
         full_name = pr.full_name,
         number = pr.number,
-        server = mcp::AGENT_NAME,
+        EXECUTE = mcp::EXECUTE,
     );
     let title = format!("Fix checks on {}#{}", pr.full_name, pr.number);
     (title, prompt)

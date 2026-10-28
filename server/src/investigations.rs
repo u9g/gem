@@ -12,8 +12,6 @@ use crate::tokens::{Subject, Tokens};
 use crate::{login, mcp, proposals, t3};
 use gem_github::short;
 
-// The most investigations a search returns, so its answer fits in an agent's context.
-const SEARCH_LIMIT: usize = 10;
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 // T3 Code does not settle threads when they finish, and unsettles one when it is sent a message,
@@ -41,8 +39,8 @@ struct Investigation {
     // The user has messaged it, so its replies are answers they wait on.
     messaged: bool,
     // The failed checks it started from, with their log excerpts, as its prompt lists them, so
-    // search finds it by the test or error even when its reply names neither. Empty for an agent
-    // not started from failed checks.
+    // agents' scripts find it by the test or error even when its reply names neither. Empty for an
+    // agent not started from failed checks.
     failed_checks: String,
     reply: String,
     reply_html: String,
@@ -123,9 +121,8 @@ requests linked by stacking or mentions, and sent you a message about it. The cl
 {pull_requests}
 Here it is as gem showed it when {login} sent the message, with each pull request's review and \
 check state, and the conversations on them still waiting on {login}, with what other agents \
-propose answering. The `get_cluster` tool of the `{server}` MCP server, passed any of those URLs, \
-has the cluster as gem shows it now. Use `gh` for anything more, such as diffs, comments and check \
-logs.
+propose answering. {EXECUTE} `gem.cluster(url)`, passed any of those URLs, returns the cluster as \
+gem shows it now. Use `gh` for anything more, such as diffs, comments and check logs.
 
 ```json
 {snapshot}
@@ -156,11 +153,11 @@ anyone else reviewing, merging or releasing something first.
 - close the pull request without merging it, with `close_pull_request`. Pair it with a reply \
 saying why.
 
-Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` the \
-pull request it is about, a `summary` of one line saying what approving does, and its steps. It \
-checks the proposal and returns an error with the reason when something is wrong: fix it and call \
-it again. gem merges and rebases pull requests itself, so when one should be merged or brought up \
-to date with its base branch, say so in your reply. If the message only asks something, answer it \
+Record each proposal with `gem.propose`, with `pr` the pull request it is about, a `summary` of \
+one line saying what approving does, and its steps. It checks the proposal and throws an Error \
+with the reason when something is wrong: fix it and propose again. gem merges and rebases pull \
+requests itself, so when one should be merged or brought up to date with its base branch, say so \
+in your reply. If the message only asks something, answer it \
 and propose nothing.
 
 {login} follows this thread in an app that shows only your latest reply, so end each reply with \
@@ -170,7 +167,7 @@ thread, and you can record more proposals the same way.
 {SETTLE}",
         login = login(),
         snapshot = mcp::cluster_json(cluster),
-        server = mcp::AGENT_NAME,
+        EXECUTE = mcp::EXECUTE,
     );
     let prs: Vec<String> = (cluster.pull_requests.iter())
         .map(|pr| pr.url.clone())
@@ -385,9 +382,9 @@ fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
 {checks}
 Another agent proposed rerunning them: \"{rerun_summary}\". {login} reran them so the pull request \
 is not held up, but does not take \"flaky\" for an answer. Find the root cause:
-- Read what earlier investigations found: the `search_investigations` tool of the `{server}` MCP \
-server finds them by the failing test's name or words of the error. Ones that fail the same way \
-may already know the root cause, or a fix that did not hold.
+- Read what earlier investigations found: `gem.investigations()` lists them, to filter by the \
+failing test's name or words of the error. Ones that fail the same way may already know the root \
+cause, or a fix that did not hold.
 - Read why it failed: `gh run view <run> --log-failed -R <owner>/<repo>` prints a GitHub Actions \
 run's failed steps.
 - Find how often it fails, and where: `gh run list -R <owner>/<repo> --workflow <workflow> -L 100` \
@@ -420,15 +417,17 @@ else reviewing, merging or releasing something first.
 clone the repository into a temporary directory, run `gh pr checkout <number>` in it, edit, and \
 pass what `git diff` prints as `patch`. Never commit or push.
 - change the code of another pull request in {pr}'s cluster, with `other_patches`, when that pull \
-request causes it, such as one {pr} is stacked on: make the patch the same way. The `get_cluster` \
-tool of the `{server}` MCP server lists the cluster's pull requests.
+request causes it, such as one {pr} is stacked on: make the patch the same way. \
+`gem.cluster({pr:?})` lists the cluster's pull requests.
 
-Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {pr}, a \
-`summary` of one line saying what approving does, and its steps. It checks the proposal and \
-returns an error with the reason when something is wrong: fix it and call it again. Call it once \
-per proposal. If the failure needs nothing from {login}, propose nothing and say why in your reply.
+{EXECUTE}
 
-If answering well needs something these steps cannot do, call `propose` with `request_tool` \
+Record each proposal with `gem.propose`, with `pr` {pr}, a `summary` of one line saying what \
+approving does, and its steps. It checks the proposal and throws an Error with the reason when \
+something is wrong: fix it and propose again. Propose once per proposal. If the failure needs \
+nothing from {login}, propose nothing and say why in your reply.
+
+If answering well needs something these steps cannot do, propose with `request_tool` \
 instead of steps: markdown describing the missing tool (what it would do and why this failure \
 needs it), with a `summary` of \"<tool name>: <one line>\".
 
@@ -442,27 +441,15 @@ later.
         checks = listed(failure),
         head = failure.head_oid,
         login = login(),
-        server = mcp::AGENT_NAME,
+        EXECUTE = mcp::EXECUTE,
     )
 }
 
-// The newest `SEARCH_LIMIT` closed investigations whose title, failed checks or reply has every
-// word of `query`, ignoring case, as JSON, with how many older ones match too.
-pub async fn search(db: &Db, query: &str) -> String {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let mut found: Vec<Investigation> = (load_from(db, true).into_iter())
-        .filter(|investigation| {
-            let text = format!(
-                "{}\n{}\n{}",
-                investigation.title, investigation.failed_checks, investigation.reply
-            )
-            .to_lowercase();
-            words.iter().all(|word| text.contains(word.as_str()))
-        })
-        .collect();
+// The closed investigations, newest first, as `gem.investigations()` gives them to agents' scripts.
+pub fn archived(db: &Db) -> Vec<serde_json::Value> {
+    let mut found = load_from(db, true);
     found.sort_by_key(|investigation| std::cmp::Reverse(investigation.id.clone()));
-    let older = found.len().saturating_sub(SEARCH_LIMIT);
-    let found: Vec<serde_json::Value> = (found.into_iter().take(SEARCH_LIMIT))
+    (found.into_iter())
         .map(|investigation| {
             serde_json::json!({
                 "title": investigation.title,
@@ -475,9 +462,7 @@ pub async fn search(db: &Db, query: &str) -> String {
                 "reply": investigation.reply,
             })
         })
-        .collect();
-    let found = serde_json::json!({ "investigations": found, "olderMatches": older });
-    serde_json::to_string_pretty(&found).unwrap()
+        .collect()
 }
 
 // The open investigations.
@@ -569,8 +554,8 @@ mod tests {
         assert_eq!(investigation.started_at.unwrap().seconds, 1_793_016_000);
     }
 
-    #[tokio::test]
-    async fn search_finds_closed_investigations_with_every_word_newest_first() {
+    #[test]
+    fn archived_lists_closed_investigations_newest_first() {
         let db = crate::tokens::tests::db();
         let write = |id: &str, title: &str, failed_checks: &str, reply: &str, closed: bool| {
             let investigation = Investigation {
@@ -594,13 +579,11 @@ mod tests {
         write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);
         write("3", "Investigate test on r#3", "TEST_JOIN: timed out", "The room closes first.", true);
         write("4", "Investigate test on r#4", "", "test_join still times out.", false);
-        let query = "test_join time";
 
-        let found: serde_json::Value =
-            serde_json::from_str(&search(&db, query).await).unwrap();
-        let urls: Vec<&str> = (found["investigations"].as_array().unwrap().iter())
-            .map(|f| f["pullRequestUrls"][0].as_str().unwrap())
+        let urls: Vec<String> = (archived(&db).iter())
+            .map(|f| f["pullRequestUrls"][0].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(urls, ["https://github.com/o/r/pull/3", "https://github.com/o/r/pull/1"]);
+        let pull = |n| format!("https://github.com/o/r/pull/{n}");
+        assert_eq!(urls, [pull(3), pull(2), pull(1)]);
     }
 }

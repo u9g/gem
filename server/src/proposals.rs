@@ -16,8 +16,8 @@ use gem_github::{
     render, repository,
 };
 
-// Agents make proposals with the `propose` tool of the `gem-agent` MCP server, which checks them
-// first.
+// Agents make proposals with `gem.propose`, in scripts the `gem-agent` MCP server runs, which
+// checks them first.
 
 // The conversation or investigation a proposal answers.
 fn subject(proposal: &Proposal) -> Option<&str> {
@@ -386,7 +386,7 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
     Ok(())
 }
 
-// What an agent proposes, as the `propose` tool of the `gem-agent` MCP server takes it. The
+// What an agent proposes, as `gem.propose` of the `gem-agent` MCP server takes it. The
 // subject it answers comes from the agent's token, not from here.
 #[derive(Deserialize, Default, Debug)]
 #[serde(default, deny_unknown_fields)]
