@@ -56,7 +56,7 @@ fn agent() -> Vec<String> {
 fn home() -> Result<PathBuf, String> {
     match gem_env::var("GEM_T3_HOME") {
         Some(home) if !home.trim().is_empty() => Ok(PathBuf::from(home)),
-        _ => Ok(PathBuf::from(env::var("HOME").map_err(|e| e.to_string())?).join(".t3")),
+        _ => Ok(PathBuf::from(std::env::var("HOME").map_err(|e| e.to_string())?).join(".t3")),
     }
 }
 
