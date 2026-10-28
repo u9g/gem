@@ -1,0 +1,10 @@
+# Exercises the lust-compiled layers until the server is one; see lust.sh.
+[package]
+name = "gem-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gem-json = { path = "../json" }
+gem-proto = { path = "../proto" }

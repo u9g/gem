@@ -4,11 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-pbjson = "0.9.0"
-pbjson-types = "0.9"
-prost = "0.14.4"
-serde = "1.0.229"
-
-[build-dependencies]
-pbjson-build = "0.9.0"
-prost-build = "0.14.4"
+gem-json = { path = "../json" }

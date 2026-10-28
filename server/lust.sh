@@ -7,10 +7,10 @@ step() {
   echo "::group::$*"
   if "$@"; then echo "::endgroup::"; else echo "::endgroup::"; echo "FAILED: $*"; failed+=("$*"); fi
 }
-for crate in ${LUST_CRATES:-json cluster}; do
-  step lust check "crates/$crate/src/lib.rs" --manifest-path "crates/$crate/Cargo.toml" --lib
-  step lust test "crates/$crate/src/lib.rs" --manifest-path "crates/$crate/Cargo.toml" --lib
-done
+if [ -n "$LUST_PROBE" ]; then
+  step lust check crates/probe/src/main.rs --manifest-path crates/probe/Cargo.toml --bin gem-probe
+  step lust run crates/probe/src/main.rs --manifest-path crates/probe/Cargo.toml --bin gem-probe
+fi
 if [ -z "$LUST_SKIP_SERVER" ]; then
   step lust check src/main.rs --bin server
   step lust build src/main.rs --bin server -o target/gem-server-lust

@@ -759,15 +759,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-probe"
+version = "0.1.0"
+dependencies = [
+ "gem-json",
+ "gem-proto",
+]
+
+[[package]]
 name = "gem-proto"
 version = "0.1.0"
 dependencies = [
- "pbjson",
- "pbjson-build",
- "pbjson-types",
- "prost",
- "prost-build",
- "serde",
+ "gem-json",
 ]
 
 [[package]]
