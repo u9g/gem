@@ -1,0 +1,31 @@
+# Checks and builds the server with lust (https://github.com/t3dotgg/lust-lang), the Rust-subset
+# compiler with a warm daemon for fast dev checks. Cargo still builds the release binary.
+name: Lust
+
+on:
+  push:
+    paths: [server/**, protocol/**, .github/workflows/lust.yml]
+  pull_request:
+    paths: [server/**, protocol/**, .github/workflows/lust.yml]
+  workflow_dispatch:
+
+jobs:
+  lust:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install lust
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -sSfL https://github.com/t3dotgg/lust-lang/releases/download/v0.2.0/lust-0.2.0-x86_64-linux.tar.gz | tar xz
+          echo "$PWD/lust-0.2.0-x86_64-linux/bin" >> "$GITHUB_PATH"
+      - run: lust --version
+      - name: lust check
+        run: lust check src/main.rs --bin server
+      - name: lust build
+        run: lust build src/main.rs --bin server -o gem-server
+      - name: Run the lust-built server
+        run: ./gem-server --help || true
