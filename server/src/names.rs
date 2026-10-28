@@ -56,7 +56,7 @@ impl Names {
                 .query_map(params![], |row| {
                     Ok((row.get::<String>(0)?, row.get::<String>(1)?))
                 })?
-                .collect()
+                .collect::<gem_db::Result<HashMap<String, String>>>()
         })?;
         Ok(Self(Arc::new(Inner {
             known: RwLock::new(known),
