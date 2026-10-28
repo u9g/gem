@@ -459,12 +459,13 @@ pub trait GitHub: Send + Sync + 'static {
         pr: &str,
         diff: &str,
     ) -> impl Future<Output = Result<String, String>> + Send;
-    // Checks that the diff applies to the head of `base` in the repository `owner/name`. Returns
-    // that head commit.
+    // Checks that the diff applies to the head of `base` in the repository `owner/name`, and that
+    // `branch` is new. Returns that head commit.
     fn check_new_pull_request(
         &self,
         repository: &str,
         base: &str,
+        branch: &str,
         diff: &str,
     ) -> impl Future<Output = Result<String, String>> + Send;
     fn render(
@@ -527,9 +528,10 @@ impl GitHub for Live {
         &self,
         repository: &str,
         base: &str,
+        branch: &str,
         diff: &str,
     ) -> Result<String, String> {
-        check_new_pull_request(repository, base, diff).await
+        check_new_pull_request(repository, base, branch, diff).await
     }
 
     async fn render(&self, pr: &str, markdown: &str) -> Result<String, String> {
@@ -758,11 +760,7 @@ async fn check_open_pull_request(
         .trim_end_matches('/')
         .trim_end_matches(".git");
     let parts: Vec<&str> = repository.split('/').collect();
-    if parts.len() != 2
-        || parts
-            .iter()
-            .any(|part| part.is_empty() || part.starts_with('.'))
-    {
+    if parts.len() != 2 || parts.iter().any(|part| matches!(*part, "" | "." | "..")) {
         return Err(format!(
             "`open_pull_request.repository` is `owner/name`, not `{}`",
             new.repository
@@ -795,7 +793,7 @@ async fn check_open_pull_request(
         ));
     }
     let head_oid = (github
-        .check_new_pull_request(repository, base, &new.patch)
+        .check_new_pull_request(repository, base, branch, &new.patch)
         .await)
         .map_err(|e| format!("the patch for the new pull request: {e}"))?;
     Ok(NewPullRequest {

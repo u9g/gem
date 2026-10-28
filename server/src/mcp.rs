@@ -512,7 +512,8 @@ fn propose_tool(subject: &Subject) -> Value {
                 "base": { "type": "string", "description": "The branch it merges into." },
                 "branch": {
                     "type": "string",
-                    "description": "A new branch to commit it on. Approving fails when it exists.",
+                    "description": "A new branch to commit it on, which neither `repository` nor \
+    the user's fork has.",
                 },
                 "title": { "type": "string" },
                 "body": {
@@ -654,11 +655,15 @@ mod tests {
 
         async fn check_new_pull_request(
             &self,
-            _: &str,
-            _: &str,
+            repository: &str,
+            base: &str,
+            branch: &str,
             _: &str,
         ) -> Result<String, String> {
-            Ok("def".into())
+            match (repository, base, branch) {
+                ("o/r", "master", "test/fix") => Ok("def".into()),
+                _ => Err(format!("{repository} {base} {branch}")),
+            }
         }
 
         async fn render(&self, _: &str, markdown: &str) -> Result<String, String> {

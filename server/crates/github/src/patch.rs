@@ -69,13 +69,46 @@ pub async fn apply_patch(
     .await
 }
 
-// Checks that the diff applies to the head of `base` in the repository `owner/name`. Returns that
-// head commit.
+// Checks that the diff applies to the head of `base` in the repository `owner/name`, and that
+// `branch` is a new branch where `push_new_branch` would push it, without making a fork. Returns
+// the head commit of `base`.
 pub async fn check_new_pull_request(
     repository: &str,
     base: &str,
+    branch: &str,
     diff: &str,
 ) -> Result<String, String> {
+    command("git", &["check-ref-format", "--branch", branch], None).await?;
+    let mut pushes_to = vec![repository.to_string()];
+    let can_push = command(
+        "gh",
+        &[
+            "api",
+            &format!("repos/{repository}"),
+            "--jq",
+            ".permissions.push",
+        ],
+        None,
+    )
+    .await?;
+    if String::from_utf8_lossy(&can_push).trim() != "true" {
+        let login = command("gh", &["api", "user", "--jq", ".login"], None).await?;
+        let name = repository.split('/').nth(1).unwrap_or_default();
+        pushes_to.push(format!("{}/{name}", String::from_utf8_lossy(&login).trim()));
+    }
+    for repo in pushes_to {
+        let found = command(
+            "gh",
+            &["api", &format!("repos/{repo}/git/ref/heads/{branch}")],
+            None,
+        )
+        .await;
+        match found {
+            Ok(_) => return Err(format!("{repo} already has a branch {branch}")),
+            Err(e) if e.contains("HTTP 404") => {}
+            Err(e) => return Err(e),
+        }
+    }
     on_branch(repository, base, diff, |_| async { Ok(()) }).await
 }
 
