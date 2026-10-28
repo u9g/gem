@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Checks and builds the server with lust (https://github.com/t3dotgg/lust-lang). With GEM_NATIVE
-# naming a Cargo-built gem-native and CARGO_SERVER a Cargo-built server, also runs the server's
-# tests built by lust, and checks that the lust-built server answers MCP requests on a state
-# directory exactly as the Cargo-built one does. Reports each step and fails if any failed.
+# Checks and builds the server with lust (https://github.com/t3dotgg/lust-lang). With CARGO_SERVER
+# naming a Cargo-built server (and GEM_NATIVE the gem-native built with it), also checks that the
+# lust-built server answers MCP requests on a state directory exactly as the Cargo-built one does.
+# Reports each step and fails if any failed. (`lust test` builds single files only, so the tests
+# run under Cargo.)
 cd "$(dirname "$0")"
 failed=()
 step() {
@@ -26,9 +27,6 @@ parity() {
 
 step lust check src/main.rs --bin server --max-errors 0
 step lust build src/main.rs --bin server -o target/gem-server-lust
-if [ -n "$GEM_NATIVE" ]; then
-  step lust test src/main.rs
-fi
 if [ -n "$CARGO_SERVER" ]; then
   step parity
 fi

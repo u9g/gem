@@ -1,6 +1,6 @@
 # Checks and builds the server with lust (https://github.com/t3dotgg/lust-lang), the Rust-subset
-# compiler with a warm daemon for fast dev checks, runs its tests built by lust, and checks the
-# lust-built server answers as the Cargo-built one does. Cargo still builds the release binaries.
+# compiler with a warm daemon for fast dev checks, and checks the lust-built server answers as the
+# Cargo-built one does. Cargo still builds the release binaries.
 name: Lust
 
 on:
