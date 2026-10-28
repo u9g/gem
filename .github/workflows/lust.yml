@@ -23,9 +23,6 @@ jobs:
           curl -sSfL https://github.com/t3dotgg/lust-lang/releases/download/v0.2.0/lust-0.2.0-x86_64-linux.tar.gz | tar xz
           echo "$PWD/lust-0.2.0-x86_64-linux/bin" >> "$GITHUB_PATH"
       - run: lust --version
-      - name: lust check
-        run: lust check src/main.rs --bin server
-      - name: lust build
-        run: lust build src/main.rs --bin server -o gem-server
-      - name: Run the lust-built server
-        run: ./gem-server --help || true
+      - run: ./lust.sh
+        env:
+          LUST_SKIP_SERVER: "1"
