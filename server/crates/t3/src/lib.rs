@@ -62,13 +62,18 @@ fn agent() -> Vec<String> {
     }
 }
 
+// The T3 Code app agents run in, by its home: GEM_T3_HOME, such as ~/.t3-cloud for a variant
+// build running beside the regular app, or ~/.t3.
+fn home() -> Result<PathBuf, String> {
+    match env::var("GEM_T3_HOME") {
+        Ok(home) if !home.trim().is_empty() => Ok(PathBuf::from(home)),
+        _ => Ok(PathBuf::from(env::var("HOME").map_err(|e| e.to_string())?).join(".t3")),
+    }
+}
+
 // T3 Code's scratch space for threads outside any project.
 fn scratch() -> Result<String, String> {
-    let home = env::var("HOME").map_err(|e| e.to_string())?;
-    Ok(PathBuf::from(home)
-        .join(".t3/scratch")
-        .to_string_lossy()
-        .into_owned())
+    Ok(home()?.join("scratch").to_string_lossy().into_owned())
 }
 
 // Starts an agent on `prompt` without waiting for it, in the T3 Code project containing
@@ -200,9 +205,7 @@ pub async fn send(thread_id: &str, message: &str) -> Result<(), String> {
 // batch file. Batch files cannot take arguments with newlines, so `stdin` carries any message.
 async fn t3(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
     let name = if cfg!(windows) { "t3.cmd" } else { "t3" };
-    let cli = PathBuf::from(env::var("HOME").ok()?)
-        .join(".t3/bin")
-        .join(name);
+    let cli = home().ok()?.join("bin").join(name);
     let mut child = Command::new(cli)
         .args(args)
         .stdin(Stdio::piped())
