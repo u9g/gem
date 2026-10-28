@@ -4,10 +4,12 @@
 // always runs the helper built with it, and finds it beside itself.
 
 use std::{
-    env, fs,
+    fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+use gem_native::EXE_SUFFIX;
 
 use crate::log;
 
@@ -42,7 +44,7 @@ pub fn move_out_of_target(exe: &Path) -> PathBuf {
     let moved = release.join(server_file());
     match fs::rename(exe, &moved) {
         Ok(()) => {
-            let _ = fs::copy(Build::beside(exe).native, release.join(native_file()));
+            let _ = copy(&Build::beside(exe).native, &release.join(native_file()));
             moved
         }
         Err(error) => {
@@ -64,8 +66,8 @@ pub fn install(build: &Build) -> Build {
         server: release.join(server_file()),
         native: release.join(native_file()),
     };
-    fs::copy(&build.server, &installed.server).expect("cannot copy the build into releases/");
-    if let Err(error) = fs::copy(&build.native, &installed.native) {
+    copy(&build.server, &installed.server).expect("cannot copy the build into releases/");
+    if let Err(error) = copy(&build.native, &installed.native) {
         log(&format!(
             "cannot copy {} into {RELEASES}/: {error}",
             build.native.display()
@@ -88,7 +90,7 @@ pub fn prune(keep: &[&Path]) {
         .flatten()
         .collect();
     let mut releases: Vec<PathBuf> = entries.filter_map(|e| Some(e.ok()?.path())).collect();
-    releases.sort();
+    releases.sort_by_key(|release| release.to_string_lossy().into_owned());
     let old = releases.len().saturating_sub(KEPT_RELEASES);
     for release in &releases[..old] {
         if !fs::canonicalize(release).is_ok_and(|release| keep.contains(&release)) {
@@ -130,9 +132,16 @@ fn new_release() -> PathBuf {
 }
 
 fn server_file() -> String {
-    format!("server{}", env::consts::EXE_SUFFIX)
+    format!("server{EXE_SUFFIX}")
 }
 
-fn native_file() -> String {
-    format!("gem-native{}", env::consts::EXE_SUFFIX)
+pub fn native_file() -> String {
+    format!("gem-native{EXE_SUFFIX}")
+}
+
+// `fs::copy`, which lust's std does not have yet: the bytes, then the permissions, so a copied
+// binary stays executable.
+fn copy(from: &Path, to: &Path) -> io::Result<()> {
+    fs::write(to, fs::read(from)?)?;
+    fs::set_permissions(to, fs::metadata(from)?.permissions())
 }

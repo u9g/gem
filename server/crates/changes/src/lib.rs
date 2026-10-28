@@ -65,15 +65,16 @@ impl Changes {
                 etags.retain(|path, _| paths.contains(path));
                 let mut changed = false;
                 for chunk in paths.chunks(CONCURRENT_REQUESTS) {
-                    let responses: Vec<(String, Option<String>)> = thread::scope(|scope| {
-                        let requests: Vec<_> = (chunk.iter())
-                            .map(|path| {
-                                let (token, etag) = (&token, etags.get(path));
-                                scope.spawn(move || (path.clone(), etag_of(path, token, etag)))
-                            })
-                            .collect();
-                        requests.into_iter().filter_map(|r| r.join().ok()).collect()
-                    });
+                    let mut requests = Vec::new();
+                    for path in chunk {
+                        let (path, token, etag) =
+                            (path.clone(), token.clone(), etags.get(path).cloned());
+                        requests.push(thread::spawn(move || {
+                            let etag = etag_of(&path, &token, etag.as_ref());
+                            (path, etag)
+                        }));
+                    }
+                    let responses = requests.into_iter().filter_map(|r| r.join().ok());
                     for (path, etag) in responses {
                         let Some(etag) = etag else {
                             continue;

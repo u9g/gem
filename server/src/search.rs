@@ -49,53 +49,51 @@ pub fn matching(query: &str) -> Result<Vec<String>, String> {
     let prs = OPEN.read().unwrap().clone();
     let key = gem_env::var("TYPESAFE_API_KEY")
         .ok_or("TYPESAFE_API_KEY is not set: name its 1Password item in GEM_TYPESAFE_OP_ITEM")?;
-    let decisions: Vec<Result<Vec<String>, String>> = thread::scope(|scope| {
-        let requests: Vec<_> = (prs.chunks(PRS_PER_REQUEST))
-            .map(|chunk| {
-                let questions: Map = (chunk.iter().enumerate())
-                    .map(|(i, pr)| {
-                        let instructions = format!(
-                            "Is this pull request about, or does it mention, what the user searches \
+    let requests: Vec<_> = (prs.chunks(PRS_PER_REQUEST))
+        .map(|chunk| {
+            let questions: Map = (chunk.iter().enumerate())
+                .map(|(i, pr)| {
+                    let instructions = format!(
+                        "Is this pull request about, or does it mention, what the user searches \
                              for?\n\nTitle: {}\n\nDescription:\n{}",
-                            pr.title, pr.body
-                        );
-                        (
-                            i.to_string(),
-                            json!({ "type": "noul", "instructions": instructions }),
-                        )
-                    })
-                    .collect();
-                let request = json!({
-                    "model": MODEL,
-                    "state": { "search": query },
-                    "questions": questions,
-                });
-                let urls: Vec<String> = chunk.iter().map(|pr| pr.url.clone()).collect();
-                let key = &key;
-                scope.spawn(move || {
-                    let (status, body) = post(&request, key)?;
-                    if !(200..300).contains(&status) {
-                        return Err(format!("TypeSafe answered {status}: {body}"));
-                    }
-                    let response = gem_json::parse(&body).map_err(|e| e.to_string())?;
-                    Ok::<_, String>(
-                        (urls.into_iter().enumerate())
-                            .filter(|(i, _)| {
-                                response["answers"][i.to_string().as_str()]["noul"].as_f64()
-                                    >= Some(THRESHOLD)
-                            })
-                            .map(|(_, url)| url)
-                            .collect::<Vec<_>>(),
+                        pr.title, pr.body
+                    );
+                    (
+                        i.to_string(),
+                        json!({ "type": "noul", "instructions": instructions }),
                     )
                 })
+                .collect();
+            let request = json!({
+                "model": MODEL,
+                "state": { "search": query },
+                "questions": questions,
+            });
+            let urls: Vec<String> = chunk.iter().map(|pr| pr.url.clone()).collect();
+            let key = key.clone();
+            thread::spawn(move || {
+                let (status, body) = post(&request, &key)?;
+                if !(200..300).contains(&status) {
+                    return Err(format!("TypeSafe answered {status}: {body}"));
+                }
+                let response = gem_json::parse(&body).map_err(|e| e.to_string())?;
+                Ok::<_, String>(
+                    (urls.into_iter().enumerate())
+                        .filter(|(i, _)| {
+                            response["answers"][i.to_string().as_str()]["noul"].as_f64()
+                                >= Some(THRESHOLD)
+                        })
+                        .map(|(_, url)| url)
+                        .collect::<Vec<_>>(),
+                )
             })
-            .collect();
-        (requests.into_iter())
-            .map(|request| {
-                (request.join()).unwrap_or_else(|_| Err("a search request panicked".to_string()))
-            })
-            .collect()
-    });
+        })
+        .collect();
+    let decisions: Vec<Result<Vec<String>, String>> = (requests.into_iter())
+        .map(|request| {
+            (request.join()).unwrap_or_else(|_| Err("a search request panicked".to_string()))
+        })
+        .collect();
     let mut matched = Vec::new();
     for decision in decisions {
         matched.extend(decision?);

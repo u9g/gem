@@ -11,13 +11,16 @@ use std::{
 
 pub const NAME: &str = "gem-native";
 
+// std's `env::consts::EXE_SUFFIX`, which lust's std does not have yet.
+pub const EXE_SUFFIX: &str = if cfg!(windows) { ".exe" } else { "" };
+
 // GEM_NATIVE when set, else gem-native beside the running binary (or beside its directory, for a
 // test binary in target/*/deps), else gem-native on PATH.
 pub fn path() -> PathBuf {
     if let Some(path) = env::var_os("GEM_NATIVE") {
         return PathBuf::from(path);
     }
-    let file = format!("{NAME}{}", env::consts::EXE_SUFFIX);
+    let file = format!("{NAME}{EXE_SUFFIX}");
     if let Ok(exe) = env::current_exe() {
         let dirs = [exe.parent(), exe.parent().and_then(Path::parent)];
         for dir in dirs.into_iter().flatten() {

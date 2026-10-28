@@ -686,6 +686,7 @@ version = "0.1.0"
 dependencies = [
  "gem-env",
  "gem-json",
+ "gem-native",
 ]
 
 [[package]]

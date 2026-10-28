@@ -34,13 +34,22 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(60);
 const RESTART_DELAY: Duration = Duration::from_secs(10);
 
 pub fn run(dotenv: Vec<OsString>) -> ! {
-    let _lock = lock::acquire();
     let mut exe = env::current_exe().unwrap();
     // Outside a checkout, e.g. an installed binary, there is nothing to update from.
     let mut updates = Path::new("Cargo.toml").exists().then(Updates::default);
+    if updates.is_some() {
+        exe = releases::move_out_of_target(&exe);
+    }
+    // Taken by the gem-native beside the launcher where it stays, so on Windows the one cargo
+    // builds over is not running.
+    let native = Build::beside(&exe).native;
+    let _lock = lock::acquire(if native.is_file() {
+        &native
+    } else {
+        Path::new(gem_native::NAME)
+    });
     let mut release = Build::beside(&exe);
     if let Some(updates) = &mut updates {
-        exe = releases::move_out_of_target(&exe);
         // Commits can land while the launcher is down, and the checkout can be pulled by hand,
         // so catch up before the first start. A build with nothing new to compile takes seconds.
         let _ = updates.fast_forward();

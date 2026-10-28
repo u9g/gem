@@ -624,7 +624,11 @@ fn acted_on<'a>(
     response: Option<&'a ListOpenPullRequestsResponse>,
     urls: &[String],
 ) -> Result<&'a PullRequestCluster, (u16, String)> {
-    let cluster = (response.iter().flat_map(|r| &r.clusters))
+    let clusters: &'a [PullRequestCluster] = match response {
+        Some(response) => &response.clusters,
+        None => &[],
+    };
+    let cluster = (clusters.iter())
         .find(|c| {
             c.pull_requests
                 .iter()
@@ -710,23 +714,20 @@ const MERGE_STATES_CHUNK: usize = 25;
 // Sets `behind` when GitHub will not merge a PR until it is rebased (its base branch requires it up
 // to date, or it conflicts) and `conflicts` when it conflicts.
 fn merge_states(prs: &mut [SearchedPullRequest]) {
-    let results: Vec<Option<Value>> = thread::scope(|scope| {
-        let requests: Vec<_> = (prs.chunks(MERGE_STATES_CHUNK))
-            .map(|chunk| {
-                let ids: Vec<&String> = chunk.iter().map(|pr| &pr.id).collect();
-                let ids = json!(ids);
-                let query = format!(
-                    "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
-                );
-                scope.spawn(move || {
-                    gh_partial_json::<Value>("merge states", &["api", "graphql", "-f", &query])
-                })
-            })
-            .collect();
-        (requests.into_iter())
-            .map(|request| request.join().ok().flatten())
-            .collect()
-    });
+    let mut requests = Vec::new();
+    for chunk in prs.chunks(MERGE_STATES_CHUNK) {
+        let ids: Vec<String> = chunk.iter().map(|pr| pr.id.clone()).collect();
+        let ids = json!(ids);
+        let query = format!(
+            "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
+        );
+        requests.push(thread::spawn(move || {
+            gh_partial_json::<Value>("merge states", &["api", "graphql", "-f", &query])
+        }));
+    }
+    let results: Vec<Option<Value>> = (requests.into_iter())
+        .map(|request| request.join().ok().flatten())
+        .collect();
     let mut states = HashMap::new();
     for mut data in results.into_iter().flatten() {
         let nodes = (data.get_mut("data"))
@@ -778,17 +779,17 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
         .filter_map(|(i, pr)| Some(((&pr.repository, pr.head.as_deref()?), i)))
         .collect();
 
-    let links = prs.iter().enumerate().flat_map(|(i, pr)| {
-        let stacked_on = by_head.get(&(&pr.repository, pr.base.as_str()));
-        let mentioned_by = pr
-            .mentioned_by
-            .iter()
-            .filter_map(|url| by_url.get(url.as_str()));
-        stacked_on
-            .into_iter()
-            .chain(mentioned_by)
-            .map(move |&j| (i, j))
-    });
+    let mut links = Vec::new();
+    for (i, pr) in prs.iter().enumerate() {
+        if let Some(&j) = by_head.get(&(&pr.repository, pr.base.as_str())) {
+            links.push((i, j));
+        }
+        for url in &pr.mentioned_by {
+            if let Some(&j) = by_url.get(url.as_str()) {
+                links.push((i, j));
+            }
+        }
+    }
     let clusters = gem_cluster::components(prs.len(), links);
 
     let mut clusters: Vec<PullRequestCluster> = clusters

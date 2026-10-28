@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 gem-env = { path = "../env" }
 gem-json = { path = "../json" }
+gem-native = { path = "../native" }

@@ -53,7 +53,9 @@ impl Names {
     pub fn load() -> Result<Self, String> {
         let known = crate::db().with(|db| {
             db.prepare("SELECT key, name FROM cluster_names")?
-                .query_map(params![], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map(params![], |row| {
+                    Ok((row.get::<String>(0)?, row.get::<String>(1)?))
+                })?
                 .collect()
         })?;
         Ok(Self(Arc::new(Inner {
