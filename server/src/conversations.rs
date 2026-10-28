@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use crate::{
     SearchedPullRequest,
     agents::Running,
-    gh, login, mcp, proposals,
+    gh, investigations, login, mcp, proposals,
     proto::{CheckFailure, Comment, PullRequestCluster},
     t3,
     tokens::{Subject, Tokens},
@@ -432,15 +432,17 @@ impl Conversations {
                             if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
                                 answering.thread_id = Some(thread_id.clone());
                             }
-                            t3::wait(&thread_id).await;
-                            if let Conversation::Checks { .. } = &conversation
-                                && !proposals::exist_for(id).await
-                                && let Some((_, reply)) = t3::show(&thread_id).await
-                            {
-                                let mut no_proposal = this.0.no_proposal.lock().await;
-                                no_proposal.insert(id.to_string(), reply.trim().to_string());
-                                let json = serde_json::to_vec_pretty(&*no_proposal).unwrap();
-                                let _ = tokio::fs::write(NO_PROPOSAL_FILE, json).await;
+                            let reply = t3::wait(&thread_id).await;
+                            if let Conversation::Checks { check_failure } = &conversation {
+                                let reply = reply.trim();
+                                investigations::archive(&title, &pr.url, check_failure, reply)
+                                    .await;
+                                if !proposals::exist_for(id).await {
+                                    let mut no_proposal = this.0.no_proposal.lock().await;
+                                    no_proposal.insert(id.to_string(), reply.to_string());
+                                    let json = serde_json::to_vec_pretty(&*no_proposal).unwrap();
+                                    let _ = tokio::fs::write(NO_PROPOSAL_FILE, json).await;
+                                }
                             }
                         }
                         Err(e) => eprintln!("{title}: {e}"),
@@ -629,8 +631,10 @@ this failure needs it), with a `summary` of \"<tool name>: <one line>\".
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals later.
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
-settle this thread. Then reply with one line saying what you proposed, or, when you proposed \
-nothing, why: {login} reads it next to the failed checks.",
+settle this thread. Then reply in one or two sentences: first what you proposed, or, when you \
+proposed nothing, why, then the root cause, naming the failing test or error, with the pull \
+request of each earlier investigation into the same failure. {login} reads its start next to the \
+failed checks, and later agents find it with `search_investigations`.",
         head = failure.head_oid,
         login = login(),
         url = pr.url,

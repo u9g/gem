@@ -150,12 +150,13 @@ pub async fn show(thread_id: &str) -> Option<(bool, String)> {
     Some((working, reply))
 }
 
-// Returns once the thread's agent stops working: it finished, stopped, or waits on the user.
-pub async fn wait(thread_id: &str) {
+// Returns the thread's latest reply once its agent stops working: it finished, stopped, or waits
+// on the user.
+pub async fn wait(thread_id: &str) -> String {
     loop {
         tokio::time::sleep(Duration::from_secs(10)).await;
-        if show(thread_id).await.is_some_and(|(working, _)| !working) {
-            return;
+        if let Some((false, reply)) = show(thread_id).await {
+            return reply;
         }
     }
 }

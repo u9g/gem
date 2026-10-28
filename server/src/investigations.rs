@@ -16,6 +16,8 @@ use gem_github::short;
 const DIR: &str = "investigations";
 // Where a closed investigation's file moves, so later agents can search what it found.
 pub const PAST_DIR: &str = "past-investigations";
+// The most investigations a search returns, so its answer fits in an agent's context.
+const SEARCH_LIMIT: usize = 10;
 // Reading a thread is a local CLI call; only a changed reply reaches GitHub, to render it.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -37,6 +39,10 @@ struct Investigation {
     working: bool,
     // The user has messaged it, so its replies are answers they wait on.
     messaged: bool,
+    // The failed checks it started from, with their log excerpts, as its prompt lists them, so
+    // search finds it by the test or error even when its reply names neither. Empty for an agent
+    // not started from failed checks.
+    failed_checks: String,
     reply: String,
     reply_html: String,
 }
@@ -66,7 +72,7 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
         prs: vec![pr.clone()],
     };
     let thread_id = start_proposing(&title, &prompt, &subject).await?;
-    track(nanos, title, vec![pr.clone()], thread_id).await;
+    track(nanos, title, vec![pr.clone()], listed(&failure), thread_id).await;
     Ok(())
 }
 
@@ -84,7 +90,7 @@ afterwards in this thread.",
         login = login(),
     );
     let thread_id = t3::start(title, &prompt, None).await?;
-    track(now(), title.to_string(), vec![pr.to_string()], thread_id).await;
+    track(now(), title.to_string(), vec![pr.to_string()], String::new(), thread_id).await;
     Ok(())
 }
 
@@ -170,8 +176,28 @@ thread, and you can record more proposals the same way.",
         prs: prs.clone(),
     };
     let thread_id = start_proposing(&title, &prompt, &subject).await?;
-    track(nanos, title, prs, thread_id).await;
+    track(nanos, title, prs, String::new(), thread_id).await;
     Ok(id(nanos))
+}
+
+// Archives a finished agent that answered `failure` on `pr`, which is never an open investigation,
+// so later agents find what it found too.
+pub async fn archive(title: &str, pr: &str, failure: &CheckFailure, reply: &str) {
+    let nanos = now();
+    let investigation = Investigation {
+        id: id(nanos),
+        title: title.to_string(),
+        pull_request_url: pr.to_string(),
+        pull_request_urls: vec![pr.to_string()],
+        failed_checks: listed(failure),
+        started_at: Some(timestamp(nanos)),
+        reply: reply.to_string(),
+        ..Default::default()
+    };
+    let _ = tokio::fs::create_dir_all(PAST_DIR).await;
+    let json = serde_json::to_vec_pretty(&investigation).unwrap();
+    let path = Path::new(PAST_DIR).join(format!("{}.json", investigation.id));
+    let _ = tokio::fs::write(path, json).await;
 }
 
 // Whether `id` is one of these agents.
@@ -197,6 +223,11 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
 
 pub async fn close(id: &str) {
     let _files = FILES.lock().await;
+    close_held(id).await;
+}
+
+// `close`, with `FILES` already held.
+async fn close_held(id: &str) {
     let _ = tokio::fs::create_dir_all(PAST_DIR).await;
     let _ = tokio::fs::rename(path(id), Path::new(PAST_DIR).join(format!("{id}.json"))).await;
     proposals::remove_of_investigation(id).await;
@@ -241,8 +272,18 @@ pub fn watch() {
                         .await
                         .contains_key(&investigation.id)
                 {
-                    close(&investigation.id).await;
-                    tracing::info!(investigation = %investigation.id, "finished investigation closed");
+                    // Rechecked under the lock: the user may have messaged it since it was loaded.
+                    // The archive keeps what it found, which may have come since the last refresh.
+                    let _files = FILES.lock().await;
+                    if let Some(mut current) =
+                        load().await.into_iter().find(|i| i.id == investigation.id)
+                        && !current.messaged
+                    {
+                        current.reply = reply;
+                        save(&current).await;
+                        close_held(&investigation.id).await;
+                        tracing::info!(investigation = %investigation.id, "finished investigation closed");
+                    }
                     continue;
                 }
                 if working == investigation.working && reply == investigation.reply {
@@ -287,6 +328,13 @@ fn now() -> u128 {
         .as_nanos()
 }
 
+fn timestamp(nanos: u128) -> Timestamp {
+    Timestamp {
+        seconds: (nanos / 1_000_000_000) as i64,
+        nanos: (nanos % 1_000_000_000) as i32,
+    }
+}
+
 // An investigation started at `nanos` since the epoch.
 fn id(nanos: u128) -> String {
     format!("{nanos:x}")
@@ -294,26 +342,31 @@ fn id(nanos: u128) -> String {
 
 // Saves an investigation started at `nanos` since the epoch, on the pull requests `prs`, the one it
 // started from first.
-async fn track(nanos: u128, title: String, prs: Vec<String>, thread_id: String) {
+async fn track(
+    nanos: u128,
+    title: String,
+    prs: Vec<String>,
+    failed_checks: String,
+    thread_id: String,
+) {
     let _files = FILES.lock().await;
     save(&Investigation {
         id: id(nanos),
         title,
         pull_request_url: prs[0].clone(),
         pull_request_urls: prs,
+        failed_checks,
         thread_id,
-        started_at: Some(Timestamp {
-            seconds: (nanos / 1_000_000_000) as i64,
-            nanos: (nanos % 1_000_000_000) as i32,
-        }),
+        started_at: Some(timestamp(nanos)),
         working: true,
         ..Default::default()
     })
     .await;
 }
 
-fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
-    let checks: String = failure
+// Each of `failure`'s checks, with its run and log excerpt, as a markdown list.
+fn listed(failure: &CheckFailure) -> String {
+    failure
         .checks
         .iter()
         .map(|check| {
@@ -330,7 +383,10 @@ fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
                 check.name, check.id, check.conclusion, check.url
             )
         })
-        .collect();
+        .collect()
+}
+
+fn prompt(pr: &str, failure: &CheckFailure, rerun_summary: &str) -> String {
     format!(
         "Checks failed on {head}, the head commit of {login}'s pull request {pr}:
 
@@ -384,24 +440,30 @@ says where things stand, and you can record more proposals the same way.
 
 Never push, comment, rerun or change anything on GitHub yourself: {login} approves proposals \
 later.",
+        checks = listed(failure),
         head = failure.head_oid,
         login = login(),
         server = mcp::AGENT_NAME,
     )
 }
 
-// The closed investigations in `dir` whose title or reply has every word of `query`, ignoring case,
-// newest first, as JSON.
+// The newest `SEARCH_LIMIT` closed investigations in `dir` whose title, failed checks or reply has
+// every word of `query`, ignoring case, as JSON, with how many older ones match too.
 pub async fn search(dir: &Path, query: &str) -> String {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut found: Vec<Investigation> = (load_from(dir).await.into_iter())
         .filter(|investigation| {
-            let text = format!("{}\n{}", investigation.title, investigation.reply).to_lowercase();
+            let text = format!(
+                "{}\n{}\n{}",
+                investigation.title, investigation.failed_checks, investigation.reply
+            )
+            .to_lowercase();
             words.iter().all(|word| text.contains(word.as_str()))
         })
         .collect();
     found.sort_by_key(|investigation| std::cmp::Reverse(investigation.id.clone()));
-    let found: Vec<serde_json::Value> = (found.into_iter())
+    let older = found.len().saturating_sub(SEARCH_LIMIT);
+    let found: Vec<serde_json::Value> = (found.into_iter().take(SEARCH_LIMIT))
         .map(|investigation| {
             serde_json::json!({
                 "title": investigation.title,
@@ -410,10 +472,12 @@ pub async fn search(dir: &Path, query: &str) -> String {
                     false => investigation.pull_request_urls,
                 },
                 "startedAt": investigation.started_at,
+                "failedChecks": investigation.failed_checks,
                 "reply": investigation.reply,
             })
         })
         .collect();
+    let found = serde_json::json!({ "investigations": found, "olderMatches": older });
     serde_json::to_string_pretty(&found).unwrap()
 }
 
@@ -473,24 +537,26 @@ mod tests {
     #[tokio::test]
     async fn search_finds_closed_investigations_with_every_word_newest_first() {
         let dir = crate::tokens::tests::temp_dir("search");
-        let write = |id: &str, title: &str, reply: &str| {
+        let write = |id: &str, title: &str, failed_checks: &str, reply: &str| {
             let investigation = Investigation {
                 id: id.into(),
                 title: title.into(),
                 pull_request_url: format!("https://github.com/o/r/pull/{id}"),
+                failed_checks: failed_checks.into(),
                 reply: reply.into(),
                 ..Default::default()
             };
             let json = serde_json::to_vec(&investigation).unwrap();
             std::fs::write(dir.join(format!("{id}.json")), json).unwrap();
         };
-        write("1", "Investigate test on r#1", "test_join times out: the room closes first.");
-        write("2", "Investigate lint on r#2", "A new clippy lint.");
-        write("3", "Investigate test on r#3", "TEST_JOIN times out again.");
+        write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.");
+        write("2", "Investigate lint on r#2", "", "A new clippy lint.");
+        write("3", "Investigate test on r#3", "TEST_JOIN: timed out", "The room closes first.");
+        let query = "test_join time";
 
         let found: serde_json::Value =
-            serde_json::from_str(&search(&dir, "test_join timeS").await).unwrap();
-        let urls: Vec<&str> = (found.as_array().unwrap().iter())
+            serde_json::from_str(&search(&dir, query).await).unwrap();
+        let urls: Vec<&str> = (found["investigations"].as_array().unwrap().iter())
             .map(|f| f["pullRequestUrls"][0].as_str().unwrap())
             .collect();
         assert_eq!(urls, ["https://github.com/o/r/pull/3", "https://github.com/o/r/pull/1"]);

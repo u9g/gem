@@ -388,11 +388,14 @@ async fn handle_agent<G: GitHub>(
             Ok(tool_result(
                 match params["name"].as_str().unwrap_or_default() {
                     "get_cluster" => call(&endpoint.state, "get_cluster", arguments),
-                    "search_investigations" => Ok(investigations::search(
-                        &endpoint.state.join(investigations::PAST_DIR),
-                        arguments["query"].as_str().unwrap_or_default(),
-                    )
-                    .await),
+                    "search_investigations" => match arguments["query"].as_str() {
+                        Some(query) if !query.trim().is_empty() => Ok(investigations::search(
+                            &endpoint.state.join(investigations::PAST_DIR),
+                            query,
+                        )
+                        .await),
+                        _ => Err("`query` must be words to search for".into()),
+                    },
                     "propose" => propose(endpoint, subject, arguments).await,
                     tool => Err(format!("no tool {tool}")),
                 },
@@ -423,9 +426,11 @@ fn search_investigations() -> Value {
     json!({
         "name": "search_investigations",
         "description": "The investigations earlier agents finished into failed checks and other \
-    problems on the user's pull requests, newest first: each one's title, pull requests, when it \
-    started, and its last reply, which says what it found. One matches when its title or reply \
-    has every word of `query`, ignoring case.",
+    problems on the user's pull requests, the newest 10 first: each one's title, pull requests, \
+    when it started, the failed checks it started from with their log excerpts, and its last \
+    reply, which says what it found. One matches when its title, failed checks or reply has every \
+    word of `query`, ignoring case. `olderMatches` counts the older ones that match too: add words \
+    to narrow the search.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1014,6 +1019,9 @@ mod tests {
             .call(&token, "search_investigations", json!({ "query": "test_join" }))
             .await;
         let found: Value = serde_json::from_str(text(&result)).unwrap();
-        assert_eq!(found[0]["pullRequestUrls"], json!([PR]));
+        assert_eq!(found["investigations"][0]["pullRequestUrls"], json!([PR]));
+
+        let result = server.call(&token, "search_investigations", json!({})).await;
+        assert_eq!(result["isError"], true);
     }
 }
