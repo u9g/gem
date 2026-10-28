@@ -14,12 +14,12 @@ static MERGES: OnceLock<Merges<Server>> = OnceLock::new();
 struct Server;
 
 impl Host for Server {
-    async fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
-        t3::start(title, prompt, None).await
+    fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
+        t3::start(title, prompt, None)
     }
 
-    async fn progress(&self, thread_id: &str) -> Option<Progress> {
-        let (done, question) = t3::progress(thread_id).await?;
+    fn progress(&self, thread_id: &str) -> Option<Progress> {
+        let (done, question) = t3::progress(thread_id)?;
         Some(Progress { done, question })
     }
 }
@@ -32,7 +32,7 @@ pub fn init(db: Db) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn start(cluster: &PullRequestCluster) -> Result<(), String> {
+pub fn start(cluster: &PullRequestCluster) -> Result<(), String> {
     let urls: Vec<String> = cluster
         .pull_requests
         .iter()
@@ -47,7 +47,7 @@ pub async fn start(cluster: &PullRequestCluster) -> Result<(), String> {
         .map(|pr| pr.url.clone())
         .collect();
     let merges = MERGES.get().ok_or("merges are not ready")?;
-    merges.start(&urls, &admin, name).await
+    merges.start(&urls, &admin, name)
 }
 
 pub fn fill(clusters: &mut [PullRequestCluster]) {

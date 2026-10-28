@@ -1,21 +1,17 @@
 use std::{
     cmp::Reverse,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     ffi::OsString,
-    future::Future,
-    sync::{Arc, OnceLock},
+    path::Path,
+    sync::{Arc, OnceLock, RwLock},
+    thread,
     time::Duration,
 };
 
-use axum::{
-    Json, Router,
-    http::StatusCode,
-    routing::{get, post},
-};
-use pbjson_types::Timestamp;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tokio::sync::RwLock;
+use gem_http::{Reply, Router, ok};
+use gem_json::{Error, FromJson, ToJson, Value, json};
+use gem_log::{info, warn};
+use gem_proto::Timestamp;
 
 use conversations::Conversations;
 use gem_changes::Changes;
@@ -125,7 +121,6 @@ const PRS_JQ: &str = r#".data.search.nodes[] | select(.state == "OPEN")
   mentioned_by: [.timelineItems.nodes[].source.url | select(. != null)]
 }"#;
 
-#[derive(Deserialize)]
 struct SearchedPullRequest {
     // GraphQL node ID.
     id: String,
@@ -143,9 +138,7 @@ struct SearchedPullRequest {
     updated_at: Timestamp,
     approved: bool,
     // Set by `merge_states`.
-    #[serde(default)]
     behind: bool,
-    #[serde(default)]
     conflicts: bool,
     admin: bool,
     checks_passing: bool,
@@ -153,6 +146,32 @@ struct SearchedPullRequest {
     checks: Checks,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
+}
+
+impl FromJson for SearchedPullRequest {
+    fn from_json(value: &Value) -> Result<SearchedPullRequest, Error> {
+        Ok(SearchedPullRequest {
+            id: value.field("id")?,
+            repository: value.field("repository")?,
+            number: value.field("number")?,
+            title: value.field("title")?,
+            body: value.field("body")?,
+            url: value.field("url")?,
+            head: value.field("head")?,
+            head_oid: value.field("head_oid")?,
+            base: value.field("base")?,
+            created_at: value.field("created_at")?,
+            updated_at: value.field("updated_at")?,
+            approved: value.field("approved")?,
+            behind: value.field_or_default("behind")?,
+            conflicts: value.field_or_default("conflicts")?,
+            admin: value.field("admin")?,
+            checks_passing: value.field("checks_passing")?,
+            checks_failing: value.field("checks_failing")?,
+            checks: value.field("checks")?,
+            mentioned_by: value.field("mentioned_by")?,
+        })
+    }
 }
 
 fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
@@ -188,40 +207,49 @@ fn main() {
     // in the working directory, next to the server's other state. The real environment wins.
     let dotenv = load_dotenv();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let runtime = || tokio::runtime::Runtime::new().unwrap();
     match args.first().map(String::as_str) {
         Some("serve") => {
-            init_logging();
             (load_op_item().and_then(|()| load_typesafe_key())).unwrap_or_else(|error| panic!("{error}"));
-            runtime().block_on(run_server())
+            run_server()
         }
         Some("mcp") => mcp::serve(&args[1..]),
         _ => {
             // Nothing restarts the launcher, so it asks again rather than exit.
             while let Err(error) = load_op_item().and_then(|()| load_typesafe_key()) {
                 eprintln!("launcher: {error}; asking again in {OP_RETRY_DELAY:?}");
-                std::thread::sleep(OP_RETRY_DELAY);
+                thread::sleep(OP_RETRY_DELAY);
             }
             gem_launcher::run(dotenv)
         }
     }
 }
 
-// Loads .env and returns the variables it set, other than the LiveKit login and room, for the
-// launcher to leave out of each server's environment: the server reads them from .env again, and
-// sees an edit made since. The login and room stay inherited, as they do from 1Password, so a
-// server never has to ask for them.
+// Loads .env into gem_env and returns the variables it set, other than the LiveKit login and room,
+// for the launcher to leave out of each server's environment: the server reads them from .env
+// again, and sees an edit made since. The login and room stay inherited, as they do from
+// 1Password, so a server never has to ask for them.
 fn load_dotenv() -> Vec<OsString> {
-    let names = || std::env::vars_os().map(|(name, _)| name);
-    let before: HashSet<OsString> = names().collect();
-    if let Err(error) = dotenvy::dotenv()
-        && !error.not_found()
-    {
-        eprintln!("cannot read .env: {error}");
+    let vars = match gem_env::read_dotenv(Path::new(".env")) {
+        None => return Vec::new(),
+        Some(Err(error)) => {
+            eprintln!("cannot read .env: {error}");
+            return Vec::new();
+        }
+        Some(Ok(vars)) => vars,
+    };
+    let mut set = Vec::new();
+    for (name, value) in vars {
+        // A variable already set, by the real environment or earlier in .env, wins, as dotenvy has
+        // it.
+        if gem_env::is_set(&name) {
+            continue;
+        }
+        gem_env::set(&name, &value);
+        if !OP_FIELDS.contains(&name.as_str()) {
+            set.push(OsString::from(name));
+        }
     }
-    names()
-        .filter(|name| !before.contains(name) && !OP_FIELDS.iter().any(|field| name == *field))
-        .collect()
+    set
 }
 
 // How long the launcher waits to read the 1Password item again after it could not, e.g. when the
@@ -242,25 +270,34 @@ const OP_FIELDS: &[&str] = &[
 // The launcher reads the item once; every server it starts inherits the variables, so servers ask
 // 1Password, and the phone, nothing.
 fn load_op_item() -> Result<(), String> {
-    #[derive(Deserialize)]
     struct Item {
         fields: Vec<Field>,
     }
-    #[derive(Deserialize)]
     struct Field {
         label: String,
         // USERNAME or PASSWORD for a login's own username and password.
         purpose: Option<String>,
         value: Option<String>,
     }
+    impl FromJson for Item {
+        fn from_json(value: &Value) -> Result<Item, Error> {
+            Ok(Item { fields: value.field("fields")? })
+        }
+    }
+    impl FromJson for Field {
+        fn from_json(value: &Value) -> Result<Field, Error> {
+            Ok(Field {
+                label: value.field("label")?,
+                purpose: value.field("purpose")?,
+                value: value.field("value")?,
+            })
+        }
+    }
 
-    let Ok(reference) = std::env::var("GEM_OP_ITEM") else {
+    let Some(reference) = gem_env::var("GEM_OP_ITEM") else {
         return Ok(());
     };
-    if OP_FIELDS
-        .iter()
-        .all(|name| std::env::var_os(name).is_some())
-    {
+    if OP_FIELDS.iter().all(|name| gem_env::is_set(name)) {
         return Ok(());
     }
     let (vault, item) = reference
@@ -279,7 +316,7 @@ fn load_op_item() -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    let item: Item = serde_json::from_slice(&output.stdout)
+    let item: Item = gem_json::from_slice(&output.stdout)
         .map_err(|error| format!("op printed no item for {reference}: {error}"))?;
     for Field {
         label,
@@ -295,9 +332,8 @@ fn load_op_item() -> Result<(), String> {
         let Some(value) = value.filter(|value| !value.is_empty()) else {
             continue;
         };
-        if OP_FIELDS.contains(&name) && std::env::var_os(name).is_none() {
-            // SAFETY: main calls this before starting any other thread.
-            unsafe { std::env::set_var(name, value) };
+        if OP_FIELDS.contains(&name) && !gem_env::is_set(name) {
+            gem_env::set(name, &value);
         }
     }
     Ok(())
@@ -307,10 +343,10 @@ fn load_op_item() -> Result<(), String> {
 // credential GEM_TYPESAFE_OP_ITEM names, as op://<vault>/<item>. Read once, like GEM_OP_ITEM, so
 // servers inherit it and ask 1Password nothing. TYPESAFE_API_KEY already set wins.
 fn load_typesafe_key() -> Result<(), String> {
-    let Ok(reference) = std::env::var("GEM_TYPESAFE_OP_ITEM") else {
+    let Some(reference) = gem_env::var("GEM_TYPESAFE_OP_ITEM") else {
         return Ok(());
     };
-    if std::env::var_os("TYPESAFE_API_KEY").is_some() {
+    if gem_env::is_set("TYPESAFE_API_KEY") {
         return Ok(());
     }
     let output = std::process::Command::new("op")
@@ -324,14 +360,13 @@ fn load_typesafe_key() -> Result<(), String> {
         ));
     }
     let key = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // SAFETY: main calls this before starting any other thread.
-    unsafe { std::env::set_var("TYPESAFE_API_KEY", key) };
+    gem_env::set("TYPESAFE_API_KEY", &key);
     Ok(())
 }
 
-async fn run_server() {
+fn run_server() -> ! {
     // Servers from before GEM_ROOM was required joined the room gem.
-    if std::env::var_os("GEM_ROOM").is_none() {
+    if !gem_env::is_set("GEM_ROOM") {
         let env = std::fs::read_to_string(".env").unwrap_or_default();
         let separator = if env.is_empty() || env.ends_with('\n') {
             ""
@@ -340,7 +375,7 @@ async fn run_server() {
         };
         std::fs::write(".env", format!("{env}{separator}GEM_ROOM=gem\n"))
             .expect("cannot write .env");
-        let _ = dotenvy::dotenv();
+        load_dotenv();
     }
 
     // Before anything uses it, so a server without gh signed in panics now, not on a request.
@@ -369,58 +404,62 @@ async fn run_server() {
     // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
     // change. Proposals and investigations change in the database, so the snapshot is compared rather than
     // announced. The agents gem starts propose through `gem-agent`.
-    tokio::task::spawn_blocking(mcp::register);
-    tokio::spawn(mcp::listen());
-    let (snapshots, snapshot) = tokio::sync::watch::channel(String::new());
+    thread::spawn(|| {
+        mcp::register();
+    });
+    thread::spawn(|| {
+        mcp::listen();
+    });
+    let snapshots = gem_room::Snapshots::new();
     {
-        let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
-        tokio::spawn(async move {
+        let (snapshots, prs, names, conversations) =
+            (snapshots.clone(), prs.clone(), names.clone(), conversations.clone());
+        thread::spawn(move || {
             loop {
-                if let Some(response) = filled(&prs, &names, &conversations).await {
-                    let json = serde_json::to_string(&response).unwrap();
-                    if *snapshots.borrow() != json {
-                        mcp::save(&response).await;
-                        snapshots.send_replace(json);
+                if let Some(response) = filled(&prs, &names, &conversations) {
+                    let json = gem_json::to_string(&response);
+                    if snapshots.current() != json {
+                        mcp::save(&response);
+                        snapshots.send(json);
                     }
                 }
-                tokio::time::sleep(SNAPSHOT_INTERVAL).await;
+                thread::sleep(SNAPSHOT_INTERVAL);
             }
         });
     }
 
     let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/repos", get(move || serve(repos)))
-        .route("/clusters/restart", {
+        .get("/healthz", healthz)
+        .get("/repos", move || serve(&repos))
+        .post("/clusters/restart", {
             let conversations = conversations.clone();
-            post(|Json(request): Json<RestartClusterRequest>| async move {
-                conversations.restart(&request.pull_request_urls).await;
-                Json(RestartClusterResponse {})
-            })
+            move |request: RestartClusterRequest| {
+                conversations.restart(&request.pull_request_urls);
+                ok(&RestartClusterResponse {})
+            }
         })
-        .route("/clusters/message", {
+        .post("/clusters/message", {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
-            post(|Json(request): Json<MessageClusterRequest>| async move {
-                let response = filled(&prs, &names, &conversations).await;
+            move |request: MessageClusterRequest| {
+                let response = filled(&prs, &names, &conversations);
                 let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
                 investigations::ask(cluster, &request.message)
-                    .await
-                    .map(|agent_id| Json(MessageClusterResponse { agent_id }))
-                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            })
+                    .map(|agent_id| MessageClusterResponse { agent_id }.to_json())
+                    .map_err(|error| (400, error))
+            }
         })
-        .route("/clusters/merge", {
+        .post("/clusters/merge", {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
-            post(|Json(request): Json<MergeClusterRequest>| async move {
-                let response = filled(&prs, &names, &conversations).await;
+            move |request: MergeClusterRequest| {
+                let response = filled(&prs, &names, &conversations);
                 let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
                 match (cluster.merge_by(), request.admin) {
                     (MergeBy::Unspecified, _) => {
-                        return Err((StatusCode::CONFLICT, "the cluster cannot merge".to_string()));
+                        return Err((409, "the cluster cannot merge".to_string()));
                     }
                     (MergeBy::Admin, false) => {
                         return Err((
-                            StatusCode::CONFLICT,
+                            409,
                             "the cluster has unapproved pull requests; merge it as an admin"
                                 .to_string(),
                         ));
@@ -428,193 +467,143 @@ async fn run_server() {
                     _ => {}
                 }
                 merges::start(cluster)
-                    .await
-                    .map(|()| Json(MergeClusterResponse {}))
-                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            })
+                    .map(|()| MergeClusterResponse {}.to_json())
+                    .map_err(|error| (400, error))
+            }
         })
-        .route("/clusters/rebase", {
+        .post("/clusters/rebase", {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
-            post(|Json(request): Json<RebaseClusterRequest>| async move {
-                let response = filled(&prs, &names, &conversations).await;
+            move |request: RebaseClusterRequest| {
+                let response = filled(&prs, &names, &conversations);
                 let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
                 rebases::start_cluster(cluster)
-                    .await
-                    .map(|()| Json(RebaseClusterResponse {}))
-                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            })
+                    .map(|()| RebaseClusterResponse {}.to_json())
+                    .map_err(|error| (400, error))
+            }
         })
-        .route("/prs", {
-            let (prs, conversations) = (prs.clone(), conversations.clone());
-            post(move |Json(_): Json<ListOpenPullRequestsRequest>| {
-                serve_prs(prs, names, conversations)
-            })
+        .post("/prs", {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            move |_: ListOpenPullRequestsRequest| serve_prs(&prs, &names, &conversations)
         })
-        .route(
-            "/prs/search",
-            post(|Json(request): Json<SearchPullRequestsRequest>| async move {
-                search::matching(&request.query)
-                    .await
-                    .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
-                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
-            }),
-        )
-        .route(
-            "/prs/rebase",
-            post(|Json(request): Json<RebasePullRequestRequest>| async move {
-                rebases::start(&request.url)
-                    .await
-                    .map(|()| Json(RebasePullRequestResponse {}))
-                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            }),
-        )
-        .route("/proposals/approve", {
+        .post("/prs/search", |request: SearchPullRequestsRequest| {
+            search::matching(&request.query)
+                .map(|pull_request_urls| SearchPullRequestsResponse { pull_request_urls }.to_json())
+                .map_err(|error| (502, error))
+        })
+        .post("/prs/rebase", |request: RebasePullRequestRequest| {
+            rebases::start(&request.url)
+                .map(|()| RebasePullRequestResponse {}.to_json())
+                .map_err(|error| (400, error))
+        })
+        .post("/proposals/approve", {
             let prs = prs.clone();
-            post(|Json(request): Json<ApproveProposalRequest>| async move {
+            move |request: ApproveProposalRequest| {
                 let closed = proposals::approve(
                     &request.id,
                     &request.reply,
                     &request.follow_up,
                     &request.diff,
-                )
-                .await;
+                );
                 match &closed {
-                    Ok(closed) => tracing::info!(
-                        proposal = %request.id,
-                        closed_pull_request = ?closed,
-                        "proposal approved"
+                    Ok(closed) => info!(
+                        "proposal approved",
+                        proposal = request.id,
+                        closed_pull_request = format!("{closed:?}")
                     ),
                     Err(error) => {
-                        tracing::warn!(proposal = %request.id, %error, "proposal approve failed")
+                        warn!("proposal approve failed", proposal = request.id, error = error)
                     }
                 }
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.
-                if let (Ok(Some(url)), Some(response)) = (closed, &mut *prs.write().await) {
+                if let (Ok(Some(url)), Some(response)) = (closed, &mut *prs.write().unwrap()) {
                     for cluster in &mut response.clusters {
                         cluster.pull_requests.retain(|pr| pr.url != url);
                     }
                     response.clusters.retain(|c| !c.pull_requests.is_empty());
                 }
-                Json(ApproveProposalResponse {})
-            })
+                ok(&ApproveProposalResponse {})
+            }
         })
-        .route(
-            "/investigations/start",
-            post(|Json(request): Json<InvestigateRequest>| async move {
-                investigations::start(&request.proposal_id)
-                    .await
-                    .map(|()| Json(InvestigateResponse {}))
-                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            }),
-        )
-        .route("/agents/message", {
+        .post("/investigations/start", |request: InvestigateRequest| {
+            investigations::start(&request.proposal_id)
+                .map(|()| InvestigateResponse {}.to_json())
+                .map_err(|error| (400, error))
+        })
+        .post("/agents/message", {
             let conversations = conversations.clone();
-            post(|Json(request): Json<MessageAgentRequest>| async move {
+            move |request: MessageAgentRequest| {
                 agents::message(&conversations, &request.id, &request.message)
-                    .await
-                    .map(|()| Json(MessageAgentResponse {}))
-                    .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            })
+                    .map(|()| MessageAgentResponse {}.to_json())
+                    .map_err(|error| (400, error))
+            }
         })
-        .route("/agents/close", {
+        .post("/agents/close", {
             let conversations = conversations.clone();
-            post(|Json(request): Json<CloseAgentRequest>| async move {
+            move |request: CloseAgentRequest| {
                 agents::close(&conversations, &request.id)
-                    .await
-                    .map(|()| Json(CloseAgentResponse {}))
-                    .map_err(|error| (StatusCode::NOT_FOUND, error))
-            })
+                    .map(|()| CloseAgentResponse {}.to_json())
+                    .map_err(|error| (404, error))
+            }
         })
-        .route(
-            "/markdown/render",
-            post(|Json(request): Json<RenderMarkdownRequest>| async move {
-                render(&request.pull_request_url, &request.markdown)
-                    .await
-                    .map(|html| Json(RenderMarkdownResponse { html }))
-                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
-            }),
-        )
-        .route(
-            "/proposals/dismiss",
-            post(|Json(request): Json<DismissProposalRequest>| async move {
-                proposals::dismiss(&request.id).await;
-                tracing::info!(proposal = %request.id, "proposal dismissed");
-                Json(DismissProposalResponse {})
-            }),
-        );
+        .post("/markdown/render", |request: RenderMarkdownRequest| {
+            render(&request.pull_request_url, &request.markdown)
+                .map(|html| RenderMarkdownResponse { html }.to_json())
+                .map_err(|error| (502, error))
+        })
+        .post("/proposals/dismiss", |request: DismissProposalRequest| {
+            proposals::dismiss(&request.id);
+            info!("proposal dismissed", proposal = request.id);
+            ok(&DismissProposalResponse {})
+        });
 
     investigations::watch();
     agents::watch(conversations);
-    gem_room::serve(
-        move |request| gem_http::respond(app.clone(), request),
-        snapshot,
-    )
-    .await;
+    // Each request is answered on its own thread.
+    let app = Arc::new(app);
+    gem_room::serve(move |request| gem_http::respond(&app, &request), snapshots)
 }
 
-// One line of JSON per event on stderr, which the launcher appends to server.log. RUST_LOG
-// overrides the filter; LiveKit's own info events are left out by default, as they are one per
-// signal message.
-fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("info,livekit=warn,livekit_api=warn,libwebrtc=warn")
-    });
-    tracing_subscriber::fmt()
-        .json()
-        .with_current_span(true)
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        .init();
-}
-
-async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok" }))
+fn healthz() -> Reply {
+    Ok(json!({ "status": "ok" }))
 }
 
 // Requests never call GitHub; a failed refresh keeps serving the last good result. Refreshes as
 // soon as `changes` sees GitHub change, and every REFRESH_INTERVAL for what it does not watch.
-fn cached<T, F, Fut>(refresh: F, changes: Changes) -> Cache<T>
+fn cached<T, F>(refresh: F, changes: Changes) -> Cache<T>
 where
     T: Send + Sync + 'static,
-    F: Fn() -> Fut + Send + 'static,
-    Fut: Future<Output = Option<T>> + Send,
+    F: Fn() -> Option<T> + Send + 'static,
 {
     let cache = Cache::default();
     let writer = cache.clone();
-    tokio::spawn(async move {
+    thread::spawn(move || {
         loop {
-            if let Some(value) = refresh().await {
-                *writer.write().await = Some(value);
+            if let Some(value) = refresh() {
+                *writer.write().unwrap() = Some(value);
             }
-            tokio::select! {
-                () = tokio::time::sleep(REFRESH_INTERVAL) => {}
-                () = changes.changed() => {}
-            }
+            changes.changed(REFRESH_INTERVAL);
         }
     });
     cache
 }
 
-async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusCode> {
-    cache
-        .read()
-        .await
-        .clone()
-        .map(Json)
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+fn serve<T: ToJson>(cache: &Cache<T>) -> Reply {
+    (cache.read().unwrap().as_ref())
+        .map(ToJson::to_json)
+        .ok_or((503, String::new()))
 }
 
 // Names and proposals arrive after the refresh that asked for them, so they are filled in per
 // request.
-async fn serve_prs(
-    cache: Cache<ListOpenPullRequestsResponse>,
-    names: Names,
-    conversations: Conversations,
-) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
-    (filled(&cache, &names, &conversations).await)
-        .map(Json)
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
+fn serve_prs(
+    cache: &Cache<ListOpenPullRequestsResponse>,
+    names: &Names,
+    conversations: &Conversations,
+) -> Reply {
+    (filled(cache, names, conversations))
+        .map(|response| response.to_json())
+        .ok_or((503, String::new()))
 }
 
 // The cluster the user acted on, holding exactly the pull requests they saw in it: clusters join and
@@ -623,17 +612,17 @@ async fn serve_prs(
 fn acted_on<'a>(
     response: Option<&'a ListOpenPullRequestsResponse>,
     urls: &[String],
-) -> Result<&'a PullRequestCluster, (StatusCode, String)> {
+) -> Result<&'a PullRequestCluster, (u16, String)> {
     let cluster = (response.iter().flat_map(|r| &r.clusters))
         .find(|c| c.pull_requests.iter().any(|pr| Some(&pr.url) == urls.first()))
-        .ok_or((StatusCode::NOT_FOUND, "the cluster is gone".to_string()))?;
+        .ok_or((404, "the cluster is gone".to_string()))?;
     let mut now: Vec<&str> = (cluster.pull_requests.iter()).map(|pr| pr.url.as_str()).collect();
     let mut seen: Vec<&str> = urls.iter().map(String::as_str).collect();
     now.sort();
     seen.sort();
     if now != seen {
         return Err((
-            StatusCode::CONFLICT,
+            409,
             "the cluster's pull requests changed; look at it again".to_string(),
         ));
     }
@@ -641,30 +630,30 @@ fn acted_on<'a>(
 }
 
 // The cached clusters with their names and proposals, and the agents, as gem shows them.
-async fn filled(
+fn filled(
     cache: &Cache<ListOpenPullRequestsResponse>,
     names: &Names,
     conversations: &Conversations,
 ) -> Option<ListOpenPullRequestsResponse> {
-    let mut response = cache.read().await.clone()?;
-    agents::fill(&mut response, conversations).await;
+    let mut response = cache.read().unwrap().clone()?;
+    agents::fill(&mut response, conversations);
     // Names are asked for the clusters as shown, after agents join them, so none is asked for a
     // cluster that never shows.
-    names.request_missing(&response.clusters).await;
-    names.fill(&mut response.clusters).await;
-    proposals::fill(&mut response.clusters, &conversations.waiting().await).await;
-    conversations.fill(&mut response.clusters).await;
-    files::fill(&mut response.clusters).await;
+    names.request_missing(&response.clusters);
+    names.fill(&mut response.clusters);
+    proposals::fill(&mut response.clusters, &conversations.waiting());
+    conversations.fill(&mut response.clusters);
+    files::fill(&mut response.clusters);
     rebases::fill(&mut response.clusters);
     merges::fill(&mut response.clusters);
     Some(response)
 }
 
-async fn open_pull_requests(
+fn open_pull_requests(
     conversations: Conversations,
     changes: Changes,
 ) -> Option<ListOpenPullRequestsResponse> {
-    let search = std::env::var("GEM_SEARCH").unwrap_or_default();
+    let search = gem_env::var("GEM_SEARCH").unwrap_or_default();
     let stdout = gh("open pull requests", &[
         "api",
         "graphql",
@@ -675,18 +664,15 @@ async fn open_pull_requests(
         &format!("q=is:pr is:open author:{} {search}", login()),
         "--jq",
         PRS_JQ,
-    ])
-    .await?;
-    let mut prs = serde_json::Deserializer::from_slice(&stdout)
-        .into_iter()
-        .collect::<Result<Vec<SearchedPullRequest>, _>>()
-        .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
+    ])?;
+    let mut prs = gem_json::from_stream::<SearchedPullRequest>(&stdout)
+        .inspect_err(|error| warn!("cannot read open pull requests", error = error))
         .ok()?;
-    merge_states(&mut prs).await;
-    changes.watch(watched(&prs)).await;
-    search::index(&prs).await;
+    merge_states(&mut prs);
+    changes.watch(watched(&prs));
+    search::index(&prs);
     let clusters = cluster(&prs);
-    conversations.refresh(&prs).await;
+    conversations.refresh(&prs);
     Some(ListOpenPullRequestsResponse {
         clusters,
         login: login().to_string(),
@@ -703,23 +689,30 @@ const MERGE_STATES_CHUNK: usize = 25;
 
 // Sets `behind` when GitHub will not merge a PR until it is rebased (its base branch requires it up
 // to date, or it conflicts) and `conflicts` when it conflicts.
-async fn merge_states(prs: &mut [SearchedPullRequest]) {
-    let mut requests = tokio::task::JoinSet::new();
-    for chunk in prs.chunks(MERGE_STATES_CHUNK) {
-        let ids = json!(chunk.iter().map(|pr| &pr.id).collect::<Vec<_>>());
-        let query = format!(
-            "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
-        );
-        requests.spawn(async move {
-            gh_partial_json::<Value>("merge states", &["api", "graphql", "-f", &query]).await
-        });
-    }
+fn merge_states(prs: &mut [SearchedPullRequest]) {
+    let results: Vec<Option<Value>> = thread::scope(|scope| {
+        let requests: Vec<_> = (prs.chunks(MERGE_STATES_CHUNK))
+            .map(|chunk| {
+                let ids: Vec<&String> = chunk.iter().map(|pr| &pr.id).collect();
+                let ids = json!(ids);
+                let query = format!(
+                    "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id mergeStateStatus mergeable }} }} }}"
+                );
+                scope.spawn(move || {
+                    gh_partial_json::<Value>("merge states", &["api", "graphql", "-f", &query])
+                })
+            })
+            .collect();
+        (requests.into_iter())
+            .map(|request| request.join().ok().flatten())
+            .collect()
+    });
     let mut states = HashMap::new();
-    while let Some(result) = requests.join_next().await {
-        let Ok(Some(mut data)) = result else {
-            continue;
-        };
-        for node in data["data"]["nodes"].as_array_mut().into_iter().flatten() {
+    for mut data in results.into_iter().flatten() {
+        let nodes = (data.get_mut("data"))
+            .and_then(|data| data.get_mut("nodes"))
+            .and_then(Value::as_array_mut);
+        for node in nodes.into_iter().flatten() {
             let id = node["id"].as_str().unwrap_or_default().to_string();
             states.insert(id, node.take());
         }
@@ -803,7 +796,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         proposals: Vec::new(),
                         behind: pr.behind,
                         conflicts: pr.conflicts,
-                        checks: Some(pr.checks),
+                        checks: Some(pr.checks.clone()),
                         head_oid: pr.head_oid.clone(),
                         base: pr.base.clone(),
                         files: Vec::new(),
@@ -848,8 +841,8 @@ mod tests {
         let urls = |urls: &[&str]| urls.iter().map(|u| u.to_string()).collect::<Vec<_>>();
         assert!(acted_on(Some(&response), &urls(&["b", "a"])).is_ok());
         let conflict = |urls: &[String]| acted_on(Some(&response), urls).err().map(|e| e.0);
-        assert_eq!(conflict(&urls(&["a"])), Some(StatusCode::CONFLICT));
-        assert_eq!(conflict(&urls(&["a", "b", "c"])), Some(StatusCode::CONFLICT));
-        assert_eq!(conflict(&urls(&["c"])), Some(StatusCode::NOT_FOUND));
+        assert_eq!(conflict(&urls(&["a"])), Some(409));
+        assert_eq!(conflict(&urls(&["a", "b", "c"])), Some(409));
+        assert_eq!(conflict(&urls(&["c"])), Some(404));
     }
 }

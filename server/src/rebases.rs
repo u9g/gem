@@ -17,7 +17,7 @@ struct Server {
 }
 
 impl Host for Server {
-    async fn refs(&self, url: &str) -> Option<Refs> {
+    fn refs(&self, url: &str) -> Option<Refs> {
         let refs = gh("refs", &[
             "pr",
             "view",
@@ -26,8 +26,7 @@ impl Host for Server {
             "baseRefName,headRefName,headRefOid",
             "--jq",
             r#".baseRefName + " " + .headRefName + " " + .headRefOid"#,
-        ])
-        .await?;
+        ])?;
         let refs = String::from_utf8_lossy(&refs);
         let [base, branch, head] = refs.split_whitespace().collect::<Vec<_>>()[..] else {
             return None;
@@ -39,17 +38,17 @@ impl Host for Server {
         })
     }
 
-    async fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
-        t3::start(title, prompt, None).await
+    fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
+        t3::start(title, prompt, None)
     }
 
-    async fn progress(&self, thread_id: &str) -> Option<Progress> {
-        let (done, question) = t3::progress(thread_id).await?;
+    fn progress(&self, thread_id: &str) -> Option<Progress> {
+        let (done, question) = t3::progress(thread_id)?;
         Some(Progress { done, question })
     }
 
-    async fn listed_head(&self, url: &str) -> Option<String> {
-        let prs = self.prs.read().await;
+    fn listed_head(&self, url: &str) -> Option<String> {
+        let prs = self.prs.read().unwrap();
         (prs.iter().flat_map(|r| &r.clusters))
             .flat_map(|c| &c.pull_requests)
             .find(|pr| pr.url == url)
@@ -65,13 +64,13 @@ pub fn init(db: Db, prs: Cache<ListOpenPullRequestsResponse>) -> Result<(), Stri
     Ok(())
 }
 
-pub async fn start(url: &str) -> Result<(), String> {
+pub fn start(url: &str) -> Result<(), String> {
     let (repository, number) = gem_github::short(url);
     let rebases = REBASES.get().ok_or("rebases are not ready")?;
-    rebases.start(&[url.to_string()], &format!("{repository}#{number}")).await
+    rebases.start(&[url.to_string()], &format!("{repository}#{number}"))
 }
 
-pub async fn start_cluster(cluster: &PullRequestCluster) -> Result<(), String> {
+pub fn start_cluster(cluster: &PullRequestCluster) -> Result<(), String> {
     let urls: Vec<String> = (cluster.pull_requests.iter())
         .map(|pr| pr.url.clone())
         .collect();
@@ -80,7 +79,7 @@ pub async fn start_cluster(cluster: &PullRequestCluster) -> Result<(), String> {
         name => name,
     };
     let rebases = REBASES.get().ok_or("rebases are not ready")?;
-    rebases.start(&urls, name).await
+    rebases.start(&urls, name)
 }
 
 pub fn fill(clusters: &mut [PullRequestCluster]) {

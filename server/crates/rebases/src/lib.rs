@@ -5,19 +5,19 @@
 
 use std::{
     collections::BTreeMap,
-    future::Future,
-    sync::Arc,
+    sync::{Arc, Mutex},
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{
-    Db,
-    rusqlite::{self, OptionalExtension, params},
-};
-use tokio::sync::Mutex;
+use gem_db::{Db, OptionalExtension, params};
 
 // Reading a thread is a local CLI call.
+#[cfg(not(test))]
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+// Tests run on real time.
+#[cfg(test)]
+const REFRESH_INTERVAL: Duration = Duration::from_millis(20);
 // How many reads of a thread can fail in a row, e.g. after it is deleted, before its rebase is
 // dropped and the pull request can be rebased again.
 const MAX_FAILED_READS: u32 = 30;
@@ -61,18 +61,14 @@ pub struct Rebase {
 
 pub trait Host: Send + Sync + 'static {
     // The pull request's base and head branches and head commit, as GitHub has them now.
-    fn refs(&self, url: &str) -> impl Future<Output = Option<Refs>> + Send;
+    fn refs(&self, url: &str) -> Option<Refs>;
     // Starts an agent on `prompt` without waiting for it. Returns the thread's id.
-    fn start_thread(
-        &self,
-        title: &str,
-        prompt: &str,
-    ) -> impl Future<Output = Result<String, String>> + Send;
+    fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String>;
     // None when the thread cannot be read.
-    fn progress(&self, thread_id: &str) -> impl Future<Output = Option<Progress>> + Send;
+    fn progress(&self, thread_id: &str) -> Option<Progress>;
     // The head commit gem lists the pull request with, None once it is not listed. Search keeps
     // listing the old head until its next refresh.
-    fn listed_head(&self, url: &str) -> impl Future<Output = Option<String>> + Send;
+    fn listed_head(&self, url: &str) -> Option<String>;
 }
 
 pub struct Rebases<H> {
@@ -105,12 +101,16 @@ impl<H: Host> Rebases<H> {
     // Starts one agent rebasing the pull requests at `urls`, called `name` in its thread's title,
     // unless one of them already is being rebased. The agent settles its thread when done: T3 Code
     // does not settle threads when they finish.
-    pub async fn start(&self, urls: &[String], name: &str) -> Result<(), String> {
-        let _starting = self.starting.lock().await;
+    pub fn start(&self, urls: &[String], name: &str) -> Result<(), String> {
+        let _starting = self.starting.lock().unwrap();
         let running = self.db.with(|db| {
             let mut rows = db.prepare("SELECT 1 FROM rebases WHERE url = ?1")?;
             for url in urls {
-                if rows.query_row([url], |_| Ok(())).optional()?.is_some() {
+                if rows
+                    .query_row(params![url], |_| Ok(()))
+                    .optional()?
+                    .is_some()
+                {
                     return Ok(true);
                 }
             }
@@ -122,7 +122,7 @@ impl<H: Host> Rebases<H> {
 
         let mut heads = Vec::new();
         for url in urls {
-            let refs = (self.host.refs(url).await).ok_or(format!("gh: cannot read {url}"))?;
+            let refs = (self.host.refs(url)).ok_or(format!("gh: cannot read {url}"))?;
             heads.push(refs.head);
         }
         let prompt = format!(
@@ -144,22 +144,23 @@ settle this thread.",
             }
             Ok(())
         })?;
-        let started = self.host.start_thread(&title, &prompt).await;
+        let started = self.host.start_thread(&title, &prompt);
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
-                self.db
-                    .with(|db| db.execute("DELETE FROM rebases WHERE thread_id IS NULL", []))?;
+                self.db.with(|db| {
+                    db.execute("DELETE FROM rebases WHERE thread_id IS NULL", params![])
+                })?;
                 return Err(error);
             }
         };
         self.db.with(|db| {
             db.execute(
                 "UPDATE rebases SET thread_id = ?1 WHERE thread_id IS NULL",
-                [&thread_id],
+                params![thread_id],
             )
         })?;
-        tokio::spawn(self.clone().watch(thread_id));
+        self.spawn_watch(thread_id);
         Ok(())
     }
 
@@ -167,13 +168,13 @@ settle this thread.",
     // dropped: its server stopped while starting it.
     pub fn resume(&self) -> Result<(), String> {
         let rebases = self.db.with(|db| {
-            db.execute("DELETE FROM rebases WHERE thread_id IS NULL", [])?;
+            db.execute("DELETE FROM rebases WHERE thread_id IS NULL", params![])?;
             let mut rows = db.prepare("SELECT DISTINCT thread_id FROM rebases")?;
-            rows.query_map([], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()
+            rows.query_map(params![], |row| row.get::<String>(0))?
+                .collect::<gem_db::Result<Vec<String>>>()
         })?;
         for thread_id in rebases {
-            tokio::spawn(self.clone().watch(thread_id));
+            self.spawn_watch(thread_id);
         }
         Ok(())
     }
@@ -184,15 +185,15 @@ settle this thread.",
             let mut rows = db.prepare(
                 "SELECT url, thread_id, question, pushed, title, started_at FROM rebases",
             )?;
-            rows.query_map([], |row| {
+            rows.query_map(params![], |row| {
                 let rebase = Rebase {
-                    thread_id: row.get(1)?,
-                    question: row.get(2)?,
-                    pushed: row.get(3)?,
-                    title: row.get(4)?,
-                    started_at: row.get(5)?,
+                    thread_id: row.get::<Option<String>>(1)?,
+                    question: row.get::<bool>(2)?,
+                    pushed: row.get::<bool>(3)?,
+                    title: row.get::<String>(4)?,
+                    started_at: row.get::<i64>(5)?,
                 };
-                Ok((row.get(0)?, rebase))
+                Ok((row.get::<String>(0)?, rebase))
             })?
             .collect()
         })
@@ -200,11 +201,16 @@ settle this thread.",
 
     // A pushed rebase lasts until the pull request is listed with another head, so its old head's
     // checks and how far behind it was do not show as the new head's.
-    async fn watch(self, thread_id: String) {
+    fn spawn_watch(&self, thread_id: String) {
+        let rebases = self.clone();
+        thread::spawn(move || rebases.watch(thread_id));
+    }
+
+    fn watch(self, thread_id: String) {
         let mut failed_reads = 0;
         loop {
-            tokio::time::sleep(REFRESH_INTERVAL).await;
-            let Some(progress) = self.host.progress(&thread_id).await else {
+            thread::sleep(REFRESH_INTERVAL);
+            let Some(progress) = self.host.progress(&thread_id) else {
                 failed_reads += 1;
                 if failed_reads >= MAX_FAILED_READS {
                     eprintln!("rebase: cannot read thread {thread_id}; dropping it");
@@ -225,8 +231,10 @@ settle this thread.",
         }
         let rebases = self.db.with(|db| {
             let mut rows = db.prepare("SELECT url, head FROM rebases WHERE thread_id = ?1")?;
-            rows.query_map([&thread_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<Vec<(String, String)>>>()
+            rows.query_map(params![thread_id], |row| {
+                Ok((row.get::<String>(0)?, row.get::<String>(1)?))
+            })?
+            .collect::<gem_db::Result<Vec<(String, String)>>>()
         });
         let rebases = rebases.unwrap_or_else(|error| {
             eprintln!("{error}");
@@ -234,11 +242,11 @@ settle this thread.",
         });
         let mut pushed = Vec::new();
         for (url, head) in rebases {
-            if self.host.refs(&url).await.is_some_and(|refs| refs.head != head) {
+            if self.host.refs(&url).is_some_and(|refs| refs.head != head) {
                 let _ = self.db.with(|db| {
                     db.execute(
                         "UPDATE rebases SET question = 0, pushed = 1 WHERE url = ?1",
-                        [&url],
+                        params![url],
                     )
                 });
                 pushed.push((url, head));
@@ -247,8 +255,8 @@ settle this thread.",
             }
         }
         for (url, head) in pushed {
-            while (self.host.listed_head(&url).await).is_some_and(|listed| listed == head) {
-                tokio::time::sleep(REFRESH_INTERVAL).await;
+            while (self.host.listed_head(&url)).is_some_and(|listed| listed == head) {
+                thread::sleep(REFRESH_INTERVAL);
             }
             if let Err(error) = self.remove(&url) {
                 eprintln!("{error}");
@@ -260,24 +268,32 @@ settle this thread.",
     // can be rebased again; the agent keeps running in T3 Code.
     pub fn forget(&self, thread_id: &str) -> Result<(), String> {
         self.db
-            .with(|db| db.execute("DELETE FROM rebases WHERE thread_id = ?1", [thread_id]))
+            .with(|db| {
+                db.execute(
+                    "DELETE FROM rebases WHERE thread_id = ?1",
+                    params![thread_id],
+                )
+            })
             .map(drop)
     }
 
     fn remove(&self, url: &str) -> Result<(), String> {
         self.db
-            .with(|db| db.execute("DELETE FROM rebases WHERE url = ?1", [url]))
+            .with(|db| db.execute("DELETE FROM rebases WHERE url = ?1", params![url]))
             .map(drop)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
+    use std::time::Instant;
 
     use super::*;
 
     const URL: &str = "https://github.com/o/r/pull/1";
+    // How long reading a pull request's refs, and starting a thread, take.
+    const REFS: Duration = Duration::from_millis(10);
+    const START: Duration = Duration::from_millis(100);
 
     #[derive(Default)]
     struct State {
@@ -290,7 +306,7 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct FakeHost(Arc<StdMutex<State>>);
+    struct FakeHost(Arc<Mutex<State>>);
 
     impl FakeHost {
         fn new() -> Self {
@@ -313,9 +329,9 @@ mod tests {
     }
 
     impl Host for FakeHost {
-        async fn refs(&self, _: &str) -> Option<Refs> {
+        fn refs(&self, _: &str) -> Option<Refs> {
             // gh takes a while, so a second press can arrive before the first writes its row.
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            thread::sleep(REFS);
             Some(Refs {
                 base: "main".into(),
                 branch: "fix".into(),
@@ -323,8 +339,8 @@ mod tests {
             })
         }
 
-        async fn start_thread(&self, title: &str, _: &str) -> Result<String, String> {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        fn start_thread(&self, title: &str, _: &str) -> Result<String, String> {
+            thread::sleep(START);
             let mut state = self.0.lock().unwrap();
             if state.fail_start {
                 return Err("t3: could not run the CLI".into());
@@ -333,15 +349,14 @@ mod tests {
             Ok(format!("thread-{}", state.started.len()))
         }
 
-        async fn progress(&self, _: &str) -> Option<Progress> {
+        fn progress(&self, _: &str) -> Option<Progress> {
             let (done, question) = self.0.lock().unwrap().progress?;
             Some(Progress { done, question })
         }
 
-        async fn listed_head(&self, _: &str) -> Option<String> {
+        fn listed_head(&self, _: &str) -> Option<String> {
             self.0.lock().unwrap().listed_head.clone()
         }
-
     }
 
     fn rebases(host: &FakeHost) -> Rebases<FakeHost> {
@@ -352,123 +367,133 @@ mod tests {
         rebases.all().unwrap().remove(URL)
     }
 
-    // Lets the watcher take a few turns of REFRESH_INTERVAL.
-    async fn refreshes(count: u32) {
-        tokio::time::sleep(REFRESH_INTERVAL * count + Duration::from_secs(1)).await;
+    // Lets the watcher take at most `count` turns of REFRESH_INTERVAL: a turn is never shorter.
+    fn refreshes(count: u32) {
+        thread::sleep(REFRESH_INTERVAL * count + REFRESH_INTERVAL / 2);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn two_presses_start_one_agent() {
+    // Waits for the watcher to bring about `what`, within a turn or so of REFRESH_INTERVAL.
+    fn soon(what: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + REFRESH_INTERVAL + Duration::from_secs(2);
+        while !what() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        true
+    }
+
+    #[test]
+    fn two_presses_start_one_agent() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
         let urls = [URL.to_string()];
-        let (first, second) =
-            tokio::join!(rebases.start(&urls, "r#1"), rebases.start(&urls, "r#1"));
+        let (first, second) = thread::scope(|s| {
+            let first = s.spawn(|| rebases.start(&urls, "r#1"));
+            let second = s.spawn(|| rebases.start(&urls, "r#1"));
+            (first.join().unwrap(), second.join().unwrap())
+        });
         first.unwrap();
         second.unwrap();
         assert_eq!(host.0.lock().unwrap().started, ["Rebase r#1"]);
         // Pressing again while the agent works does nothing either.
-        rebases.start(&[URL.into()], "r#1").await.unwrap();
+        rebases.start(&[URL.into()], "r#1").unwrap();
         assert_eq!(host.started(), 1);
         let started = rebase(&rebases).unwrap();
         assert_eq!(started.thread_id.as_deref(), Some("thread-1"));
         assert_eq!(started.title, "Rebase r#1");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_cluster_is_rebased_by_one_agent() {
+    #[test]
+    fn a_cluster_is_rebased_by_one_agent() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
         let other = "https://github.com/o/s/pull/2";
-        rebases
-            .start(&[URL.into(), other.into()], "c")
-            .await
-            .unwrap();
+        rebases.start(&[URL.into(), other.into()], "c").unwrap();
         assert_eq!(host.started(), 1);
         // Neither can be rebased again while the agent works.
-        rebases.start(&[other.into()], "s#2").await.unwrap();
+        rebases.start(&[other.into()], "s#2").unwrap();
         assert_eq!(host.started(), 1);
         let all = rebases.all().unwrap();
         assert_eq!(all[URL].thread_id.as_deref(), Some("thread-1"));
         assert_eq!(all[other].thread_id.as_deref(), Some("thread-1"));
 
         host.set(|s| s.progress = Some((true, false)));
-        refreshes(1).await;
-        assert!(rebases.all().unwrap().is_empty());
+        assert!(soon(|| rebases.all().unwrap().is_empty()));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn shows_while_its_thread_starts() {
+    #[test]
+    fn shows_while_its_thread_starts() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
-        let starting = tokio::spawn({
+        let starting = thread::spawn({
             let rebases = rebases.clone();
-            async move { rebases.start(&[URL.into()], "r#1").await }
+            move || rebases.start(&[URL.into()], "r#1")
         });
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        thread::sleep(START / 2);
         assert_eq!(rebase(&rebases).unwrap().thread_id, None);
-        starting.await.unwrap().unwrap();
+        starting.join().unwrap().unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_failed_start_can_be_retried() {
+    #[test]
+    fn a_failed_start_can_be_retried() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
         host.set(|s| s.fail_start = true);
-        assert!(rebases.start(&[URL.into()], "r#1").await.is_err());
+        assert!(rebases.start(&[URL.into()], "r#1").is_err());
         assert_eq!(rebase(&rebases), None);
         host.set(|s| s.fail_start = false);
-        rebases.start(&[URL.into()], "r#1").await.unwrap();
+        rebases.start(&[URL.into()], "r#1").unwrap();
         assert_eq!(host.started(), 1);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_pushed_rebase_lasts_until_the_new_head_is_listed() {
+    #[test]
+    fn a_pushed_rebase_lasts_until_the_new_head_is_listed() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
-        rebases.start(&[URL.into()], "r#1").await.unwrap();
+        rebases.start(&[URL.into()], "r#1").unwrap();
 
         host.set(|s| s.progress = Some((false, true)));
-        refreshes(1).await;
-        assert!(rebase(&rebases).unwrap().question);
+        assert!(soon(|| rebase(&rebases).unwrap().question));
 
         host.set(|s| {
             s.head = "new".into();
             s.progress = Some((true, false));
         });
-        refreshes(1).await;
+        assert!(soon(|| rebase(&rebases).unwrap().pushed));
         let pushed = rebase(&rebases).unwrap();
         assert!(pushed.pushed && !pushed.question);
+        // It stays while the old head is listed.
+        refreshes(2);
+        assert!(rebase(&rebases).is_some_and(|rebase| rebase.pushed));
 
         host.set(|s| s.listed_head = Some("new".into()));
-        refreshes(1).await;
-        assert_eq!(rebase(&rebases), None);
+        assert!(soon(|| rebase(&rebases).is_none()));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_rebase_that_pushed_nothing_ends_with_its_thread() {
+    #[test]
+    fn a_rebase_that_pushed_nothing_ends_with_its_thread() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
-        rebases.start(&[URL.into()], "r#1").await.unwrap();
+        rebases.start(&[URL.into()], "r#1").unwrap();
         host.set(|s| s.progress = Some((true, false)));
-        refreshes(1).await;
-        assert_eq!(rebase(&rebases), None);
+        assert!(soon(|| rebase(&rebases).is_none()));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_unreadable_thread_is_dropped() {
+    #[test]
+    fn an_unreadable_thread_is_dropped() {
         let host = FakeHost::new();
         let rebases = rebases(&host);
-        rebases.start(&[URL.into()], "r#1").await.unwrap();
+        rebases.start(&[URL.into()], "r#1").unwrap();
         host.set(|s| s.progress = None);
-        refreshes(MAX_FAILED_READS - 1).await;
+        refreshes(MAX_FAILED_READS - 1);
         assert!(rebase(&rebases).is_some());
-        refreshes(1).await;
-        assert_eq!(rebase(&rebases), None);
+        assert!(soon(|| rebase(&rebases).is_none()));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_restarted_server_resumes_its_rebases() {
+    #[test]
+    fn a_restarted_server_resumes_its_rebases() {
         let host = FakeHost::new();
         let db = Db::open_in_memory().unwrap();
         Rebases::new(db.clone(), host.clone()).unwrap();
@@ -484,10 +509,9 @@ mod tests {
         rebases.resume().unwrap();
         // The one whose thread never started is gone; the other is watched again.
         assert_eq!(rebases.all().unwrap().len(), 1);
-        rebases.start(&[URL.into()], "r#1").await.unwrap();
+        rebases.start(&[URL.into()], "r#1").unwrap();
         assert_eq!(host.started(), 0);
         host.set(|s| s.progress = Some((true, false)));
-        refreshes(1).await;
-        assert_eq!(rebase(&rebases), None);
+        assert!(soon(|| rebase(&rebases).is_none()));
     }
 }

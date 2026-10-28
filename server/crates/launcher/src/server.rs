@@ -3,7 +3,6 @@
 use std::{
     env,
     ffi::OsString,
-    path::Path,
     process::{Child, Command},
 };
 #[cfg(unix)]
@@ -12,19 +11,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{log, update::git};
+use crate::{log, releases::Build, update::git};
 
 // How long a stopped server gets to leave its room before it is killed.
 #[cfg(unix)]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub fn start(exe: &Path, dotenv: &[OsString]) -> Child {
+pub fn start(release: &Build, dotenv: &[OsString]) -> Child {
     match git(&["rev-parse", "--short", "HEAD"]) {
         Some(head) => log(&format!("starting the server at {head}")),
         None => log("starting the server"),
     }
-    let mut command = Command::new(exe);
+    let mut command = Command::new(&release.server);
     command.arg("serve");
+    // What the launcher read from 1Password, which the server would otherwise ask for again.
+    gem_env::apply(&mut command);
     // The server reads these from .env itself, so it sees an edit made since the launcher started.
     for name in dotenv {
         command.env_remove(name);
@@ -35,6 +36,10 @@ pub fn start(exe: &Path, dotenv: &[OsString]) -> Child {
         && let Some(profile) = env::var_os("USERPROFILE")
     {
         command.env("HOME", profile);
+    }
+    // The server runs the gem-native built with it. One installed without it finds its own.
+    if release.native.is_file() {
+        command.env("GEM_NATIVE", &release.native);
     }
     command.spawn().expect("cannot start the server")
 }

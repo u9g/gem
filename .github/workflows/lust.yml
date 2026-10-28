@@ -25,5 +25,4 @@ jobs:
       - run: lust --version
       - run: ./lust.sh
         env:
-          LUST_SKIP_SERVER: "1"
           LUST_PROBE: "1"

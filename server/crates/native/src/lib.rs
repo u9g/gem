@@ -30,8 +30,11 @@ pub fn path() -> PathBuf {
     PathBuf::from(file)
 }
 
+// gem-native with `args`, given the variables the server set, e.g. the LiveKit login and room
+// from .env or 1Password, which the room needs.
 pub fn command(args: &[&str]) -> Command {
     let mut command = Command::new(path());
     command.args(args);
+    gem_env::apply(&mut command);
     command
 }

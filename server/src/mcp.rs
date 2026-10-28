@@ -9,26 +9,17 @@
 use std::{
     env,
     io::{BufRead, Write},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
     time::Duration,
 };
 
-use axum::{
-    Json, Router,
-    body::Bytes,
-    extract::State,
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
-    routing::post,
-};
-use gem_db::{
-    Db,
-    rusqlite::{OptionalExtension, params},
-};
-use serde_json::{Value, json};
+use gem_db::{Db, OptionalExtension, params};
+use gem_http::server::{Request, Response};
+use gem_json::{FromJson, Value, json};
+use gem_log::{error, info, warn};
 
 use crate::investigations;
 use crate::proposals::{self, GitHub};
@@ -38,7 +29,7 @@ use crate::tokens::{Subject, Tokens};
 const NAME: &str = "gem";
 
 // Called after every refresh.
-pub async fn save(response: &ListOpenPullRequestsResponse) {
+pub fn save(response: &ListOpenPullRequestsResponse) {
     save_to(crate::db(), response);
 }
 
@@ -46,19 +37,21 @@ fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
     let saved = db.with(|db| {
         db.execute(
             "INSERT OR REPLACE INTO snapshot (id, response) VALUES (0, ?1)",
-            params![serde_json::to_string(response).unwrap()],
+            params![gem_json::to_string(response)],
         )
     });
     if let Err(error) = saved {
-        tracing::warn!(%error, "cannot save the snapshot");
+        warn!("cannot save the snapshot", error = error);
     }
 }
 
 // The snapshot's JSON, once the server saved one.
 fn snapshot(db: &Db) -> Option<String> {
     db.with(|db| {
-        db.query_row("SELECT response FROM snapshot", [], |row| row.get(0))
-            .optional()
+        db.query_row("SELECT response FROM snapshot", params![], |row| {
+            row.get::<String>(0)
+        })
+        .optional()
     })
     .ok()
     .flatten()
@@ -67,8 +60,8 @@ fn snapshot(db: &Db) -> Option<String> {
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
 // already does. Builds are replaced on every update, so each one registers itself.
 pub fn register() {
-    let exe = env::current_exe().unwrap();
-    let state = env::current_dir().unwrap();
+    let exe = env::current_exe().unwrap().to_string_lossy().into_owned();
+    let state = env::current_dir().unwrap().to_string_lossy().into_owned();
     let wanted = json!({
         "type": "stdio",
         "command": exe,
@@ -78,7 +71,7 @@ pub fn register() {
     let registered = env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
         .and_then(|home| std::fs::read(PathBuf::from(home).join(".claude.json")).ok())
-        .and_then(|json| serde_json::from_slice::<Value>(&json).ok())
+        .and_then(|json| gem_json::parse_bytes(&json).ok())
         .map(|config| config["mcpServers"][NAME].clone());
     if registered.as_ref() == Some(&wanted) {
         return;
@@ -115,7 +108,7 @@ pub fn serve(args: &[String]) {
     let mut stdout = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
-        let Ok(request) = serde_json::from_str::<Value>(&line) else {
+        let Ok(request) = gem_json::parse(&line) else {
             continue;
         };
         // Notifications have no id and get no response.
@@ -138,7 +131,7 @@ fn handle(db: &Db, request: &Value) -> Result<Value, (i64, String)> {
         mentions. These tools read the clusters as gem last showed them.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools() })),
+        "tools/list" => Ok(json!({ "tools": (tools()) })),
         "tools/call" => Ok(tool_result(call(
             db,
             params["name"].as_str().unwrap_or_default(),
@@ -159,9 +152,9 @@ fn response(id: Value, result: Result<Value, (i64, String)>) -> Value {
 
 fn initialize(params: &Value, name: &str, instructions: &str) -> Value {
     json!({
-        "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+        "protocolVersion": (params["protocolVersion"].as_str().unwrap_or("2025-06-18")),
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": name, "version": env!("CARGO_PKG_VERSION") },
+        "serverInfo": { "name": name, "version": (env!("CARGO_PKG_VERSION")) },
         "instructions": instructions,
     })
 }
@@ -176,7 +169,7 @@ fn tool_result(text: Result<String, String>) -> Value {
 
 fn tools() -> Value {
     json!([
-        get_cluster(),
+        (get_cluster()),
         {
             "name": "list_clusters",
             "description": "Every cluster gem shows, most recently updated first: its name and \
@@ -211,7 +204,7 @@ fn get_cluster() -> Value {
 fn call(db: &Db, tool: &str, arguments: &Value) -> Result<String, String> {
     let snapshot = snapshot(db)
         .ok_or("gem has not listed any clusters yet; is its server running?".to_string())?;
-    let mut snapshot: Value = serde_json::from_str(&snapshot).map_err(|e| e.to_string())?;
+    let mut snapshot = gem_json::parse(&snapshot).map_err(|e| e.to_string())?;
     // Rendered HTML repeats the markdown next to it.
     strip_view(&mut snapshot);
     let clusters = snapshot["clusters"].as_array().cloned().unwrap_or_default();
@@ -226,7 +219,7 @@ fn call(db: &Db, tool: &str, arguments: &Value) -> Result<String, String> {
                     prs.is_some_and(|prs| prs.iter().any(|pr| pr["url"].as_str() == Some(url)))
                 })
                 .ok_or(format!("no open pull request {url} in gem's clusters"))?;
-            Ok(serde_json::to_string_pretty(&cluster).unwrap())
+            Ok(cluster.to_string_pretty())
         }
         "list_clusters" => {
             let clusters: Vec<Value> = (clusters.iter())
@@ -235,16 +228,13 @@ fn call(db: &Db, tool: &str, arguments: &Value) -> Result<String, String> {
                         .as_array()
                         .cloned()
                         .unwrap_or_default();
-                    json!({
-                        "name": cluster["name"],
-                        "pullRequests": prs
-                            .iter()
-                            .map(|pr| json!({ "url": pr["url"], "title": pr["title"] }))
-                            .collect::<Vec<_>>(),
-                    })
+                    let prs: Vec<Value> = (prs.iter())
+                        .map(|pr| json!({ "url": (pr["url"]), "title": (pr["title"]) }))
+                        .collect();
+                    json!({ "name": (cluster["name"]), "pullRequests": prs })
                 })
                 .collect();
-            Ok(serde_json::to_string_pretty(&clusters).unwrap())
+            Ok(gem_json::to_string_pretty(&clusters))
         }
         tool => Err(format!("no tool {tool}")),
     }
@@ -254,7 +244,7 @@ fn call(db: &Db, tool: &str, arguments: &Value) -> Result<String, String> {
 fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
     let pr = pr.trim().trim_end_matches('/');
     let snapshot: ListOpenPullRequestsResponse = snapshot(db)
-        .and_then(|json| serde_json::from_str(&json).ok())
+        .and_then(|json| gem_json::from_str(&json).ok())
         .unwrap_or_default();
     (snapshot.clusters.into_iter())
         .map(|cluster| {
@@ -270,9 +260,9 @@ fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
 
 // A cluster as `get_cluster` returns it, for prompts of agents that may not reach this server.
 pub fn cluster_json(cluster: &PullRequestCluster) -> String {
-    let mut cluster = serde_json::to_value(cluster).unwrap();
+    let mut cluster = gem_json::ToJson::to_json(cluster);
     strip_view(&mut cluster);
-    serde_json::to_string_pretty(&cluster).unwrap()
+    cluster.to_string_pretty()
 }
 
 // Drops what only gem's own view shows: rendered HTML, and PRs' file diffs.
@@ -295,8 +285,7 @@ pub const AGENT_NAME: &str = "gem-agent";
 const DEFAULT_PORT: u16 = 47474;
 
 fn port() -> u16 {
-    env::var("GEM_MCP_PORT")
-        .ok()
+    gem_env::var("GEM_MCP_PORT")
         .and_then(|port| port.trim().parse().ok())
         .unwrap_or(DEFAULT_PORT)
 }
@@ -308,28 +297,37 @@ fn url() -> String {
 // The --mcp-config of a new agent answering `subject`, as the path of a file in the server's
 // working directory: T3 Code's CLI is a batch file on Windows, which cannot take JSON as an
 // argument.
-pub async fn agent_config(subject: &Subject) -> Result<String, String> {
-    let path = Tokens::here().issue(subject, &url()).await?;
+pub fn agent_config(subject: &Subject) -> Result<String, String> {
+    let path = Tokens::here().issue(subject, &url())?;
     Ok(path.to_string_lossy().into_owned())
 }
 
 // Serves `gem-agent` on the loopback interface until the server stops. A server restarting for an
 // update can start before the one it replaces has let go of the port, so it keeps trying.
-pub async fn listen() {
-    let app = router(crate::db().clone(), Tokens::here(), proposals::Live);
+pub fn listen() {
+    let endpoint = Arc::new(Endpoint {
+        db: crate::db().clone(),
+        tokens: Tokens::here(),
+        github: proposals::Live,
+    });
     let port = port();
     let listener = loop {
-        match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
             Ok(listener) => break listener,
             Err(error) => {
-                tracing::warn!(port, %error, "cannot listen for agents; trying again");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                warn!(
+                    "cannot listen for agents; trying again",
+                    port = port,
+                    error = error
+                );
+                std::thread::sleep(Duration::from_secs(5));
             }
         }
     };
-    tracing::info!(port, "listening for agents");
-    if let Err(error) = axum::serve(listener, app).await {
-        tracing::error!(%error, "stopped listening for agents");
+    info!("listening for agents", port = port);
+    if let Err(error) = gem_http::server::serve(listener, move |request| answer(&endpoint, request))
+    {
+        error!("stopped listening for agents", error = error);
     }
 }
 
@@ -341,46 +339,35 @@ struct Endpoint<G> {
 }
 
 // Streamable HTTP without streams: each POST to /mcp is one JSON-RPC message, answered with JSON.
-fn router(db: Db, tokens: Tokens, github: impl GitHub) -> Router {
-    let endpoint = Arc::new(Endpoint { db, tokens, github });
-    Router::new()
-        .route("/mcp", post(answer))
-        .with_state(endpoint)
-}
-
-async fn answer<G: GitHub>(
-    State(endpoint): State<Arc<Endpoint<G>>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let token = (headers.get(header::AUTHORIZATION))
-        .and_then(|value| value.to_str().ok())
+fn answer<G: GitHub>(endpoint: &Endpoint<G>, request: Request) -> Response {
+    let path = request.path.split('?').next().unwrap_or_default();
+    if path != "/mcp" {
+        return Response::new(404);
+    }
+    if request.method != "POST" {
+        return Response::new(405).header("allow", "POST");
+    }
+    let token = (request.header("authorization"))
         .and_then(|value| value.strip_prefix("Bearer "))
         .unwrap_or_default();
-    let Some(subject) = endpoint.tokens.subject(token.trim()).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Bearer")],
-            "no agent of gem's has this token",
-        )
-            .into_response();
+    let Some(subject) = endpoint.tokens.subject(token.trim()) else {
+        return Response::new(401)
+            .header("www-authenticate", "Bearer")
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(b"no agent of gem's has this token".to_vec());
     };
-    let Ok(request) = serde_json::from_slice::<Value>(&body) else {
+    let Ok(body) = gem_json::parse_bytes(&request.body) else {
         let error = response(Value::Null, Err((-32700, "the body is not JSON".into())));
-        return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+        return Response::json(400, &error);
     };
     // Notifications have no id and get no response.
-    let Some(id) = request.get("id").cloned() else {
-        return StatusCode::ACCEPTED.into_response();
+    let Some(id) = body.get("id").cloned() else {
+        return Response::new(202);
     };
-    Json(response(
-        id,
-        handle_agent(&endpoint, &subject, &request).await,
-    ))
-    .into_response()
+    Response::json(200, &response(id, handle_agent(endpoint, &subject, &body)))
 }
 
-async fn handle_agent<G: GitHub>(
+fn handle_agent<G: GitHub>(
     endpoint: &Endpoint<G>,
     subject: &Subject,
     request: &Value,
@@ -396,9 +383,9 @@ async fn handle_agent<G: GitHub>(
         earlier agents found investigating failures.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => {
-            Ok(json!({ "tools": [get_cluster(), search_investigations(), propose_tool(subject)] }))
-        }
+        "tools/list" => Ok(json!({
+            "tools": [(get_cluster()), (search_investigations()), (propose_tool(subject))],
+        })),
         "tools/call" => {
             let arguments = &params["arguments"];
             Ok(tool_result(
@@ -406,11 +393,11 @@ async fn handle_agent<G: GitHub>(
                     "get_cluster" => call(&endpoint.db, "get_cluster", arguments),
                     "search_investigations" => match arguments["query"].as_str() {
                         Some(query) if !query.trim().is_empty() => {
-                            Ok(investigations::search(&endpoint.db, query).await)
+                            Ok(investigations::search(&endpoint.db, query))
                         }
                         _ => Err("`query` must be words to search for".into()),
                     },
-                    "propose" => propose(endpoint, subject, arguments).await,
+                    "propose" => propose(endpoint, subject, arguments),
                     tool => Err(format!("no tool {tool}")),
                 },
             ))
@@ -419,19 +406,17 @@ async fn handle_agent<G: GitHub>(
     }
 }
 
-async fn propose<G: GitHub>(
+fn propose<G: GitHub>(
     endpoint: &Endpoint<G>,
     subject: &Subject,
     arguments: &Value,
 ) -> Result<String, String> {
-    let request: proposals::Request =
-        serde_json::from_value(arguments.clone()).map_err(|e| e.to_string())?;
+    let request = proposals::Request::from_json(arguments).map_err(|e| e.to_string())?;
     let cluster = cluster_of(&endpoint.db, &request.pr);
-    let proposed =
-        proposals::propose(&endpoint.github, &endpoint.db, subject, &cluster, request).await;
+    let proposed = proposals::propose(&endpoint.github, &endpoint.db, subject, &cluster, request);
     match &proposed {
-        Ok(id) => tracing::info!(proposal = %id, subject = subject.id(), "proposal recorded"),
-        Err(error) => tracing::info!(subject = subject.id(), %error, "proposal rejected"),
+        Ok(id) => info!("proposal recorded", proposal = id, subject = subject.id()),
+        Err(error) => info!("proposal rejected", subject = subject.id(), error = error),
     }
     proposed.map(|id| format!("Recorded proposal {id}."))
 }
@@ -464,10 +449,10 @@ fn propose_tool(subject: &Subject) -> Value {
     let mut properties = json!({
         "pr": {
             "type": "string",
-            "description": format!(
+            "description": (format!(
                 "The pull request the proposal is about: {}",
                 subject.prs().join(" or ")
-            ),
+            )),
         },
         "summary": {
             "type": "string",
@@ -597,8 +582,6 @@ fn propose_tool(subject: &Subject) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use axum::{body::Body, http::Request};
-    use tower::ServiceExt;
 
     use super::*;
     use crate::proposals::FetchedComment;
@@ -623,14 +606,14 @@ mod tests {
     struct Fake;
 
     impl GitHub for Fake {
-        async fn comment(&self, id: &str) -> Result<FetchedComment, String> {
+        fn comment(&self, id: &str) -> Result<FetchedComment, String> {
             Ok(FetchedComment {
                 comment: comment(id),
                 pull_request: PR.into(),
             })
         }
 
-        async fn check_failure(&self, _: &str, id: &str) -> Result<CheckFailure, String> {
+        fn check_failure(&self, _: &str, id: &str) -> Result<CheckFailure, String> {
             Ok(CheckFailure {
                 id: id.into(),
                 head_oid: "abc".into(),
@@ -645,15 +628,15 @@ mod tests {
             })
         }
 
-        async fn review_thread(&self, _: &str) -> Result<(String, Vec<Comment>), String> {
+        fn review_thread(&self, _: &str) -> Result<(String, Vec<Comment>), String> {
             Ok((PR.into(), vec![comment("PRRC_0"), comment("PRRC_1")]))
         }
 
-        async fn check_patch(&self, _: &str, _: &str) -> Result<String, String> {
+        fn check_patch(&self, _: &str, _: &str) -> Result<String, String> {
             Ok("abc".into())
         }
 
-        async fn check_new_pull_request(
+        fn check_new_pull_request(
             &self,
             repository: &str,
             base: &str,
@@ -666,7 +649,7 @@ mod tests {
             }
         }
 
-        async fn render(&self, _: &str, markdown: &str) -> Result<String, String> {
+        fn render(&self, _: &str, markdown: &str) -> Result<String, String> {
             Ok(format!("<p>{markdown}</p>"))
         }
     }
@@ -674,7 +657,7 @@ mod tests {
     struct Server {
         db: Db,
         tokens: Tokens,
-        app: Router,
+        endpoint: Endpoint<Fake>,
     }
 
     impl Server {
@@ -682,7 +665,11 @@ mod tests {
             let db = db();
             let tokens = Tokens::new(db.clone(), temp_dir(name));
             Self {
-                app: router(db.clone(), tokens.clone(), Fake),
+                endpoint: Endpoint {
+                    db: db.clone(),
+                    tokens: tokens.clone(),
+                    github: Fake,
+                },
                 db,
                 tokens,
             }
@@ -693,44 +680,43 @@ mod tests {
         }
 
         // A token for an agent answering `subject`.
-        async fn token(&self, subject: &Subject) -> String {
+        fn token(&self, subject: &Subject) -> String {
             token(
                 &self
                     .tokens
                     .issue(subject, "http://127.0.0.1:1/mcp")
-                    .await
                     .unwrap(),
             )
         }
 
-        async fn post(&self, token: Option<&str>, body: Value) -> (StatusCode, Value) {
-            let mut request = Request::post("/mcp").header("content-type", "application/json");
+        fn post(&self, token: Option<&str>, body: Value) -> (u16, Value) {
+            let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
             if let Some(token) = token {
-                request = request.header("authorization", format!("Bearer {token}"));
+                headers.push(("authorization".into(), format!("Bearer {token}")));
             }
-            let request = request.body(Body::from(body.to_string())).unwrap();
-            let response = self.app.clone().oneshot(request).await.unwrap();
-            let status = response.status();
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+            let request = Request {
+                method: "POST".into(),
+                path: "/mcp".into(),
+                headers,
+                body: body.to_string().into_bytes(),
+            };
+            let response = answer(&self.endpoint, request);
+            let body = gem_json::parse_bytes(&response.body).unwrap_or(Value::Null);
+            (response.status, body)
         }
 
         // The result of calling `tool`.
-        async fn call(&self, token: &str, tool: &str, arguments: Value) -> Value {
-            let (status, response) = self
-                .post(
-                    Some(token),
-                    json!({
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": { "name": tool, "arguments": arguments },
-                    }),
-                )
-                .await;
-            assert_eq!(status, StatusCode::OK);
+        fn call(&self, token: &str, tool: &str, arguments: Value) -> Value {
+            let (status, response) = self.post(
+                Some(token),
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": { "name": tool, "arguments": arguments },
+                }),
+            );
+            assert_eq!(status, 200);
             response["result"].clone()
         }
 
@@ -755,62 +741,49 @@ mod tests {
         result["content"][0]["text"].as_str().unwrap()
     }
 
-    #[tokio::test]
-    async fn requests_without_a_valid_token_are_unauthorized() {
+    #[test]
+    fn requests_without_a_valid_token_are_unauthorized() {
         let server = Server::new("unauthorized");
-        let token = server.token(&in_thread()).await;
-        assert_eq!(
-            server.post(None, initialize()).await.0,
-            StatusCode::UNAUTHORIZED
-        );
-        assert_eq!(
-            server.post(Some("0123abcd"), initialize()).await.0,
-            StatusCode::UNAUTHORIZED
-        );
-        let (status, response) = server.post(Some(&token), initialize()).await;
-        assert_eq!(status, StatusCode::OK);
+        let token = server.token(&in_thread());
+        assert_eq!(server.post(None, initialize()).0, 401);
+        assert_eq!(server.post(Some("0123abcd"), initialize()).0, 401);
+        let (status, response) = server.post(Some(&token), initialize());
+        assert_eq!(status, 200);
         assert_eq!(response["result"]["serverInfo"]["name"], AGENT_NAME);
 
-        server.tokens.revoke("PRRC_1").await;
-        assert_eq!(
-            server.post(Some(&token), initialize()).await.0,
-            StatusCode::UNAUTHORIZED
-        );
+        server.tokens.revoke("PRRC_1");
+        assert_eq!(server.post(Some(&token), initialize()).0, 401);
     }
 
-    #[tokio::test]
-    async fn notifications_are_accepted_without_a_response() {
+    #[test]
+    fn notifications_are_accepted_without_a_response() {
         let server = Server::new("notification");
-        let token = server.token(&in_thread()).await;
+        let token = server.token(&in_thread());
         let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
-        assert_eq!(
-            server.post(Some(&token), notification).await.0,
-            StatusCode::ACCEPTED
-        );
+        assert_eq!(server.post(Some(&token), notification).0, 202);
     }
 
-    #[tokio::test]
-    async fn propose_offers_the_steps_its_subject_can_take() {
+    #[test]
+    fn propose_offers_the_steps_its_subject_can_take() {
         let server = Server::new("tools");
         let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-        let propose = async |subject: Subject| {
-            let token = server.token(&subject).await;
-            let (_, response) = server.post(Some(&token), list.clone()).await;
+        let propose = |subject: Subject| {
+            let token = server.token(&subject);
+            let (_, response) = server.post(Some(&token), list.clone());
             let tools = response["result"]["tools"].as_array().unwrap().clone();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
             assert_eq!(names, ["get_cluster", "search_investigations", "propose"]);
             tools[2]["inputSchema"].clone()
         };
 
-        let schema = propose(in_thread()).await;
+        let schema = propose(in_thread());
         assert!(schema["properties"]["resolve_thread"].is_object());
         assert!(schema["properties"]["rerun"].is_null());
 
         let schema = propose(Subject::CheckFailure {
             pr: PR.into(),
             id: "abc,CR_1".into(),
-        })
-        .await;
+        });
         assert!(schema["properties"]["rerun"].is_object());
         assert!(
             schema["required"]
@@ -821,24 +794,22 @@ mod tests {
         assert!(schema["properties"]["resolve_thread"].is_null());
     }
 
-    #[tokio::test]
-    async fn a_valid_proposal_is_saved_with_its_subject() {
+    #[test]
+    fn a_valid_proposal_is_saved_with_its_subject() {
         let server = Server::new("valid");
-        let token = server.token(&in_thread()).await;
-        let result = server
-            .call(
-                &token,
-                "propose",
-                json!({
-                    "pr": PR,
-                    "summary": "Rename it",
-                    "patch": "diff --git a/x b/x\n",
-                    "message": "Rename it",
-                    "reply": "Renamed.",
-                    "resolve_thread": true,
-                }),
-            )
-            .await;
+        let token = server.token(&in_thread());
+        let result = server.call(
+            &token,
+            "propose",
+            json!({
+                "pr": PR,
+                "summary": "Rename it",
+                "patch": "diff --git a/x b/x\n",
+                "message": "Rename it",
+                "reply": "Renamed.",
+                "resolve_thread": true,
+            }),
+        );
         assert_eq!(result["isError"], Value::Null, "{result}");
 
         let [proposal] = &server.proposals()[..] else {
@@ -858,22 +829,20 @@ mod tests {
         assert_eq!(proposal.investigation_id, "");
     }
 
-    #[tokio::test]
-    async fn a_top_level_reply_opens_by_quoting_the_comment() {
+    #[test]
+    fn a_top_level_reply_opens_by_quoting_the_comment() {
         let server = Server::new("quote");
         let subject = Subject::Comment {
             pr: PR.into(),
             comment: "IC_1".into(),
             thread: None,
         };
-        let token = server.token(&subject).await;
-        let result = server
-            .call(
-                &token,
-                "propose",
-                json!({ "pr": PR, "summary": "Reply", "reply": "Done." }),
-            )
-            .await;
+        let token = server.token(&subject);
+        let result = server.call(
+            &token,
+            "propose",
+            json!({ "pr": PR, "summary": "Reply", "reply": "Done." }),
+        );
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -882,21 +851,19 @@ mod tests {
         assert_eq!(proposal.reply_html, "<p>> IC_1's body\n\nDone.</p>");
     }
 
-    #[tokio::test]
-    async fn an_investigation_proposes_on_any_of_its_clusters_pull_requests() {
+    #[test]
+    fn an_investigation_proposes_on_any_of_its_clusters_pull_requests() {
         let server = Server::new("investigation");
         let subject = Subject::Investigation {
             id: "inv".into(),
             prs: vec![PR.into(), OTHER.into()],
         };
-        let token = server.token(&subject).await;
-        let result = server
-            .call(
-                &token,
-                "propose",
-                json!({ "pr": OTHER, "summary": "Fix it", "follow_up": "Fix it." }),
-            )
-            .await;
+        let token = server.token(&subject);
+        let result = server.call(
+            &token,
+            "propose",
+            json!({ "pr": OTHER, "summary": "Fix it", "follow_up": "Fix it." }),
+        );
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -906,14 +873,14 @@ mod tests {
         assert_eq!(proposal.comment, None);
     }
 
-    #[tokio::test]
-    async fn a_proposal_opens_a_pull_request_that_links_its_own() {
+    #[test]
+    fn a_proposal_opens_a_pull_request_that_links_its_own() {
         let server = Server::new("open-pull-request");
         let subject = Subject::Investigation {
             id: "inv".into(),
             prs: vec![PR.into()],
         };
-        let token = server.token(&subject).await;
+        let token = server.token(&subject);
         let open = |body: &str| {
             json!({
                 "pr": PR,
@@ -931,13 +898,13 @@ mod tests {
         };
 
         for body in ["Fixes the test.".to_string(), format!("Found on {PR}0.")] {
-            let result = server.call(&token, "propose", open(&body)).await;
+            let result = server.call(&token, "propose", open(&body));
             assert_eq!(result["isError"], true, "{result}");
             assert!(server.proposals().is_empty());
         }
 
         let body = format!("Fixes the test that fails on {PR}.");
-        let result = server.call(&token, "propose", open(&body)).await;
+        let result = server.call(&token, "propose", open(&body));
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -952,26 +919,24 @@ mod tests {
         assert_eq!(patch.commit_message, "Fix the test");
     }
 
-    #[tokio::test]
-    async fn a_check_failure_proposal_keeps_the_checks_it_excerpts() {
+    #[test]
+    fn a_check_failure_proposal_keeps_the_checks_it_excerpts() {
         let server = Server::new("checks");
         let subject = Subject::CheckFailure {
             pr: PR.into(),
             id: "abc,CR_1".into(),
         };
-        let token = server.token(&subject).await;
-        let result = server
-            .call(
-                &token,
-                "propose",
-                json!({
-                    "pr": PR,
-                    "summary": "Rerun it",
-                    "rerun": true,
-                    "excerpts": [{ "check": "CR_1", "lines": "error: timed out" }],
-                }),
-            )
-            .await;
+        let token = server.token(&subject);
+        let result = server.call(
+            &token,
+            "propose",
+            json!({
+                "pr": PR,
+                "summary": "Rerun it",
+                "rerun": true,
+                "excerpts": [{ "check": "CR_1", "lines": "error: timed out" }],
+            }),
+        );
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -981,10 +946,10 @@ mod tests {
         assert_eq!(failure.checks[0].excerpt, "error: timed out");
     }
 
-    #[tokio::test]
-    async fn an_invalid_proposal_is_a_tool_error_and_saves_nothing() {
+    #[test]
+    fn an_invalid_proposal_is_a_tool_error_and_saves_nothing() {
         let server = Server::new("invalid");
-        let token = server.token(&in_thread()).await;
+        let token = server.token(&in_thread());
         let invalid = [
             // No steps.
             json!({ "pr": PR, "summary": "Do nothing" }),
@@ -994,47 +959,43 @@ mod tests {
             json!({ "summary": "Reply", "reply": "No PR." }),
         ];
         for arguments in invalid {
-            let result = server.call(&token, "propose", arguments.clone()).await;
+            let result = server.call(&token, "propose", arguments.clone());
             assert_eq!(result["isError"], true, "{arguments} gave {result}");
             assert!(!text(&result).is_empty());
         }
         assert!(server.proposals().is_empty());
     }
 
-    #[tokio::test]
-    async fn a_token_proposes_only_on_its_own_subject() {
+    #[test]
+    fn a_token_proposes_only_on_its_own_subject() {
         let server = Server::new("scope");
-        let token = server.token(&in_thread()).await;
-        let result = server
-            .call(
-                &token,
-                "propose",
-                json!({ "pr": OTHER, "summary": "Reply", "reply": "Elsewhere." }),
-            )
-            .await;
+        let token = server.token(&in_thread());
+        let result = server.call(
+            &token,
+            "propose",
+            json!({ "pr": OTHER, "summary": "Reply", "reply": "Elsewhere." }),
+        );
         assert_eq!(result["isError"], true);
         assert!(text(&result).contains(PR), "{result}");
         assert!(server.proposals().is_empty());
 
         // Only a check failure's agent can rerun, so a comment's cannot reach one.
-        let result = server
-            .call(
-                &token,
-                "propose",
-                json!({
-                    "pr": PR,
-                    "summary": "Rerun",
-                    "rerun": true,
-                    "excerpts": [{ "check": "CR_1", "lines": "error" }],
-                }),
-            )
-            .await;
+        let result = server.call(
+            &token,
+            "propose",
+            json!({
+                "pr": PR,
+                "summary": "Rerun",
+                "rerun": true,
+                "excerpts": [{ "check": "CR_1", "lines": "error" }],
+            }),
+        );
         assert_eq!(result["isError"], true);
         assert!(server.proposals().is_empty());
     }
 
-    #[tokio::test]
-    async fn a_proposal_patches_other_pull_requests_of_its_cluster() {
+    #[test]
+    fn a_proposal_patches_other_pull_requests_of_its_cluster() {
         let server = Server::new("other-patches");
         let cluster = |urls: &[&str]| PullRequestCluster {
             pull_requests: (urls.iter())
@@ -1051,7 +1012,7 @@ mod tests {
             ..Default::default()
         };
         save_to(server.db(), &snapshot);
-        let token = server.token(&in_thread()).await;
+        let token = server.token(&in_thread());
         let other_patch = |pr: &str| {
             json!({
                 "pr": PR,
@@ -1062,17 +1023,17 @@ mod tests {
         };
 
         for pr in [PR, ELSEWHERE] {
-            let result = server.call(&token, "propose", other_patch(pr)).await;
+            let result = server.call(&token, "propose", other_patch(pr));
             assert_eq!(result["isError"], true, "{pr} gave {result}");
         }
         let mut twice = other_patch(OTHER);
         let patch = twice["other_patches"][0].clone();
         twice["other_patches"].as_array_mut().unwrap().push(patch);
-        let result = server.call(&token, "propose", twice).await;
+        let result = server.call(&token, "propose", twice);
         assert_eq!(result["isError"], true, "{result}");
         assert!(server.proposals().is_empty());
 
-        let result = server.call(&token, "propose", other_patch(OTHER)).await;
+        let result = server.call(&token, "propose", other_patch(OTHER));
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -1086,8 +1047,8 @@ mod tests {
         assert_eq!(patch.head_oid, "abc");
     }
 
-    #[tokio::test]
-    async fn get_cluster_reads_the_snapshot() {
+    #[test]
+    fn get_cluster_reads_the_snapshot() {
         let server = Server::new("cluster");
         let snapshot = json!({ "clusters": [{
             "name": "Renames",
@@ -1098,21 +1059,19 @@ mod tests {
             .with(|db| {
                 db.execute(
                     "INSERT INTO snapshot (id, response) VALUES (0, ?1)",
-                    [snapshot.to_string()],
+                    params![snapshot.to_string()],
                 )
             })
             .unwrap();
-        let token = server.token(&in_thread()).await;
-        let result = server
-            .call(&token, "get_cluster", json!({ "pull_request_url": PR }))
-            .await;
-        let cluster: Value = serde_json::from_str(text(&result)).unwrap();
+        let token = server.token(&in_thread());
+        let result = server.call(&token, "get_cluster", json!({ "pull_request_url": PR }));
+        let cluster = gem_json::parse(text(&result)).unwrap();
         assert_eq!(cluster["name"], "Renames");
         assert_eq!(cluster["pullRequests"][0]["titleHtml"], Value::Null);
     }
 
-    #[tokio::test]
-    async fn search_investigations_reads_the_closed_investigations() {
+    #[test]
+    fn search_investigations_reads_the_closed_investigations() {
         let server = Server::new("search");
         let investigation = json!({
             "id": "18f",
@@ -1125,18 +1084,20 @@ mod tests {
             .with(|db| {
                 db.execute(
                     "INSERT INTO investigations (id, investigation, closed) VALUES ('18f', ?1, 1)",
-                    [investigation.to_string()],
+                    params![investigation.to_string()],
                 )
             })
             .unwrap();
-        let token = server.token(&in_thread()).await;
-        let result = server
-            .call(&token, "search_investigations", json!({ "query": "test_join" }))
-            .await;
-        let found: Value = serde_json::from_str(text(&result)).unwrap();
+        let token = server.token(&in_thread());
+        let result = server.call(
+            &token,
+            "search_investigations",
+            json!({ "query": "test_join" }),
+        );
+        let found = gem_json::parse(text(&result)).unwrap();
         assert_eq!(found["investigations"][0]["pullRequestUrls"], json!([PR]));
 
-        let result = server.call(&token, "search_investigations", json!({})).await;
+        let result = server.call(&token, "search_investigations", json!({}));
         assert_eq!(result["isError"], true);
     }
 }

@@ -3,17 +3,15 @@
 
 use std::path::Path;
 
-use gem_db::{
-    Db,
-    rusqlite::{Connection, params},
-};
-use serde_json::Value;
+use gem_db::{Connection, Db, params};
+use gem_json::Value;
+use gem_log::warn;
 
 pub fn import(db: &Db) -> Result<(), String> {
     let json = |path: &str| -> Option<Value> {
-        let value = serde_json::from_slice(&std::fs::read(path).ok()?).ok();
+        let value = gem_json::parse_bytes(&std::fs::read(path).ok()?).ok();
         if value.is_none() {
-            tracing::warn!(path, "cannot import: not JSON");
+            warn!("cannot import: not JSON", path = path);
         }
         value
     };
@@ -34,7 +32,7 @@ pub fn import(db: &Db) -> Result<(), String> {
             for id in ids.iter().filter_map(Value::as_str) {
                 db.execute(
                     "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                    [id],
+                    params![id],
                 )?;
             }
             Ok(())
@@ -97,7 +95,7 @@ pub fn import(db: &Db) -> Result<(), String> {
 fn import_dir(
     db: &Db,
     dir: &str,
-    insert: impl Fn(&Connection, &str, &str) -> gem_db::rusqlite::Result<usize>,
+    insert: impl Fn(&Connection, &str, &str) -> gem_db::Result<usize>,
 ) -> Result<(), String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Ok(());
@@ -114,7 +112,7 @@ fn import_dir(
         remove(&path);
     }
     if let Err(error) = std::fs::remove_dir(dir) {
-        tracing::warn!(dir, %error, "cannot remove imported directory");
+        warn!("cannot remove imported directory", dir = dir, error = error);
     }
     Ok(())
 }
@@ -124,7 +122,10 @@ fn remove(path: impl AsRef<Path>) {
     if let Err(error) = std::fs::remove_file(path)
         && error.kind() != std::io::ErrorKind::NotFound
     {
-        tracing::warn!(path = %path.display(), %error, "cannot remove imported file");
+        warn!(
+            "cannot remove imported file",
+            path = path.display(),
+            error = error
+        );
     }
 }
-

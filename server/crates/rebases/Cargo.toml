@@ -5,7 +5,3 @@ edition = "2024"
 
 [dependencies]
 gem-db = { path = "../db" }
-tokio = { version = "1.54.1", features = ["rt", "sync", "time"] }
-
-[dev-dependencies]
-tokio = { version = "1.54.1", features = ["macros", "rt", "sync", "time", "test-util"] }

@@ -3,10 +3,13 @@
 // conversations, rebasing and merging, which are kept by what they work on. Each is told apart by
 // its ID's prefix, so a message or a close reaches the right one.
 
-use std::{collections::HashMap, sync::LazyLock, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, RwLock},
+    time::Duration,
+};
 
-use pbjson_types::Timestamp;
-use tokio::sync::RwLock;
+use gem_proto::Timestamp;
 
 use crate::conversations::Conversations;
 use crate::proto::{Agent, AgentState, ListOpenPullRequestsResponse, PullRequestCluster};
@@ -43,8 +46,8 @@ static SHOWN: LazyLock<RwLock<HashMap<String, Shown>>> = LazyLock::new(RwLock::d
 
 // Each agent is in the one cluster holding its open pull requests, or in the response's own list when
 // none is open. Clustering and placement read the same agents, so they always agree.
-pub async fn fill(response: &mut ListOpenPullRequestsResponse, conversations: &Conversations) {
-    let agents = list(conversations).await;
+pub fn fill(response: &mut ListOpenPullRequestsResponse, conversations: &Conversations) {
+    let agents = list(conversations);
     join(&mut response.clusters, &agents);
     for agent in agents {
         let cluster = (response.clusters.iter_mut()).find(|cluster| {
@@ -108,9 +111,9 @@ fn join(clusters: &mut Vec<PullRequestCluster>, agents: &[Agent]) {
 }
 
 // Every agent, most recently started first.
-pub async fn list(conversations: &Conversations) -> Vec<Agent> {
-    let mut agents = investigations::agents().await;
-    let shown = SHOWN.read().await;
+pub fn list(conversations: &Conversations) -> Vec<Agent> {
+    let mut agents = investigations::agents();
+    let shown = SHOWN.read().unwrap();
     let agent = |id: String, running: Running, waiting: bool| {
         let shown = (running.thread_id.as_ref())
             .and_then(|thread_id| shown.get(thread_id))
@@ -144,7 +147,7 @@ pub async fn list(conversations: &Conversations) -> Vec<Agent> {
                 .and_then(|thread_id| shown.get(thread_id))
                 .is_some_and(|shown| !shown.working)
     };
-    for (id, running) in conversations.running().await {
+    for (id, running) in conversations.running() {
         agents.push(agent(format!("{ANSWER}{id}"), running, false));
     }
     for (prefix, running) in (rebases::running().into_iter().map(|r| (REBASE, r)))
@@ -161,31 +164,33 @@ pub async fn list(conversations: &Conversations) -> Vec<Agent> {
     agents
 }
 
-pub async fn message(conversations: &Conversations, id: &str, message: &str) -> Result<(), String> {
+pub fn message(conversations: &Conversations, id: &str, message: &str) -> Result<(), String> {
     let thread_id = if let Some(conversation) = id.strip_prefix(ANSWER) {
-        (conversations.thread_of(conversation).await).ok_or("the agent has not started yet")?
+        conversations
+            .thread_of(conversation)
+            .ok_or("the agent has not started yet")?
     } else if let Some(thread_id) = id.strip_prefix(REBASE).or(id.strip_prefix(MERGE)) {
         if thread_id.is_empty() {
             return Err("the agent has not started yet".into());
         }
         thread_id.to_string()
     } else {
-        return investigations::message(id, message).await;
+        return investigations::message(id, message);
     };
-    t3::send(&thread_id, message).await?;
-    SHOWN.write().await.entry(thread_id).or_default().working = true;
+    t3::send(&thread_id, message)?;
+    SHOWN.write().unwrap().entry(thread_id).or_default().working = true;
     Ok(())
 }
 
-pub async fn close(conversations: &Conversations, id: &str) -> Result<(), String> {
+pub fn close(conversations: &Conversations, id: &str) -> Result<(), String> {
     if let Some(conversation) = id.strip_prefix(ANSWER) {
-        conversations.forget(conversation).await;
+        conversations.forget(conversation);
     } else if let Some(thread_id) = id.strip_prefix(REBASE) {
         rebases::forget(thread_id)?;
     } else if let Some(thread_id) = id.strip_prefix(MERGE) {
         merges::forget(thread_id)?;
-    } else if investigations::has(id).await {
-        investigations::close(id).await;
+    } else if investigations::has(id) {
+        investigations::close(id);
     } else {
         return Err(format!("no agent {id}"));
     }
@@ -195,10 +200,10 @@ pub async fn close(conversations: &Conversations, id: &str) -> Result<(), String
 // Keeps whether each agent answering a conversation, rebasing or merging works, and its latest
 // reply, up to date with its thread. Investigations keep their own.
 pub fn watch(conversations: Conversations) {
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         loop {
             let mut threads: HashMap<String, String> = HashMap::new();
-            let running = (conversations.running().await.into_iter().map(|(_, r)| r))
+            let running = (conversations.running().into_iter().map(|(_, r)| r))
                 .chain(rebases::running())
                 .chain(merges::running());
             for running in running {
@@ -211,19 +216,19 @@ pub fn watch(conversations: Conversations) {
             }
             SHOWN
                 .write()
-                .await
+                .unwrap()
                 .retain(|thread_id, _| threads.contains_key(thread_id));
             for (thread_id, pr) in threads {
-                let Some((working, reply)) = t3::show(&thread_id).await else {
+                let Some((working, reply)) = t3::show(&thread_id) else {
                     continue;
                 };
-                let known = SHOWN.read().await.get(&thread_id).cloned();
+                let known = SHOWN.read().unwrap().get(&thread_id).cloned();
                 let reply_html = match known {
                     Some(known) if known.reply == reply => known.reply_html,
                     _ if reply.is_empty() => String::new(),
-                    _ => gem_github::render(&pr, &reply).await.unwrap_or_default(),
+                    _ => gem_github::render(&pr, &reply).unwrap_or_default(),
                 };
-                SHOWN.write().await.insert(
+                SHOWN.write().unwrap().insert(
                     thread_id,
                     Shown {
                         working,
@@ -232,7 +237,7 @@ pub fn watch(conversations: Conversations) {
                     },
                 );
             }
-            tokio::time::sleep(REFRESH_INTERVAL).await;
+            std::thread::sleep(REFRESH_INTERVAL);
         }
     });
 }

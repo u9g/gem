@@ -1,13 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Condvar, Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::rusqlite::params;
-use pbjson_types::Timestamp;
-use serde::Deserialize;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use gem_db::{SqlValue, params};
+use gem_json::{Error, FromJson, Value};
+use gem_log::warn;
+use gem_proto::Timestamp;
 
 use crate::{
     SearchedPullRequest,
@@ -67,7 +67,6 @@ const CONVERSATIONS_JQ: &str = r#".data.nodes[]
   ])
 }"#;
 
-#[derive(Deserialize)]
 struct Fetched {
     url: String,
     // A check failed while others still run.
@@ -75,8 +74,18 @@ struct Fetched {
     waiting: Vec<Conversation>,
 }
 
-#[derive(Deserialize, Clone)]
-#[serde(untagged)]
+impl FromJson for Fetched {
+    fn from_json(value: &Value) -> Result<Fetched, Error> {
+        Ok(Fetched {
+            url: value.field("url")?,
+            settling: value.field("settling")?,
+            waiting: value.field("waiting")?,
+        })
+    }
+}
+
+// Untagged: a comment when it has one, failed checks otherwise.
+#[derive(Clone)]
 enum Conversation {
     // In the PR's top-level comments when `thread_id` is None.
     Comment {
@@ -86,6 +95,26 @@ enum Conversation {
     Checks {
         check_failure: CheckFailure,
     },
+}
+
+impl FromJson for Conversation {
+    fn from_json(value: &Value) -> Result<Conversation, Error> {
+        let comment = || -> Result<Conversation, Error> {
+            Ok(Conversation::Comment {
+                thread_id: value.field("thread_id")?,
+                comment: value.field("comment")?,
+            })
+        };
+        if let Ok(conversation) = comment() {
+            return Ok(conversation);
+        }
+        match value.field("check_failure") {
+            Ok(check_failure) => Ok(Conversation::Checks { check_failure }),
+            Err(_) => Err(Error::new(
+                "data did not match any variant of untagged enum Conversation",
+            )),
+        }
+    }
 }
 
 impl Conversation {
@@ -122,9 +151,8 @@ impl Conversation {
 }
 
 // The failed checks of the PR with node ID `pr`, while `id` is still their ID.
-pub async fn check_failure(pr: &str, id: &str) -> Option<CheckFailure> {
+pub fn check_failure(pr: &str, id: &str) -> Option<CheckFailure> {
     fetch(&[pr])
-        .await
         .into_iter()
         .flat_map(|fetched| fetched.waiting)
         .find_map(|conversation| match conversation {
@@ -137,14 +165,14 @@ pub async fn check_failure(pr: &str, id: &str) -> Option<CheckFailure> {
 // one node errors, e.g. a PR in a repository behind SAML enforcement the token is not authorized
 // for, and then prints the raw response instead of applying --jq, so a chunk that fails is asked for
 // one PR at a time: only the PR that errors is lost, not the chunk's others.
-async fn fetch(ids: &[&str]) -> Vec<Fetched> {
+fn fetch(ids: &[&str]) -> Vec<Fetched> {
     let mut fetched = Vec::new();
     for chunk in ids.chunks(100) {
-        match fetch_chunk(chunk).await {
+        match fetch_chunk(chunk) {
             Some(results) => fetched.extend(results),
             None if chunk.len() > 1 => {
                 for &id in chunk {
-                    fetched.extend(fetch_chunk(&[id]).await.into_iter().flatten());
+                    fetched.extend(fetch_chunk(&[id]).into_iter().flatten());
                 }
             }
             None => {}
@@ -154,7 +182,7 @@ async fn fetch(ids: &[&str]) -> Vec<Fetched> {
 }
 
 // The conversations of the PRs with node IDs `ids`, in one request, or None when it fails.
-async fn fetch_chunk(ids: &[&str]) -> Option<Vec<Fetched>> {
+fn fetch_chunk(ids: &[&str]) -> Option<Vec<Fetched>> {
     let mut args = vec![
         "api".to_string(),
         "graphql".to_string(),
@@ -167,17 +195,52 @@ async fn fetch_chunk(ids: &[&str]) -> Option<Vec<Fetched>> {
         args.extend(["-f".to_string(), format!("ids[]={id}")]);
     }
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let stdout = gh("conversations", &args).await?;
+    let stdout = gh("conversations", &args)?;
+    // Up to the first value that is not a PR's conversations.
+    let values = gem_json::parse_stream(&String::from_utf8_lossy(&stdout)).unwrap_or_default();
     Some(
-        serde_json::Deserializer::from_slice(&stdout)
-            .into_iter::<Fetched>()
-            .map_while(Result::ok)
+        (values.iter())
+            .map_while(|value| Fetched::from_json(value).ok())
             .collect(),
     )
 }
 
 #[derive(Clone)]
 pub struct Conversations(Arc<Inner>);
+
+// At most `CONCURRENT_AGENTS` agents run at once; the others wait for a permit.
+struct Semaphore {
+    available: Mutex<usize>,
+    released: Condvar,
+}
+
+// Gives its permit back when dropped.
+struct Permit<'a>(&'a Semaphore);
+
+impl Semaphore {
+    fn new(permits: usize) -> Semaphore {
+        Semaphore {
+            available: Mutex::new(permits),
+            released: Condvar::new(),
+        }
+    }
+
+    fn acquire(&self) -> Permit<'_> {
+        let available = self.available.lock().unwrap();
+        let mut available = (self.released)
+            .wait_while(available, |available| *available == 0)
+            .unwrap();
+        *available -= 1;
+        Permit(self)
+    }
+}
+
+impl Drop for Permit<'_> {
+    fn drop(&mut self) {
+        *self.0.available.lock().unwrap() += 1;
+        self.0.released.notify_one();
+    }
+}
 
 // A PR's conversations as last fetched.
 struct Known {
@@ -215,7 +278,7 @@ struct Answering {
 }
 
 // Runs `sql` once per set of `params`. The memory it mirrors stays right when it fails.
-fn save<P: gem_db::rusqlite::Params>(sql: &str, params: impl IntoIterator<Item = P>) {
+fn save(sql: &str, params: impl IntoIterator<Item = Vec<SqlValue>>) {
     let saved = crate::db().with(|db| {
         let mut statement = db.prepare(sql)?;
         for params in params {
@@ -224,7 +287,7 @@ fn save<P: gem_db::rusqlite::Params>(sql: &str, params: impl IntoIterator<Item =
         Ok(())
     });
     if let Err(error) = saved {
-        tracing::warn!(%error, "cannot save conversations");
+        warn!("cannot save conversations", error = error);
     }
 }
 
@@ -233,11 +296,13 @@ impl Conversations {
         let (handled, no_proposal) = crate::db().with(|db| {
             let handled: HashSet<String> = db
                 .prepare("SELECT id FROM started_conversations")?
-                .query_map([], |row| row.get(0))?
+                .query_map(params![], |row| row.get::<String>(0))?
                 .collect::<Result<_, _>>()?;
             let no_proposal: HashMap<String, String> = db
                 .prepare("SELECT id, reason FROM no_proposal_reasons")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map(params![], |row| {
+                    Ok((row.get::<String>(0)?, row.get::<String>(1)?))
+                })?
                 .collect::<Result<_, _>>()?;
             Ok((handled, no_proposal))
         })?;
@@ -253,8 +318,8 @@ impl Conversations {
 
     // The agents answering conversations, by the ID of the conversation each answers. One without
     // a thread is queued.
-    pub async fn running(&self) -> Vec<(String, Running)> {
-        (self.0.answering.lock().await.iter())
+    pub fn running(&self) -> Vec<(String, Running)> {
+        (self.0.answering.lock().unwrap().iter())
             .map(|(id, answering)| {
                 let running = Running {
                     thread_id: answering.thread_id.clone(),
@@ -269,20 +334,20 @@ impl Conversations {
     }
 
     // The thread of the agent answering the conversation `id`, once it started.
-    pub async fn thread_of(&self, id: &str) -> Option<String> {
-        (self.0.answering.lock().await.get(id)).and_then(|answering| answering.thread_id.clone())
+    pub fn thread_of(&self, id: &str) -> Option<String> {
+        (self.0.answering.lock().unwrap().get(id)).and_then(|answering| answering.thread_id.clone())
     }
 
     // Stops showing the agent answering the conversation `id`. A queued one still starts, but does
     // not show.
-    pub async fn forget(&self, id: &str) {
-        self.0.answering.lock().await.remove(id);
+    pub fn forget(&self, id: &str) {
+        self.0.answering.lock().unwrap().remove(id);
     }
 
     // Every conversation waiting on the user by ID, with its comment as last fetched when it is one:
     // where in the PR's current diff a review comment now sits.
-    pub async fn waiting(&self) -> HashMap<String, Option<Comment>> {
-        let prs = self.0.prs.read().await;
+    pub fn waiting(&self) -> HashMap<String, Option<Comment>> {
+        let prs = self.0.prs.read().unwrap();
         (prs.values().flat_map(|known| &known.waiting))
             .map(|c| {
                 let comment = match c {
@@ -296,33 +361,43 @@ impl Conversations {
 
     // Deletes the proposals on the PRs at `urls`, forgets that agents answered their waiting
     // conversations, and queues new agents for them.
-    pub async fn restart(&self, urls: &[String]) {
-        proposals::remove_on(urls).await;
+    pub fn restart(&self, urls: &[String]) {
+        proposals::remove_on(urls);
         let ids: HashSet<String> = {
-            let prs = self.0.prs.read().await;
+            let prs = self.0.prs.read().unwrap();
             urls.iter()
                 .filter_map(|url| prs.get(url))
                 .flat_map(|known| known.waiting.iter().map(|c| c.id().to_string()))
                 .collect()
         };
         {
-            let mut started = self.0.started.lock().await;
+            let mut started = self.0.started.lock().unwrap();
             started.retain(|id| !ids.contains(id));
-            save("DELETE FROM started_conversations WHERE id = ?1", ids.iter().map(|id| [id]));
+            save(
+                "DELETE FROM started_conversations WHERE id = ?1",
+                ids.iter().map(|id| params![id]),
+            );
         }
-        self.0.handled.lock().await.retain(|id| !ids.contains(id));
+        self.0
+            .handled
+            .lock()
+            .unwrap()
+            .retain(|id| !ids.contains(id));
         {
-            let mut no_proposal = self.0.no_proposal.lock().await;
+            let mut no_proposal = self.0.no_proposal.lock().unwrap();
             no_proposal.retain(|id, _| !ids.contains(id));
-            save("DELETE FROM no_proposal_reasons WHERE id = ?1", ids.iter().map(|id| [id]));
+            save(
+                "DELETE FROM no_proposal_reasons WHERE id = ?1",
+                ids.iter().map(|id| params![id]),
+            );
         }
-        self.answer_waiting().await;
+        self.answer_waiting();
     }
 
     // Each PR's reason its failed checks have no proposal, while they still wait on the user.
-    pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
-        let prs = self.0.prs.read().await;
-        let no_proposal = self.0.no_proposal.lock().await;
+    pub fn fill(&self, clusters: &mut [PullRequestCluster]) {
+        let prs = self.0.prs.read().unwrap();
+        let no_proposal = self.0.no_proposal.lock().unwrap();
         for pr in clusters.iter_mut().flat_map(|c| c.pull_requests.iter_mut()) {
             pr.no_proposal_reason = (prs.get(&pr.url).into_iter())
                 .flat_map(|known| &known.waiting)
@@ -332,9 +407,9 @@ impl Conversations {
         }
     }
 
-    pub async fn refresh(&self, prs: &[SearchedPullRequest]) {
+    pub fn refresh(&self, prs: &[SearchedPullRequest]) {
         let changed: Vec<&SearchedPullRequest> = {
-            let known = self.0.prs.read().await;
+            let known = self.0.prs.read().unwrap();
             prs.iter()
                 .filter(|pr| {
                     known.get(&pr.url).is_none_or(|k| {
@@ -347,7 +422,7 @@ impl Conversations {
         };
         let ids: Vec<&str> = changed.iter().map(|pr| pr.id.as_str()).collect();
         let mut fetched = HashMap::new();
-        for mut result in fetch(&ids).await {
+        for mut result in fetch(&ids) {
             result.waiting.retain(|c| {
                 !matches!(c, Conversation::Comment { comment, .. } if comment.author == login())
             });
@@ -355,7 +430,7 @@ impl Conversations {
         }
 
         {
-            let mut known = self.0.prs.write().await;
+            let mut known = self.0.prs.write().unwrap();
             known.retain(|url, _| prs.iter().any(|pr| &pr.url == url));
             for pr in &changed {
                 if let Some(result) = fetched.remove(&pr.url) {
@@ -373,38 +448,43 @@ impl Conversations {
             }
             // An agent's token goes once what it answers no longer waits on the user, when its
             // proposals no longer show. A PR whose fetch failed keeps its agents' tokens.
-            Tokens::here()
-                .retain(|subject| match subject {
-                    Subject::Investigation { .. } => true,
-                    Subject::Comment { pr, .. } | Subject::CheckFailure { pr, .. } => {
-                        prs.iter().any(|open| open.url == *pr)
-                            && known.get(pr).is_none_or(|known| {
-                                known.waiting.iter().any(|c| c.id() == subject.id())
-                            })
-                    }
-                })
-                .await;
+            Tokens::here().retain(|subject| match subject {
+                Subject::Investigation { .. } => true,
+                Subject::Comment { pr, .. } | Subject::CheckFailure { pr, .. } => {
+                    prs.iter().any(|open| open.url == *pr)
+                        && known.get(pr).is_none_or(|known| {
+                            known.waiting.iter().any(|c| c.id() == subject.id())
+                        })
+                }
+            });
         }
 
         let heads = prs
             .iter()
             .map(|pr| (pr.url.as_str(), pr.head_oid.as_str()))
             .collect();
-        let stale = proposals::remove_stale(&heads).await;
+        let stale = proposals::remove_stale(&heads);
         if !stale.is_empty() {
-            let mut started = self.0.started.lock().await;
+            let mut started = self.0.started.lock().unwrap();
             started.retain(|id| !stale.contains(id));
-            save("DELETE FROM started_conversations WHERE id = ?1", stale.iter().map(|id| [id]));
+            save(
+                "DELETE FROM started_conversations WHERE id = ?1",
+                stale.iter().map(|id| params![id]),
+            );
         }
 
-        self.0.handled.lock().await.retain(|id| !stale.contains(id));
-        self.answer_waiting().await;
+        self.0
+            .handled
+            .lock()
+            .unwrap()
+            .retain(|id| !stale.contains(id));
+        self.answer_waiting();
     }
 
     // Queues an agent for each waiting conversation that no agent was queued for.
-    async fn answer_waiting(&self) {
-        let known = self.0.prs.read().await;
-        let mut handled = self.0.handled.lock().await;
+    fn answer_waiting(&self) {
+        let known = self.0.prs.read().unwrap();
+        let mut handled = self.0.handled.lock().unwrap();
         for pr in known.values() {
             for conversation in &pr.waiting {
                 if !handled.insert(conversation.id().to_string()) {
@@ -419,39 +499,38 @@ impl Conversations {
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |since| since.as_secs() as i64),
                 };
-                (self.0.answering.lock().await).insert(conversation.id().to_string(), answering);
+                (self.0.answering.lock().unwrap()).insert(conversation.id().to_string(), answering);
                 let this = self.clone();
                 let pr = pr.target.clone();
                 let conversation = conversation.clone();
-                tokio::spawn(async move {
-                    let _permit = this.0.agents.acquire().await.unwrap();
+                std::thread::spawn(move || {
+                    let _permit = this.0.agents.acquire();
                     {
-                        let mut started = this.0.started.lock().await;
+                        let mut started = this.0.started.lock().unwrap();
                         started.insert(conversation.id().to_string());
                         save(
                             "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                            [[conversation.id()]],
+                            [params![conversation.id()]],
                         );
                     }
                     let id = conversation.id();
                     let (title, prompt) = conversation.prompt(&pr);
                     let subject = conversation.subject(&pr.url);
-                    let started = match mcp::agent_config(&subject).await {
-                        Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                    let started = match mcp::agent_config(&subject) {
+                        Ok(config) => t3::start(&title, &prompt, Some(&config)),
                         Err(error) => Err(error),
                     };
                     match started {
                         Ok(thread_id) => {
-                            if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
+                            if let Some(answering) = this.0.answering.lock().unwrap().get_mut(id) {
                                 answering.thread_id = Some(thread_id.clone());
                             }
-                            let reply = t3::wait(&thread_id).await;
+                            let reply = t3::wait(&thread_id);
                             if let Conversation::Checks { check_failure } = &conversation {
                                 let reply = reply.trim();
-                                investigations::archive(&title, &pr.url, check_failure, reply)
-                                    .await;
-                                if !proposals::exist_for(id).await {
-                                    let mut no_proposal = this.0.no_proposal.lock().await;
+                                investigations::archive(&title, &pr.url, check_failure, reply);
+                                if !proposals::exist_for(id) {
+                                    let mut no_proposal = this.0.no_proposal.lock().unwrap();
                                     save(
                                         "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
                                          VALUES (?1, ?2)",
@@ -463,7 +542,7 @@ impl Conversations {
                         }
                         Err(e) => eprintln!("{title}: {e}"),
                     }
-                    this.0.answering.lock().await.remove(id);
+                    this.0.answering.lock().unwrap().remove(id);
                 });
             }
         }

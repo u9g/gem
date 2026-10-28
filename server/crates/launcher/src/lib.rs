@@ -27,6 +27,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use releases::Build;
 use update::Updates;
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(60);
@@ -37,14 +38,14 @@ pub fn run(dotenv: Vec<OsString>) -> ! {
     let mut exe = env::current_exe().unwrap();
     // Outside a checkout, e.g. an installed binary, there is nothing to update from.
     let mut updates = Path::new("Cargo.toml").exists().then(Updates::default);
-    let mut release = exe.clone();
+    let mut release = Build::beside(&exe);
     if let Some(updates) = &mut updates {
         exe = releases::move_out_of_target(&exe);
         // Commits can land while the launcher is down, and the checkout can be pulled by hand,
         // so catch up before the first start. A build with nothing new to compile takes seconds.
         let _ = updates.fast_forward();
-        release = releases::install(&updates.build().unwrap_or_else(|| exe.clone()));
-        releases::prune(&[&exe, &release]);
+        release = releases::install(&updates.build().unwrap_or_else(|| Build::beside(&exe)));
+        releases::prune(&[&exe, &release.server]);
     }
 
     let mut server = server::start(&release, &dotenv);
@@ -66,7 +67,7 @@ pub fn run(dotenv: Vec<OsString>) -> ! {
                 log("restarting the server onto the new build");
                 server::stop(server);
                 release = releases::install(&build);
-                releases::prune(&[&exe, &release]);
+                releases::prune(&[&exe, &release.server]);
                 server = server::start(&release, &dotenv);
             }
         }

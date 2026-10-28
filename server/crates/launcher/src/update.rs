@@ -6,7 +6,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use crate::log;
+use crate::{log, releases::Build};
 
 #[derive(Default)]
 pub struct Updates {
@@ -17,7 +17,7 @@ pub struct Updates {
 
 impl Updates {
     // Builds origin/main when it has moved. Returns the build to restart onto.
-    pub fn update(&mut self) -> Option<PathBuf> {
+    pub fn update(&mut self) -> Option<Build> {
         if !self.fast_forward()? {
             return None;
         }
@@ -48,13 +48,14 @@ impl Updates {
         Some(true)
     }
 
-    // Builds the checkout and returns the path cargo built the binary at.
-    pub fn build(&mut self) -> Option<PathBuf> {
+    // Builds the checkout and returns the paths cargo built the server and gem-native at.
+    pub fn build(&mut self) -> Option<Build> {
         log(&format!(
             "building {}",
             git(&["rev-parse", "--short", "HEAD"])?
         ));
-        // Diagnostics still render to stderr; stdout carries the messages naming the binary.
+        // Diagnostics still render to stderr; stdout carries the messages naming the binaries,
+        // each by its target's name.
         let mut cargo = Command::new("cargo")
             .args([
                 "build",
@@ -64,22 +65,28 @@ impl Updates {
             .stdout(Stdio::piped())
             .spawn()
             .ok()?;
-        let mut executable = None;
+        let mut server = None;
+        let mut native = None;
         for line in BufReader::new(cargo.stdout.take().unwrap()).lines() {
-            let Ok(message) = serde_json::from_str::<serde_json::Value>(&line.unwrap_or_default())
-            else {
+            let Ok(message) = gem_json::parse(&line.unwrap_or_default()) else {
                 continue;
             };
-            if let Some(path) = message["executable"].as_str() {
-                executable = Some(PathBuf::from(path));
+            let Some(path) = message["executable"].as_str() else {
+                continue;
+            };
+            match message["target"]["name"].as_str() {
+                Some("server") => server = Some(PathBuf::from(path)),
+                Some("gem-native") => native = Some(PathBuf::from(path)),
+                _ => {}
             }
         }
-        if !cargo.wait().is_ok_and(|status| status.success()) || executable.is_none() {
+        let built = cargo.wait().is_ok_and(|status| status.success());
+        let (true, Some(server), Some(native)) = (built, server, native) else {
             log("build failed; staying on the running build");
             self.failed = git(&["rev-parse", "origin/main"]);
             return None;
-        }
-        executable
+        };
+        Some(Build { server, native })
     }
 }
 

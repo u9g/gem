@@ -1,8 +1,15 @@
-use std::{env, sync::LazyLock};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+    sync::{
+        LazyLock, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    thread,
+};
 
-use reqwest::Client;
-use serde_json::{Map, Value, json};
-use tokio::sync::RwLock;
+use gem_json::{Map, Value, json};
+use gem_log::info;
 
 use crate::SearchedPullRequest;
 
@@ -26,8 +33,8 @@ struct Described {
 // Every open PR, as of the last refresh.
 static OPEN: LazyLock<RwLock<Vec<Described>>> = LazyLock::new(Default::default);
 
-pub async fn index(prs: &[SearchedPullRequest]) {
-    *OPEN.write().await = (prs.iter())
+pub fn index(prs: &[SearchedPullRequest]) {
+    *OPEN.write().unwrap() = (prs.iter())
         .map(|pr| Described {
             url: pr.url.clone(),
             title: pr.title.clone(),
@@ -38,58 +45,122 @@ pub async fn index(prs: &[SearchedPullRequest]) {
 
 // The URLs of the open PRs a model decides match `query`, each PR its own question. Fails when
 // any request fails, rather than leave its PRs out.
-pub async fn matching(query: &str) -> Result<Vec<String>, String> {
-    let prs = OPEN.read().await.clone();
-    // reqwest's TLS takes the process's default crypto provider, and ring is the one LiveKit's
-    // SDK builds on.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let key = env::var("TYPESAFE_API_KEY").map_err(
-        |_| "TYPESAFE_API_KEY is not set: name its 1Password item in GEM_TYPESAFE_OP_ITEM",
-    )?;
-    let client = Client::new();
-    let mut decisions = tokio::task::JoinSet::new();
-    for chunk in prs.chunks(PRS_PER_REQUEST) {
-        let questions: Map<String, Value> = (chunk.iter().enumerate())
-            .map(|(i, pr)| {
-                let instructions = format!(
-                    "Is this pull request about, or does it mention, what the user searches \
-                     for?\n\nTitle: {}\n\nDescription:\n{}",
-                    pr.title, pr.body
-                );
-                (
-                    i.to_string(),
-                    json!({ "type": "noul", "instructions": instructions }),
-                )
+pub fn matching(query: &str) -> Result<Vec<String>, String> {
+    let prs = OPEN.read().unwrap().clone();
+    let key = gem_env::var("TYPESAFE_API_KEY")
+        .ok_or("TYPESAFE_API_KEY is not set: name its 1Password item in GEM_TYPESAFE_OP_ITEM")?;
+    let decisions: Vec<Result<Vec<String>, String>> = thread::scope(|scope| {
+        let requests: Vec<_> = (prs.chunks(PRS_PER_REQUEST))
+            .map(|chunk| {
+                let questions: Map = (chunk.iter().enumerate())
+                    .map(|(i, pr)| {
+                        let instructions = format!(
+                            "Is this pull request about, or does it mention, what the user searches \
+                             for?\n\nTitle: {}\n\nDescription:\n{}",
+                            pr.title, pr.body
+                        );
+                        (
+                            i.to_string(),
+                            json!({ "type": "noul", "instructions": instructions }),
+                        )
+                    })
+                    .collect();
+                let request = json!({
+                    "model": MODEL,
+                    "state": { "search": query },
+                    "questions": questions,
+                });
+                let urls: Vec<String> = chunk.iter().map(|pr| pr.url.clone()).collect();
+                let key = &key;
+                scope.spawn(move || {
+                    let (status, body) = post(&request, key)?;
+                    if !(200..300).contains(&status) {
+                        return Err(format!("TypeSafe answered {status}: {body}"));
+                    }
+                    let response = gem_json::parse(&body).map_err(|e| e.to_string())?;
+                    Ok::<_, String>(
+                        (urls.into_iter().enumerate())
+                            .filter(|(i, _)| {
+                                response["answers"][i.to_string().as_str()]["noul"].as_f64()
+                                    >= Some(THRESHOLD)
+                            })
+                            .map(|(_, url)| url)
+                            .collect::<Vec<_>>(),
+                    )
+                })
             })
             .collect();
-        let request = client.post(URL).bearer_auth(&key).json(&json!({
-            "model": MODEL,
-            "state": { "search": query },
-            "questions": questions,
-        }));
-        let urls: Vec<String> = chunk.iter().map(|pr| pr.url.clone()).collect();
-        decisions.spawn(async move {
-            let response = request.send().await.map_err(|e| e.to_string())?;
-            let status = response.status();
-            let body = response.text().await.map_err(|e| e.to_string())?;
-            if !status.is_success() {
-                return Err(format!("TypeSafe answered {status}: {body}"));
-            }
-            let response: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-            Ok::<_, String>(
-                (urls.into_iter().enumerate())
-                    .filter(|(i, _)| {
-                        response["answers"][i.to_string()]["noul"].as_f64() >= Some(THRESHOLD)
-                    })
-                    .map(|(_, url)| url)
-                    .collect::<Vec<_>>(),
-            )
-        });
-    }
+        (requests.into_iter())
+            .map(|request| {
+                (request.join()).unwrap_or_else(|_| Err("a search request panicked".to_string()))
+            })
+            .collect()
+    });
     let mut matched = Vec::new();
-    while let Some(decision) = decisions.join_next().await {
-        matched.extend(decision.map_err(|e| e.to_string())??);
+    for decision in decisions {
+        matched.extend(decision?);
     }
-    tracing::info!(query, matched = matched.len(), "searched pull requests");
+    info!(
+        "searched pull requests",
+        query = query,
+        matched = matched.len()
+    );
     Ok(matched)
+}
+
+// Names each request's body file.
+static REQUESTS: AtomicU64 = AtomicU64::new(0);
+
+// POSTs `body` to URL with curl, which every platform the server runs on has. The status and body
+// of the response.
+fn post(body: &Value, key: &str) -> Result<(u16, String), String> {
+    // The body, up to 25 PRs' descriptions, is too long for a command line, and stdin carries the
+    // headers, so it goes in a file.
+    let file = std::env::temp_dir().join(format!(
+        "gem-search-{}-{}.json",
+        std::process::id(),
+        REQUESTS.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::write(&file, body.to_string()).map_err(|e| e.to_string())?;
+    let output = curl(&file, key);
+    let _ = std::fs::remove_file(&file);
+    let output = output?;
+    // `--write-out` puts the status on a line of its own after the body.
+    let (body, status) = output.rsplit_once('\n').unwrap_or(("", &output));
+    let status = (status.trim().parse())
+        .map_err(|_| format!("curl printed no status for {URL}: {status}"))?;
+    Ok((status, body.to_string()))
+}
+
+fn curl(file: &std::path::Path, key: &str) -> Result<String, String> {
+    // The headers go on stdin, so the key is not in the process list.
+    let mut child = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--request",
+            "POST",
+            "--header",
+            "@-",
+        ])
+        .args(["--data-binary", &format!("@{}", file.display())])
+        .args(["--write-out", r"\n%{http_code}", URL])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run curl: {e}"))?;
+    let headers = format!("Authorization: Bearer {key}\nContent-Type: application/json\n");
+    let mut stdin = child.stdin.take().ok_or("curl has no stdin")?;
+    let written = stdin.write_all(headers.as_bytes());
+    drop(stdin);
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    written.map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot reach TypeSafe: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

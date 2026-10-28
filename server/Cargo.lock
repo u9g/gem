@@ -684,7 +684,8 @@ version = "0.1.0"
 name = "gem-launcher"
 version = "0.1.0"
 dependencies = [
- "serde_json",
+ "gem-env",
+ "gem-json",
 ]
 
 [[package]]
@@ -700,12 +701,14 @@ name = "gem-merges"
 version = "0.1.0"
 dependencies = [
  "gem-db",
- "tokio",
 ]
 
 [[package]]
 name = "gem-native"
 version = "0.1.0"
+dependencies = [
+ "gem-env",
+]
 
 [[package]]
 name = "gem-probe"
@@ -728,7 +731,6 @@ name = "gem-rebases"
 version = "0.1.0"
 dependencies = [
  "gem-db",
- "tokio",
 ]
 
 [[package]]

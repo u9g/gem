@@ -5,19 +5,19 @@
 
 use std::{
     collections::BTreeMap,
-    future::Future,
-    sync::Arc,
+    sync::{Arc, Mutex},
+    thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{
-    Db,
-    rusqlite::{self, OptionalExtension, params},
-};
-use tokio::sync::Mutex;
+use gem_db::{Db, OptionalExtension, params};
 
 // Reading a thread is a local CLI call.
+#[cfg(not(test))]
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+// Tests run on real time.
+#[cfg(test)]
+const REFRESH_INTERVAL: Duration = Duration::from_millis(20);
 // How many reads of a thread can fail in a row, e.g. after it is deleted, before its merge is
 // dropped and the cluster can be merged again.
 const MAX_FAILED_READS: u32 = 30;
@@ -53,13 +53,9 @@ pub struct Merge {
 
 pub trait Host: Send + Sync + 'static {
     // Starts an agent on `prompt` without waiting for it. Returns the thread's id.
-    fn start_thread(
-        &self,
-        title: &str,
-        prompt: &str,
-    ) -> impl Future<Output = Result<String, String>> + Send;
+    fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String>;
     // None when the thread cannot be read.
-    fn progress(&self, thread_id: &str) -> impl Future<Output = Option<Progress>> + Send;
+    fn progress(&self, thread_id: &str) -> Option<Progress>;
 }
 
 pub struct Merges<H> {
@@ -93,12 +89,16 @@ impl<H: Host> Merges<H> {
     // thread's title, unless one of them is already being merged. It forces those in `admin` in
     // past review, as the user chose to, and no others. The agent settles its thread when done:
     // T3 Code does not settle threads when they finish.
-    pub async fn start(&self, urls: &[String], admin: &[String], name: &str) -> Result<(), String> {
-        let _starting = self.starting.lock().await;
+    pub fn start(&self, urls: &[String], admin: &[String], name: &str) -> Result<(), String> {
+        let _starting = self.starting.lock().unwrap();
         let running = self.db.with(|db| {
             let mut rows = db.prepare("SELECT 1 FROM merges WHERE url = ?1")?;
             for url in urls {
-                if rows.query_row([url], |_| Ok(())).optional()?.is_some() {
+                if rows
+                    .query_row(params![url], |_| Ok(()))
+                    .optional()?
+                    .is_some()
+                {
                     return Ok(true);
                 }
             }
@@ -139,22 +139,23 @@ settle this thread."
             }
             Ok(())
         })?;
-        let started = self.host.start_thread(&title, &prompt).await;
+        let started = self.host.start_thread(&title, &prompt);
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
-                self.db
-                    .with(|db| db.execute("DELETE FROM merges WHERE thread_id IS NULL", []))?;
+                self.db.with(|db| {
+                    db.execute("DELETE FROM merges WHERE thread_id IS NULL", params![])
+                })?;
                 return Err(error);
             }
         };
         self.db.with(|db| {
             db.execute(
                 "UPDATE merges SET thread_id = ?1 WHERE thread_id IS NULL",
-                [&thread_id],
+                params![thread_id],
             )
         })?;
-        tokio::spawn(self.clone().watch(thread_id));
+        self.spawn_watch(thread_id);
         Ok(())
     }
 
@@ -162,13 +163,13 @@ settle this thread."
     // dropped: its server stopped while starting it.
     pub fn resume(&self) -> Result<(), String> {
         let threads = self.db.with(|db| {
-            db.execute("DELETE FROM merges WHERE thread_id IS NULL", [])?;
+            db.execute("DELETE FROM merges WHERE thread_id IS NULL", params![])?;
             let mut rows = db.prepare("SELECT DISTINCT thread_id FROM merges")?;
-            rows.query_map([], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()
+            rows.query_map(params![], |row| row.get::<String>(0))?
+                .collect::<gem_db::Result<Vec<String>>>()
         })?;
         for thread_id in threads {
-            tokio::spawn(self.clone().watch(thread_id));
+            self.spawn_watch(thread_id);
         }
         Ok(())
     }
@@ -178,14 +179,14 @@ settle this thread."
         self.db.with(|db| {
             let mut rows =
                 db.prepare("SELECT url, thread_id, question, title, started_at FROM merges")?;
-            rows.query_map([], |row| {
+            rows.query_map(params![], |row| {
                 let merge = Merge {
-                    thread_id: row.get(1)?,
-                    question: row.get(2)?,
-                    title: row.get(3)?,
-                    started_at: row.get(4)?,
+                    thread_id: row.get::<Option<String>>(1)?,
+                    question: row.get::<bool>(2)?,
+                    title: row.get::<String>(3)?,
+                    started_at: row.get::<i64>(4)?,
                 };
-                Ok((row.get(0)?, merge))
+                Ok((row.get::<String>(0)?, merge))
             })?
             .collect()
         })
@@ -195,15 +196,25 @@ settle this thread."
     // merged again; the agent keeps running in T3 Code.
     pub fn forget(&self, thread_id: &str) -> Result<(), String> {
         self.db
-            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [thread_id]))
+            .with(|db| {
+                db.execute(
+                    "DELETE FROM merges WHERE thread_id = ?1",
+                    params![thread_id],
+                )
+            })
             .map(drop)
     }
 
-    async fn watch(self, thread_id: String) {
+    fn spawn_watch(&self, thread_id: String) {
+        let merges = self.clone();
+        thread::spawn(move || merges.watch(thread_id));
+    }
+
+    fn watch(self, thread_id: String) {
         let mut failed_reads = 0;
         loop {
-            tokio::time::sleep(REFRESH_INTERVAL).await;
-            let Some(progress) = self.host.progress(&thread_id).await else {
+            thread::sleep(REFRESH_INTERVAL);
+            let Some(progress) = self.host.progress(&thread_id) else {
                 failed_reads += 1;
                 if failed_reads >= MAX_FAILED_READS {
                     eprintln!("merge: cannot read thread {thread_id}; dropping it");
@@ -222,8 +233,12 @@ settle this thread."
                 )
             });
         }
-        let removed = (self.db)
-            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [&thread_id]));
+        let removed = (self.db).with(|db| {
+            db.execute(
+                "DELETE FROM merges WHERE thread_id = ?1",
+                params![thread_id],
+            )
+        });
         if let Err(error) = removed {
             eprintln!("{error}");
         }
@@ -232,9 +247,12 @@ settle this thread."
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
+    use std::time::Instant;
 
     use super::*;
+
+    // How long starting a thread takes.
+    const START: Duration = Duration::from_millis(100);
 
     fn urls() -> Vec<String> {
         vec![
@@ -253,7 +271,7 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct FakeHost(Arc<StdMutex<State>>);
+    struct FakeHost(Arc<Mutex<State>>);
 
     impl FakeHost {
         fn new() -> Self {
@@ -272,8 +290,8 @@ mod tests {
     }
 
     impl Host for FakeHost {
-        async fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        fn start_thread(&self, title: &str, prompt: &str) -> Result<String, String> {
+            thread::sleep(START);
             let mut state = self.0.lock().unwrap();
             if state.fail_start {
                 return Err("t3: could not run the CLI".into());
@@ -283,62 +301,82 @@ mod tests {
             Ok(format!("thread-{}", state.started.len()))
         }
 
-        async fn progress(&self, _: &str) -> Option<Progress> {
+        fn progress(&self, _: &str) -> Option<Progress> {
             let (done, question) = self.0.lock().unwrap().progress?;
             Some(Progress { done, question })
         }
-
     }
 
     fn merges(host: &FakeHost) -> Merges<FakeHost> {
         Merges::new(Db::open_in_memory().unwrap(), host.clone()).unwrap()
     }
 
-    // Lets the watcher take a few turns of REFRESH_INTERVAL.
-    async fn refreshes(count: u32) {
-        tokio::time::sleep(REFRESH_INTERVAL * count + Duration::from_secs(1)).await;
+    // Lets the watcher take at most `count` turns of REFRESH_INTERVAL: a turn is never shorter.
+    fn refreshes(count: u32) {
+        thread::sleep(REFRESH_INTERVAL * count + REFRESH_INTERVAL / 2);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn two_presses_start_one_agent_for_the_whole_cluster() {
+    // Waits for the watcher to bring about `what`, within a turn or so of REFRESH_INTERVAL.
+    fn soon(what: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + REFRESH_INTERVAL + Duration::from_secs(2);
+        while !what() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        true
+    }
+
+    #[test]
+    fn two_presses_start_one_agent_for_the_whole_cluster() {
         let host = FakeHost::new();
         let merges = merges(&host);
         let urls = urls();
-        let (first, second) =
-            tokio::join!(merges.start(&urls, &[], "c"), merges.start(&urls, &[], "c"));
+        let (first, second) = thread::scope(|s| {
+            let first = s.spawn(|| merges.start(&urls, &[], "c"));
+            let second = s.spawn(|| merges.start(&urls, &[], "c"));
+            (first.join().unwrap(), second.join().unwrap())
+        });
         first.unwrap();
         second.unwrap();
         assert_eq!(host.0.lock().unwrap().started, ["Merge c"]);
         // A cluster that grew around a pull request being merged starts nothing either.
         let grown = [urls, vec!["https://github.com/o/t/pull/3".into()]].concat();
-        merges.start(&grown, &[], "c").await.unwrap();
+        merges.start(&grown, &[], "c").unwrap();
         assert_eq!(host.started(), 1);
         let all = merges.all().unwrap();
         assert_eq!(all.len(), 2);
-        assert!(all.values().all(|m| m.thread_id.as_deref() == Some("thread-1")));
+        assert!(
+            all.values()
+                .all(|m| m.thread_id.as_deref() == Some("thread-1"))
+        );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn forces_in_only_the_pull_requests_the_user_chose_to() {
+    #[test]
+    fn forces_in_only_the_pull_requests_the_user_chose_to() {
         let host = FakeHost::new();
         let merges = merges(&host);
         let urls = urls();
-        merges.start(&urls, &urls[1..], "c").await.unwrap();
+        merges.start(&urls, &urls[1..], "c").unwrap();
         let prompt = host.0.lock().unwrap().prompts[0].clone();
-        assert!(prompt.contains(&format!("- {}
-", urls[0])));
+        assert!(prompt.contains(&format!(
+            "- {}
+",
+            urls[0]
+        )));
         assert!(prompt.contains(&format!("- {} (not approved: force it in", urls[1])));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn shows_while_its_thread_starts() {
+    #[test]
+    fn shows_while_its_thread_starts() {
         let host = FakeHost::new();
         let merges = merges(&host);
-        let starting = tokio::spawn({
+        let starting = thread::spawn({
             let merges = merges.clone();
-            async move { merges.start(&urls(), &[], "c").await }
+            move || merges.start(&urls(), &[], "c")
         });
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        thread::sleep(START / 2);
         assert!(
             merges
                 .all()
@@ -346,48 +384,45 @@ mod tests {
                 .values()
                 .all(|m| m.thread_id.is_none())
         );
-        starting.await.unwrap().unwrap();
+        starting.join().unwrap().unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_failed_start_can_be_retried() {
+    #[test]
+    fn a_failed_start_can_be_retried() {
         let host = FakeHost::new();
         let merges = merges(&host);
         host.set(|s| s.fail_start = true);
-        assert!(merges.start(&urls(), &[], "c").await.is_err());
+        assert!(merges.start(&urls(), &[], "c").is_err());
         assert!(merges.all().unwrap().is_empty());
         host.set(|s| s.fail_start = false);
-        merges.start(&urls(), &[], "c").await.unwrap();
+        merges.start(&urls(), &[], "c").unwrap();
         assert_eq!(host.started(), 1);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_merge_shows_its_question_and_ends_with_its_thread() {
+    #[test]
+    fn a_merge_shows_its_question_and_ends_with_its_thread() {
         let host = FakeHost::new();
         let merges = merges(&host);
-        merges.start(&urls(), &[], "c").await.unwrap();
+        merges.start(&urls(), &[], "c").unwrap();
         host.set(|s| s.progress = Some((false, true)));
-        refreshes(1).await;
-        assert!(merges.all().unwrap().values().all(|m| m.question));
+        assert!(soon(|| merges.all().unwrap().values().all(|m| m.question)));
         host.set(|s| s.progress = Some((true, false)));
-        refreshes(1).await;
-        assert!(merges.all().unwrap().is_empty());
+        assert!(soon(|| merges.all().unwrap().is_empty()));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_unreadable_thread_is_dropped() {
+    #[test]
+    fn an_unreadable_thread_is_dropped() {
         let host = FakeHost::new();
         let merges = merges(&host);
-        merges.start(&urls(), &[], "c").await.unwrap();
+        merges.start(&urls(), &[], "c").unwrap();
         host.set(|s| s.progress = None);
-        refreshes(MAX_FAILED_READS - 1).await;
+        refreshes(MAX_FAILED_READS - 1);
         assert!(!merges.all().unwrap().is_empty());
-        refreshes(1).await;
-        assert!(merges.all().unwrap().is_empty());
+        assert!(soon(|| merges.all().unwrap().is_empty()));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_restarted_server_resumes_its_merges() {
+    #[test]
+    fn a_restarted_server_resumes_its_merges() {
         let host = FakeHost::new();
         let db = Db::open_in_memory().unwrap();
         Merges::new(db.clone(), host.clone()).unwrap();
@@ -405,7 +440,6 @@ mod tests {
         // The one whose thread never started is gone; the other is watched again.
         assert_eq!(merges.all().unwrap().len(), 2);
         host.set(|s| s.progress = Some((true, false)));
-        refreshes(1).await;
-        assert!(merges.all().unwrap().is_empty());
+        assert!(soon(|| merges.all().unwrap().is_empty()));
     }
 }

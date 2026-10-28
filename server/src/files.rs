@@ -1,13 +1,12 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{
-        LazyLock,
+        LazyLock, Mutex, mpsc,
         atomic::{AtomicU64, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
-
-use tokio::sync::Mutex;
 
 use crate::{
     gh,
@@ -38,7 +37,7 @@ static FETCHES: AtomicU64 = AtomicU64::new(0);
 
 // Gives each PR with proposals its diff of the files they are about, once fetched: a snapshot
 // never waits on GitHub.
-pub async fn fill(clusters: &mut [PullRequestCluster]) {
+pub fn fill(clusters: &mut [PullRequestCluster]) {
     for pr in clusters.iter_mut().flat_map(|c| c.pull_requests.iter_mut()) {
         if pr.proposals.is_empty() {
             continue;
@@ -57,7 +56,7 @@ pub async fn fill(clusters: &mut [PullRequestCluster]) {
         if paths.is_empty() {
             continue;
         }
-        pr.files = (diff(pr).await.into_iter())
+        pr.files = (diff(pr).into_iter())
             .filter(|file| paths.contains(&file.path))
             .collect();
     }
@@ -65,8 +64,8 @@ pub async fn fill(clusters: &mut [PullRequestCluster]) {
 
 // The PR's diff when fetched for what it is now of; otherwise starts fetching it, unless that
 // already started or failed within RETRY.
-async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
-    let mut diffs = DIFFS.lock().await;
+fn diff(pr: &PullRequest) -> Vec<FileDiff> {
+    let mut diffs = DIFFS.lock().unwrap();
     match diffs.get(&pr.url) {
         Some((of_, _, Diff::Fetched(files) | Diff::Fetching(files))) if *of_ == of(pr) => {
             return files.clone();
@@ -83,11 +82,18 @@ async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
     let fetch_id = FETCHES.fetch_add(1, Ordering::Relaxed);
     diffs.insert(pr.url.clone(), (of(pr), fetch_id, Diff::Fetching(previous.clone())));
     let pr = pr.clone();
-    tokio::spawn(async move {
-        let files = tokio::time::timeout(RETRY, fetch(&pr)).await.ok().flatten();
+    thread::spawn(move || {
+        let (sender, receiver) = mpsc::channel();
+        {
+            let pr = pr.clone();
+            thread::spawn(move || {
+                let _ = sender.send(fetch(&pr));
+            });
+        }
+        let files = receiver.recv_timeout(RETRY).ok().flatten();
         let diff = files.map_or_else(|| Diff::Failed(Instant::now()), Diff::Fetched);
         // A later fetch of the PR, after a push or retarget, owns its entry now.
-        if let Some(entry) = DIFFS.lock().await.get_mut(&pr.url)
+        if let Some(entry) = DIFFS.lock().unwrap().get_mut(&pr.url)
             && entry.1 == fetch_id
         {
             entry.2 = diff;
@@ -96,7 +102,7 @@ async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
     previous
 }
 
-async fn fetch(pr: &PullRequest) -> Option<Vec<FileDiff>> {
+fn fetch(pr: &PullRequest) -> Option<Vec<FileDiff>> {
     let repo = pr.repository.as_ref()?;
     let stdout = gh("files", &[
         "api",
@@ -107,10 +113,6 @@ async fn fetch(pr: &PullRequest) -> Option<Vec<FileDiff>> {
         ),
         "--jq",
         ".[] | {path: .filename, patch: (.patch // \"\")}",
-    ])
-    .await?;
-    serde_json::Deserializer::from_slice(&stdout)
-        .into_iter()
-        .collect::<Result<Vec<FileDiff>, _>>()
-        .ok()
+    ])?;
+    gem_json::from_stream::<FileDiff>(&stdout).ok()
 }

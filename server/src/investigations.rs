@@ -1,11 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gem_db::{
-    Db,
-    rusqlite::{OptionalExtension, params},
-};
-use pbjson_types::Timestamp;
-use serde::{Deserialize, Serialize};
+use gem_db::{Db, OptionalExtension, params};
+use gem_json::{Error, FromJson, ToJson, Value, json};
+use gem_log::{info, warn};
+use gem_proto::Timestamp;
 
 use crate::proto::{Agent, AgentState, CheckFailure, PullRequestCluster};
 use crate::tokens::{Subject, Tokens};
@@ -25,8 +23,7 @@ each time you have answered.";
 // An agent gem follows: an investigation, a follow-up, or the answer to the user's message about a
 // cluster. Saved as JSON with the names of the `Investigation` message it was before every agent
 // was one `Agent`, so ones saved then still load.
-#[derive(Serialize, Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase", default)]
+#[derive(Clone, Default)]
 struct Investigation {
     id: String,
     title: String,
@@ -48,15 +45,57 @@ struct Investigation {
     reply_html: String,
 }
 
+// Every field, in camelCase.
+impl ToJson for Investigation {
+    fn to_json(&self) -> Value {
+        json!({
+            "id": (self.id),
+            "title": (self.title),
+            "pullRequestUrl": (self.pull_request_url),
+            "pullRequestUrls": (self.pull_request_urls),
+            "threadId": (self.thread_id),
+            "startedAt": (self.started_at),
+            "working": (self.working),
+            "messaged": (self.messaged),
+            "failedChecks": (self.failed_checks),
+            "reply": (self.reply),
+            "replyHtml": (self.reply_html),
+        })
+    }
+}
+
+// A missing field is its default.
+impl FromJson for Investigation {
+    fn from_json(value: &Value) -> Result<Investigation, Error> {
+        if !value.is_object() {
+            return Err(Error::new(format!(
+                "expected an investigation, found {}",
+                value.kind()
+            )));
+        }
+        Ok(Investigation {
+            id: value.field_or_default("id")?,
+            title: value.field_or_default("title")?,
+            pull_request_url: value.field_or_default("pullRequestUrl")?,
+            pull_request_urls: value.field_or_default("pullRequestUrls")?,
+            thread_id: value.field_or_default("threadId")?,
+            started_at: value.field_or_default("startedAt")?,
+            working: value.field_or_default("working")?,
+            messaged: value.field_or_default("messaged")?,
+            failed_checks: value.field_or_default("failedChecks")?,
+            reply: value.field_or_default("reply")?,
+            reply_html: value.field_or_default("replyHtml")?,
+        })
+    }
+}
+
 // Approves the rerun first, so the pull request is not held up by the investigation.
-pub async fn start(proposal_id: &str) -> Result<(), String> {
-    let proposal = proposals::find(proposal_id)
-        .await
-        .ok_or(format!("no proposal {proposal_id}"))?;
+pub fn start(proposal_id: &str) -> Result<(), String> {
+    let proposal = proposals::find(proposal_id).ok_or(format!("no proposal {proposal_id}"))?;
     let failure = (proposal.check_failure.clone())
         .filter(|_| proposal.rerun)
         .ok_or("only a rerun of failed checks can be investigated")?;
-    proposals::approve(proposal_id, "", "", "").await?;
+    proposals::approve(proposal_id, "", "", "")?;
 
     let pr = &proposal.pull_request_url;
     let (repository, number) = short(pr);
@@ -68,14 +107,14 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
         id: id(nanos),
         prs: vec![pr.clone()],
     };
-    let thread_id = start_proposing(&title, &prompt, &subject).await?;
-    track(nanos, title, vec![pr.clone()], listed(&failure), thread_id).await;
+    let thread_id = start_proposing(&title, &prompt, &subject)?;
+    track(nanos, title, vec![pr.clone()], listed(&failure), thread_id);
     Ok(())
 }
 
 // Starts the agent an approved proposal hands `follow_up` to, and follows it like an
 // investigation, so its replies show in gem and the user can message it.
-pub async fn follow_up(title: &str, pr: &str, follow_up: &str) -> Result<(), String> {
+pub fn follow_up(title: &str, pr: &str, follow_up: &str) -> Result<(), String> {
     let prompt = format!(
         "{follow_up}
 
@@ -88,15 +127,21 @@ afterwards in this thread.
 {SETTLE}",
         login = login(),
     );
-    let thread_id = t3::start(title, &prompt, None).await?;
-    track(now(), title.to_string(), vec![pr.to_string()], String::new(), thread_id).await;
+    let thread_id = t3::start(title, &prompt, None)?;
+    track(
+        now(),
+        title.to_string(),
+        vec![pr.to_string()],
+        String::new(),
+        thread_id,
+    );
     Ok(())
 }
 
 // Starts an agent on the user's message about a cluster, and follows it like an investigation.
 // The prompt carries the cluster as gem showed it when the user sent the message. The agent
 // proposes what to do on GitHub rather than do it. Returns the investigation's id.
-pub async fn ask(cluster: &PullRequestCluster, message: &str) -> Result<String, String> {
+pub fn ask(cluster: &PullRequestCluster, message: &str) -> Result<String, String> {
     let nanos = now();
     let first = cluster
         .pull_requests
@@ -179,14 +224,14 @@ thread, and you can record more proposals the same way.
         id: id(nanos),
         prs: prs.clone(),
     };
-    let thread_id = start_proposing(&title, &prompt, &subject).await?;
-    track(nanos, title, prs, String::new(), thread_id).await;
+    let thread_id = start_proposing(&title, &prompt, &subject)?;
+    track(nanos, title, prs, String::new(), thread_id);
     Ok(id(nanos))
 }
 
 // Archives a finished agent that answered `failure` on `pr`, which is never an open investigation,
 // so later agents find what it found too.
-pub async fn archive(title: &str, pr: &str, failure: &CheckFailure, reply: &str) {
+pub fn archive(title: &str, pr: &str, failure: &CheckFailure, reply: &str) {
     let nanos = now();
     let investigation = Investigation {
         id: id(nanos),
@@ -202,12 +247,12 @@ pub async fn archive(title: &str, pr: &str, failure: &CheckFailure, reply: &str)
 }
 
 // Whether `id` is one of these agents.
-pub async fn has(id: &str) -> bool {
-    load().await.iter().any(|investigation| investigation.id == id)
+pub fn has(id: &str) -> bool {
+    load().iter().any(|investigation| investigation.id == id)
 }
 
 // Marked before sending, so the watcher never closes an agent that has a message it has not seen.
-pub async fn message(id: &str, message: &str) -> Result<(), String> {
+pub fn message(id: &str, message: &str) -> Result<(), String> {
     let mut thread_id = None;
     update(id, |investigation| {
         investigation.working = true;
@@ -215,23 +260,23 @@ pub async fn message(id: &str, message: &str) -> Result<(), String> {
         thread_id = Some(investigation.thread_id.clone());
         false
     });
-    t3::send(&thread_id.ok_or(format!("no agent {id}"))?, message).await
+    t3::send(&thread_id.ok_or(format!("no agent {id}"))?, message)
 }
 
-pub async fn close(id: &str) {
+pub fn close(id: &str) {
     update(id, |_| true);
-    closed(id).await;
+    closed(id);
 }
 
 // What goes with the investigation `id` once it is closed.
-async fn closed(id: &str) {
-    proposals::remove_of_investigation(id).await;
-    Tokens::here().revoke(id).await;
+fn closed(id: &str) {
+    proposals::remove_of_investigation(id);
+    Tokens::here().revoke(id);
 }
 
-pub async fn agents() -> Vec<Agent> {
-    let mut proposals = proposals::of_investigations().await;
-    (load().await.into_iter())
+pub fn agents() -> Vec<Agent> {
+    let mut proposals = proposals::of_investigations();
+    (load().into_iter())
         .map(|investigation| Agent {
             proposals: proposals.remove(&investigation.id).unwrap_or_default(),
             state: match investigation.working {
@@ -254,18 +299,16 @@ pub async fn agents() -> Vec<Agent> {
 // Keeps each investigation's `working` and reply up to date with its thread. An investigation the
 // user never messaged is open only while its agent works or its proposals wait on the user.
 pub fn watch() {
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         loop {
-            for investigation in load().await {
-                let Some((working, reply)) = t3::show(&investigation.thread_id).await else {
+            for investigation in load() {
+                let Some((working, reply)) = t3::show(&investigation.thread_id) else {
                     continue;
                 };
                 // Read after `show`: an agent records its proposals before it stops working.
                 if !working
                     && !investigation.messaged
-                    && !proposals::of_investigations()
-                        .await
-                        .contains_key(&investigation.id)
+                    && !proposals::of_investigations().contains_key(&investigation.id)
                 {
                     // Rechecked as it closes: the user may have messaged it since it was loaded. The
                     // archive keeps what it found, which may have come since the last refresh.
@@ -277,8 +320,11 @@ pub fn watch() {
                         true
                     });
                     if finished {
-                        closed(&investigation.id).await;
-                        tracing::info!(investigation = %investigation.id, "finished investigation closed");
+                        closed(&investigation.id);
+                        info!(
+                            "finished investigation closed",
+                            investigation = investigation.id
+                        );
                     }
                     continue;
                 }
@@ -288,9 +334,7 @@ pub fn watch() {
                 let reply_html = if reply == investigation.reply {
                     investigation.reply_html.clone()
                 } else {
-                    gem_github::render(&investigation.pull_request_url, &reply)
-                        .await
-                        .unwrap_or_default()
+                    gem_github::render(&investigation.pull_request_url, &reply).unwrap_or_default()
                 };
                 update(&investigation.id, |current| {
                     current.working = working;
@@ -299,17 +343,17 @@ pub fn watch() {
                     false
                 });
             }
-            tokio::time::sleep(REFRESH_INTERVAL).await;
+            std::thread::sleep(REFRESH_INTERVAL);
         }
     });
 }
 
 // Starts an agent that proposes on `subject` through `gem-agent`. Returns the thread's id.
-async fn start_proposing(title: &str, prompt: &str, subject: &Subject) -> Result<String, String> {
-    let config = mcp::agent_config(subject).await?;
-    let started = t3::start(title, prompt, Some(&config)).await;
+fn start_proposing(title: &str, prompt: &str, subject: &Subject) -> Result<String, String> {
+    let config = mcp::agent_config(subject)?;
+    let started = t3::start(title, prompt, Some(&config));
     if started.is_err() {
-        Tokens::here().revoke(subject.id()).await;
+        Tokens::here().revoke(subject.id());
     }
     started
 }
@@ -335,13 +379,7 @@ fn id(nanos: u128) -> String {
 
 // Saves an investigation started at `nanos` since the epoch, on the pull requests `prs`, the one it
 // started from first.
-async fn track(
-    nanos: u128,
-    title: String,
-    prs: Vec<String>,
-    failed_checks: String,
-    thread_id: String,
-) {
+fn track(nanos: u128, title: String, prs: Vec<String>, failed_checks: String, thread_id: String) {
     let investigation = Investigation {
         id: id(nanos),
         title,
@@ -448,7 +486,7 @@ later.
 
 // The newest `SEARCH_LIMIT` closed investigations whose title, failed checks or reply has every
 // word of `query`, ignoring case, as JSON, with how many older ones match too.
-pub async fn search(db: &Db, query: &str) -> String {
+pub fn search(db: &Db, query: &str) -> String {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     let mut found: Vec<Investigation> = (load_from(db, true).into_iter())
         .filter(|investigation| {
@@ -462,41 +500,42 @@ pub async fn search(db: &Db, query: &str) -> String {
         .collect();
     found.sort_by_key(|investigation| std::cmp::Reverse(investigation.id.clone()));
     let older = found.len().saturating_sub(SEARCH_LIMIT);
-    let found: Vec<serde_json::Value> = (found.into_iter().take(SEARCH_LIMIT))
+    let found: Vec<Value> = (found.into_iter().take(SEARCH_LIMIT))
         .map(|investigation| {
-            serde_json::json!({
-                "title": investigation.title,
-                "pullRequestUrls": match investigation.pull_request_urls.is_empty() {
-                    true => vec![investigation.pull_request_url],
-                    false => investigation.pull_request_urls,
-                },
-                "startedAt": investigation.started_at,
-                "failedChecks": investigation.failed_checks,
-                "reply": investigation.reply,
+            let pull_request_urls = match investigation.pull_request_urls.is_empty() {
+                true => vec![investigation.pull_request_url],
+                false => investigation.pull_request_urls,
+            };
+            json!({
+                "title": (investigation.title),
+                "pullRequestUrls": pull_request_urls,
+                "startedAt": (investigation.started_at),
+                "failedChecks": (investigation.failed_checks),
+                "reply": (investigation.reply),
             })
         })
         .collect();
-    let found = serde_json::json!({ "investigations": found, "olderMatches": older });
-    serde_json::to_string_pretty(&found).unwrap()
+    let found = json!({ "investigations": found, "olderMatches": older });
+    gem_json::to_string_pretty(&found)
 }
 
 // The open investigations.
-async fn load() -> Vec<Investigation> {
+fn load() -> Vec<Investigation> {
     load_from(crate::db(), false)
 }
 
 fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
     let investigations = db.with(|db| {
         db.prepare("SELECT investigation FROM investigations WHERE closed = ?1")?
-            .query_map([closed], |row| row.get::<_, String>(0))?
+            .query_map(params![closed], |row| row.get::<String>(0))?
             .collect::<Result<Vec<_>, _>>()
     });
     match investigations {
         Ok(investigations) => (investigations.iter())
-            .filter_map(|json| serde_json::from_str(json).ok())
+            .filter_map(|json| gem_json::from_str(json).ok())
             .collect(),
         Err(error) => {
-            tracing::warn!(%error, "cannot read investigations");
+            warn!("cannot read investigations", error = error);
             Vec::new()
         }
     }
@@ -506,11 +545,15 @@ fn insert(investigation: &Investigation, closed: bool) {
     let saved = crate::db().with(|db| {
         db.execute(
             "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
-            params![investigation.id, serde_json::to_string(investigation).unwrap(), closed],
+            params![investigation.id, gem_json::to_string(investigation), closed],
         )
     });
     if let Err(error) = saved {
-        tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
+        warn!(
+            "cannot save investigation",
+            investigation = investigation.id,
+            error = error
+        );
     }
 }
 
@@ -523,24 +566,27 @@ fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
         let json: Option<String> = tx
             .query_row(
                 "SELECT investigation FROM investigations WHERE id = ?1 AND closed = 0",
-                [id],
-                |row| row.get(0),
+                params![id],
+                |row| row.get::<String>(0),
             )
             .optional()?;
-        let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
-        else {
+        let Some(mut investigation) = json.and_then(|json| gem_json::from_str(&json).ok()) else {
             return Ok(false);
         };
         let close = change(&mut investigation);
         tx.execute(
             "UPDATE investigations SET investigation = ?2, closed = ?3 WHERE id = ?1",
-            params![id, serde_json::to_string(&investigation).unwrap(), close],
+            params![id, gem_json::to_string(&investigation), close],
         )?;
         tx.commit()?;
         Ok(close)
     });
     updated.unwrap_or_else(|error| {
-        tracing::warn!(investigation = id, %error, "cannot save investigation");
+        warn!(
+            "cannot save investigation",
+            investigation = id,
+            error = error
+        );
         false
     })
 }
@@ -561,16 +607,19 @@ mod tests {
             "startedAt": "2026-10-26T12:00:00Z",
             "working": true
         }"#;
-        let investigation: Investigation = serde_json::from_str(json).unwrap();
-        assert_eq!(investigation.pull_request_url, "https://github.com/u9g/gem/pull/1");
+        let investigation: Investigation = gem_json::from_str(json).unwrap();
+        assert_eq!(
+            investigation.pull_request_url,
+            "https://github.com/u9g/gem/pull/1"
+        );
         assert!(investigation.pull_request_urls.is_empty());
         assert_eq!(investigation.thread_id, "t");
         assert!(investigation.working);
         assert_eq!(investigation.started_at.unwrap().seconds, 1_793_016_000);
     }
 
-    #[tokio::test]
-    async fn search_finds_closed_investigations_with_every_word_newest_first() {
+    #[test]
+    fn search_finds_closed_investigations_with_every_word_newest_first() {
         let db = crate::tokens::tests::db();
         let write = |id: &str, title: &str, failed_checks: &str, reply: &str, closed: bool| {
             let investigation = Investigation {
@@ -581,7 +630,7 @@ mod tests {
                 reply: reply.into(),
                 ..Default::default()
             };
-            let json = serde_json::to_string(&investigation).unwrap();
+            let json = gem_json::to_string(&investigation);
             db.with(|db| {
                 db.execute(
                     "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
@@ -590,17 +639,46 @@ mod tests {
             })
             .unwrap();
         };
-        write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.", true);
-        write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);
-        write("3", "Investigate test on r#3", "TEST_JOIN: timed out", "The room closes first.", true);
-        write("4", "Investigate test on r#4", "", "test_join still times out.", false);
+        write(
+            "1",
+            "Investigate test on r#1",
+            "",
+            "test_join times out: the room closes first.",
+            true,
+        );
+        write(
+            "2",
+            "Investigate lint on r#2",
+            "",
+            "A new clippy lint.",
+            true,
+        );
+        write(
+            "3",
+            "Investigate test on r#3",
+            "TEST_JOIN: timed out",
+            "The room closes first.",
+            true,
+        );
+        write(
+            "4",
+            "Investigate test on r#4",
+            "",
+            "test_join still times out.",
+            false,
+        );
         let query = "test_join time";
 
-        let found: serde_json::Value =
-            serde_json::from_str(&search(&db, query).await).unwrap();
+        let found = gem_json::parse(&search(&db, query)).unwrap();
         let urls: Vec<&str> = (found["investigations"].as_array().unwrap().iter())
             .map(|f| f["pullRequestUrls"][0].as_str().unwrap())
             .collect();
-        assert_eq!(urls, ["https://github.com/o/r/pull/3", "https://github.com/o/r/pull/1"]);
+        assert_eq!(
+            urls,
+            [
+                "https://github.com/o/r/pull/3",
+                "https://github.com/o/r/pull/1"
+            ]
+        );
     }
 }

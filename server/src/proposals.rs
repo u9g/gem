@@ -1,12 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, rusqlite::params};
-use serde::Deserialize;
-use tracing::Instrument;
+use gem_db::{Db, params};
+use gem_json::{Error, FromJson, Value};
+use gem_log::{Level, warn};
 
 use crate::proto::{CheckFailure, Comment, NewPullRequest, Patch, Proposal, PullRequestCluster};
 use crate::tokens::Subject;
@@ -36,17 +35,19 @@ fn answers(proposal: &Proposal) -> Vec<&str> {
     }
 }
 
-pub async fn find(id: &str) -> Option<Proposal> {
-    load(crate::db()).into_iter().find(|proposal| proposal.id == id)
+pub fn find(id: &str) -> Option<Proposal> {
+    load(crate::db())
+        .into_iter()
+        .find(|proposal| proposal.id == id)
 }
 
 // Whether a proposal answers the conversation or investigation `id`.
-pub async fn exist_for(id: &str) -> bool {
+pub fn exist_for(id: &str) -> bool {
     (load(crate::db()).iter()).any(|proposal| subject(proposal) == Some(id))
 }
 
 // The proposals of each investigation, by its ID.
-pub async fn of_investigations() -> HashMap<String, Vec<Proposal>> {
+pub fn of_investigations() -> HashMap<String, Vec<Proposal>> {
     let mut by_investigation: HashMap<String, Vec<Proposal>> = HashMap::new();
     for proposal in load(crate::db()) {
         if !proposal.investigation_id.is_empty() {
@@ -59,7 +60,7 @@ pub async fn of_investigations() -> HashMap<String, Vec<Proposal>> {
     by_investigation
 }
 
-pub async fn remove_of_investigation(id: &str) {
+pub fn remove_of_investigation(id: &str) {
     for proposal in load(crate::db()) {
         if proposal.investigation_id == id {
             delete(&proposal.id);
@@ -69,7 +70,7 @@ pub async fn remove_of_investigation(id: &str) {
 
 // A proposal's review comment takes where it now sits from `waiting`, so a push since the
 // proposal was made moves or outdates it.
-pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashMap<String, Option<Comment>>) {
+pub fn fill(clusters: &mut [PullRequestCluster], waiting: &HashMap<String, Option<Comment>>) {
     let mut by_pr: HashMap<String, Vec<Proposal>> = HashMap::new();
     for mut proposal in load(crate::db()) {
         let Some(current) = subject(&proposal).and_then(|id| waiting.get(id)) else {
@@ -91,23 +92,7 @@ pub async fn fill(clusters: &mut [PullRequestCluster], waiting: &HashMap<String,
 
 // Returns the PR's URL when approving closed it.
 // Everything logged while approving carries the proposal's ID and its PR.
-pub async fn approve(
-    id: &str,
-    reply: &str,
-    follow_up: &str,
-    diff: &str,
-) -> Result<Option<String>, String> {
-    let span = tracing::info_span!(
-        "approve",
-        proposal = id,
-        pull_request = tracing::field::Empty
-    );
-    approve_proposal(id, reply, follow_up, diff)
-        .instrument(span)
-        .await
-}
-
-async fn approve_proposal(
+pub fn approve(
     id: &str,
     reply: &str,
     follow_up: &str,
@@ -117,27 +102,26 @@ async fn approve_proposal(
     let Some(mut proposal) = proposals.iter().find(|p| p.id == id).cloned() else {
         return Err(format!("no proposal {id}"));
     };
-    tracing::Span::current().record("pull_request", proposal.pull_request_url.as_str());
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
-        if let Ok(html) = render(&proposal.pull_request_url, reply).await {
+        if let Ok(html) = render(&proposal.pull_request_url, reply) {
             proposal.reply_html = html;
         }
     }
     if !follow_up.is_empty() && !proposal.follow_up.is_empty() {
         proposal.follow_up = follow_up.to_string();
-        if let Ok(html) = render(&proposal.pull_request_url, follow_up).await {
+        if let Ok(html) = render(&proposal.pull_request_url, follow_up) {
             proposal.follow_up_html = html;
         }
     }
     if let Some(patch) = proposal.patch.as_mut().filter(|_| !diff.is_empty()) {
         patch.diff = diff.to_string();
     }
-    match run(&mut proposal).await {
+    match run(&mut proposal) {
         // Nothing else on a closed PR needs answering.
         Ok(()) if closes => {
-            remove_on(std::slice::from_ref(&proposal.pull_request_url)).await;
+            remove_on(std::slice::from_ref(&proposal.pull_request_url));
             Ok(Some(proposal.pull_request_url))
         }
         Ok(()) => {
@@ -162,7 +146,7 @@ async fn approve_proposal(
 // stale proposal, and every proposal answering the same conversation. Returns those conversations'
 // IDs, so they can be answered again against the new heads. An investigation's proposals are
 // independent, so only its stale ones go.
-pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
+pub fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
     };
@@ -193,7 +177,7 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
 }
 
 // Deletes every proposal on the PRs at `urls`, except investigations'.
-pub async fn remove_on(urls: &[String]) {
+pub fn remove_on(urls: &[String]) {
     for proposal in load(crate::db()) {
         if urls.contains(&proposal.pull_request_url) && proposal.investigation_id.is_empty() {
             delete(&proposal.id);
@@ -201,65 +185,84 @@ pub async fn remove_on(urls: &[String]) {
     }
 }
 
-pub async fn dismiss(id: &str) {
+pub fn dismiss(id: &str) {
     delete(id);
 }
 
 // Logs a step of an approve starting and how it ended. A step that succeeded is saved as done
 // before the next starts, so the log shows how far a failed approve got.
-async fn step<T>(
+// `context` is what the step is about: the proposal, its PR, and what the step acts on.
+fn step<T>(
+    context: &[(&'static str, String)],
     name: &'static str,
-    work: impl Future<Output = Result<T, String>>,
+    work: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    tracing::info!(step = name, "step started");
+    let mut fields = context.to_vec();
+    fields.push(("step", name.to_string()));
+    gem_log::event(Level::Info, "step started", &fields);
     let started = Instant::now();
-    let result = work.await;
-    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let result = work();
+    fields.push((
+        "elapsed_ms",
+        (started.elapsed().as_millis() as u64).to_string(),
+    ));
     match &result {
-        Ok(_) => tracing::info!(step = name, elapsed_ms, "step done"),
-        Err(error) => tracing::warn!(step = name, elapsed_ms, %error, "step failed"),
+        Ok(_) => gem_log::event(Level::Info, "step done", &fields),
+        Err(error) => {
+            fields.push(("error", error.clone()));
+            gem_log::event(Level::Warn, "step failed", &fields);
+        }
     }
     result
 }
 
-async fn run(proposal: &mut Proposal) -> Result<(), String> {
+// What everything logged while approving `proposal` carries, with `more`.
+fn context(proposal: &Proposal, more: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+    let mut context = vec![
+        ("proposal", proposal.id.clone()),
+        ("pull_request", proposal.pull_request_url.clone()),
+    ];
+    for &(key, value) in more {
+        // An inner span's field of the same name, such as another PR's, wins.
+        context.retain(|(k, _)| *k != key);
+        context.push((key, value.to_string()));
+    }
+    context
+}
+
+fn run(proposal: &mut Proposal) -> Result<(), String> {
+    let approving = context(proposal, &[]);
     if !proposal.follow_up.is_empty() {
-        step(
-            "follow_up",
+        step(&approving, "follow_up", || {
             investigations::follow_up(
                 &proposal.summary,
                 &proposal.pull_request_url,
                 &proposal.follow_up,
-            ),
-        )
-        .await?;
+            )
+        })?;
         proposal.follow_up.clear();
         save(crate::db(), proposal);
     }
     if let Some(patch) = &proposal.patch {
-        step(
-            "patch",
+        step(&approving, "patch", || {
             apply_patch(
                 &proposal.pull_request_url,
                 &patch.diff,
                 Some(&patch.commit_message),
-            ),
-        )
-        .await?;
+            )
+        })?;
         proposal.patch = None;
         save(crate::db(), proposal);
     }
     while let Some(patch) = proposal.other_patches.first() {
-        step(
-            "other_patch",
+        let other = context(proposal, &[("pull_request", &patch.pull_request_url)]);
+        step(&other, "other_patch", || {
             apply_patch(
                 &patch.pull_request_url,
                 &patch.diff,
                 Some(&patch.commit_message),
-            ),
-        )
-        .instrument(tracing::info_span!("other", pull_request = %patch.pull_request_url))
-        .await?;
+            )
+        })?;
         proposal.other_patches.remove(0);
         save(crate::db(), proposal);
     }
@@ -268,44 +271,46 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
     if let Some(new) = &proposal.open_pull_request
         && let Some(patch) = &new.patch
     {
-        step(
-            "push_new_branch",
+        let on_new = context(
+            proposal,
+            &[("repository", &new.repository), ("branch", &new.branch)],
+        );
+        step(&on_new, "push_new_branch", || {
             push_new_branch(
                 &new.repository,
                 &new.base,
                 &new.branch,
                 &patch.diff,
                 &patch.commit_message,
-            ),
-        )
-        .instrument(tracing::info_span!("new", repository = %new.repository, branch = %new.branch))
-        .await?;
+            )
+        })?;
         if let Some(new) = &mut proposal.open_pull_request {
             new.patch = None;
         }
         save(crate::db(), proposal);
     }
     if let Some(new) = &proposal.open_pull_request {
-        let url = step(
-            "open_pull_request",
+        let mut on_new = context(
+            proposal,
+            &[("repository", &new.repository), ("branch", &new.branch)],
+        );
+        let url = step(&on_new, "open_pull_request", || {
             open_pull_request(
                 &new.repository,
                 &new.base,
                 &new.branch,
                 &new.title,
                 &new.body,
-            ),
-        )
-        .instrument(tracing::info_span!("new", repository = %new.repository, branch = %new.branch))
-        .await?;
-        tracing::info!(%url, "pull request opened");
+            )
+        })?;
+        on_new.push(("url", url));
+        gem_log::event(Level::Info, "pull request opened", &on_new);
         proposal.open_pull_request = None;
         save(crate::db(), proposal);
     }
     if !proposal.reply.is_empty() {
         if proposal.thread_id.is_empty() {
-            step(
-                "comment",
+            step(&approving, "comment", || {
                 command(
                     "gh",
                     &[
@@ -316,31 +321,26 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
                         &proposal.reply,
                     ],
                     None,
-                ),
-            )
-            .await?;
+                )
+            })?;
         } else {
-            step(
-                "reply",
+            step(&approving, "reply", || {
                 graphql(
                     "mutation($thread: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) { comment { id } } }",
                     &[("thread", &proposal.thread_id), ("body", &proposal.reply)],
-                ),
-            )
-            .await?;
+                )
+            })?;
         }
         proposal.reply.clear();
         save(crate::db(), proposal);
     }
     if proposal.resolve_thread {
-        step(
-            "resolve_thread",
+        step(&approving, "resolve_thread", || {
             graphql(
                 "mutation($thread: ID!) { resolveReviewThread(input: {threadId: $thread}) { thread { id } } }",
                 &[("thread", &proposal.thread_id)],
-            ),
-        )
-        .await?;
+            )
+        })?;
         proposal.resolve_thread = false;
         save(crate::db(), proposal);
     }
@@ -353,33 +353,23 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
         runs.dedup();
         let repository = repository(&proposal.pull_request_url);
         for run in runs {
-            step(
-                "rerun",
+            let run = run.to_string();
+            let workflow_run = context(proposal, &[("id", &run)]);
+            step(&workflow_run, "rerun", || {
                 command(
                     "gh",
-                    &[
-                        "run",
-                        "rerun",
-                        &run.to_string(),
-                        "--failed",
-                        "-R",
-                        &repository,
-                    ],
+                    &["run", "rerun", &run, "--failed", "-R", &repository],
                     None,
-                ),
-            )
-            .instrument(tracing::info_span!("workflow_run", id = run))
-            .await?;
+                )
+            })?;
         }
         proposal.rerun = false;
         save(crate::db(), proposal);
     }
     if proposal.close_pull_request {
-        step(
-            "close",
-            command("gh", &["pr", "close", &proposal.pull_request_url], None),
-        )
-        .await?;
+        step(&approving, "close", || {
+            command("gh", &["pr", "close", &proposal.pull_request_url], None)
+        })?;
         proposal.close_pull_request = false;
         save(crate::db(), proposal);
     }
@@ -388,8 +378,8 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
 
 // What an agent proposes, as the `propose` tool of the `gem-agent` MCP server takes it. The
 // subject it answers comes from the agent's token, not from here.
-#[derive(Deserialize, Default, Debug)]
-#[serde(default, deny_unknown_fields)]
+// Every field may be left out. No other field is allowed, so a misspelled one is not ignored.
+#[derive(Default, Debug)]
 pub struct Request {
     pub pr: String,
     pub summary: String,
@@ -409,8 +399,7 @@ pub struct Request {
 }
 
 // A diff for another pull request of the cluster, and the message to commit it with.
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct OtherPatch {
     pub pr: String,
     pub patch: String,
@@ -418,8 +407,7 @@ pub struct OtherPatch {
 }
 
 // A pull request to open: a diff against `base` of `repository`, committed on `branch`.
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct OpenPullRequest {
     pub repository: String,
     pub base: String,
@@ -432,33 +420,136 @@ pub struct OpenPullRequest {
 }
 
 // The log lines that show why a failed check failed.
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct Excerpt {
     pub check: String,
     pub lines: String,
 }
 
+// Fails on a field of `value` not in `fields`, as serde's `deny_unknown_fields` does.
+fn known_fields(value: &Value, what: &str, fields: &[&str]) -> Result<(), Error> {
+    let object = (value.as_object())
+        .ok_or_else(|| Error::new(format!("invalid type: {}, expected {what}", value.kind())))?;
+    for name in object.keys() {
+        if !fields.contains(&name.as_str()) {
+            let expected: Vec<String> = fields.iter().map(|f| format!("`{f}`")).collect();
+            let expected = match expected.len() {
+                1 => expected[0].clone(),
+                2 => format!("{} or {}", expected[0], expected[1]),
+                _ => format!("one of {}", expected.join(", ")),
+            };
+            return Err(Error::new(format!(
+                "unknown field `{name}`, expected {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+// A field that must be there.
+fn required<T: FromJson>(value: &Value, name: &str) -> Result<T, Error> {
+    match value.get(name) {
+        None => Err(Error::new(format!("missing field `{name}`"))),
+        Some(_) => value.field(name),
+    }
+}
+
+impl FromJson for Request {
+    fn from_json(value: &Value) -> Result<Request, Error> {
+        known_fields(
+            value,
+            "struct Request",
+            &[
+                "pr",
+                "summary",
+                "patch",
+                "message",
+                "other_patches",
+                "open_pull_request",
+                "reply",
+                "follow_up",
+                "resolve_thread",
+                "rerun",
+                "close_pull_request",
+                "excerpts",
+                "request_tool",
+            ],
+        )?;
+        Ok(Request {
+            pr: value.field_or_default("pr")?,
+            summary: value.field_or_default("summary")?,
+            patch: value.field_or_default("patch")?,
+            message: value.field_or_default("message")?,
+            other_patches: value.field_or_default("other_patches")?,
+            open_pull_request: value.field("open_pull_request")?,
+            reply: value.field_or_default("reply")?,
+            follow_up: value.field_or_default("follow_up")?,
+            resolve_thread: value.field_or_default("resolve_thread")?,
+            rerun: value.field_or_default("rerun")?,
+            close_pull_request: value.field_or_default("close_pull_request")?,
+            excerpts: value.field_or_default("excerpts")?,
+            request_tool: value.field_or_default("request_tool")?,
+        })
+    }
+}
+
+impl FromJson for OtherPatch {
+    fn from_json(value: &Value) -> Result<OtherPatch, Error> {
+        known_fields(value, "struct OtherPatch", &["pr", "patch", "message"])?;
+        Ok(OtherPatch {
+            pr: required(value, "pr")?,
+            patch: required(value, "patch")?,
+            message: required(value, "message")?,
+        })
+    }
+}
+
+impl FromJson for OpenPullRequest {
+    fn from_json(value: &Value) -> Result<OpenPullRequest, Error> {
+        known_fields(
+            value,
+            "struct OpenPullRequest",
+            &[
+                "repository",
+                "base",
+                "branch",
+                "title",
+                "body",
+                "patch",
+                "message",
+            ],
+        )?;
+        Ok(OpenPullRequest {
+            repository: required(value, "repository")?,
+            base: required(value, "base")?,
+            branch: required(value, "branch")?,
+            title: required(value, "title")?,
+            body: required(value, "body")?,
+            patch: required(value, "patch")?,
+            message: required(value, "message")?,
+        })
+    }
+}
+
+impl FromJson for Excerpt {
+    fn from_json(value: &Value) -> Result<Excerpt, Error> {
+        known_fields(value, "struct Excerpt", &["check", "lines"])?;
+        Ok(Excerpt {
+            check: required(value, "check")?,
+            lines: required(value, "lines")?,
+        })
+    }
+}
+
 // What checking a proposal asks of GitHub, so tests can answer without it.
 pub trait GitHub: Send + Sync + 'static {
-    fn comment(&self, id: &str) -> impl Future<Output = Result<FetchedComment, String>> + Send;
+    fn comment(&self, id: &str) -> Result<FetchedComment, String>;
     // The failed checks on the PR at `pr` while `id` is still their ID.
-    fn check_failure(
-        &self,
-        pr: &str,
-        id: &str,
-    ) -> impl Future<Output = Result<CheckFailure, String>> + Send;
+    fn check_failure(&self, pr: &str, id: &str) -> Result<CheckFailure, String>;
     // The review thread's PR URL and its comments, oldest first.
-    fn review_thread(
-        &self,
-        id: &str,
-    ) -> impl Future<Output = Result<(String, Vec<Comment>), String>> + Send;
+    fn review_thread(&self, id: &str) -> Result<(String, Vec<Comment>), String>;
     // Checks that the diff applies to the PR's head. Returns that head commit.
-    fn check_patch(
-        &self,
-        pr: &str,
-        diff: &str,
-    ) -> impl Future<Output = Result<String, String>> + Send;
+    fn check_patch(&self, pr: &str, diff: &str) -> Result<String, String>;
     // Checks that the diff applies to the head of `base` in the repository `owner/name`, and that
     // `branch` is new. Returns that head commit.
     fn check_new_pull_request(
@@ -467,41 +558,32 @@ pub trait GitHub: Send + Sync + 'static {
         base: &str,
         branch: &str,
         diff: &str,
-    ) -> impl Future<Output = Result<String, String>> + Send;
-    fn render(
-        &self,
-        pr: &str,
-        markdown: &str,
-    ) -> impl Future<Output = Result<String, String>> + Send;
+    ) -> Result<String, String>;
+    fn render(&self, pr: &str, markdown: &str) -> Result<String, String>;
 }
 
 pub struct Live;
 
 impl GitHub for Live {
-    async fn comment(&self, id: &str) -> Result<FetchedComment, String> {
-        fetch_comment(id).await
+    fn comment(&self, id: &str) -> Result<FetchedComment, String> {
+        fetch_comment(id)
     }
 
-    async fn check_failure(&self, pr: &str, id: &str) -> Result<CheckFailure, String> {
+    fn check_failure(&self, pr: &str, id: &str) -> Result<CheckFailure, String> {
         let node = command(
             "gh",
             &["pr", "view", pr, "--json", "id", "--jq", ".id"],
             None,
-        )
-        .await?;
+        )?;
         conversations::check_failure(String::from_utf8_lossy(&node).trim(), id)
-            .await
             .ok_or(format!("{id} is not the failed checks on {pr}"))
     }
 
-    async fn review_thread(&self, id: &str) -> Result<(String, Vec<Comment>), String> {
-        let value: serde_json::Value = serde_json::from_slice(
-            &graphql(
-                "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } comments(first: 100) { nodes { id body bodyHTML url author { login } } } } } }",
-                &[("id", id)],
-            )
-            .await?,
-        )
+    fn review_thread(&self, id: &str) -> Result<(String, Vec<Comment>), String> {
+        let value = gem_json::parse_bytes(&graphql(
+            "query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { pullRequest { url } comments(first: 100) { nodes { id body bodyHTML url author { login } } } } } }",
+            &[("id", id)],
+        )?)
         .map_err(|e| e.to_string())?;
         let node = &value["data"]["node"];
         let pr = node["pullRequest"]["url"]
@@ -520,29 +602,29 @@ impl GitHub for Live {
         Ok((pr.to_string(), comments))
     }
 
-    async fn check_patch(&self, pr: &str, diff: &str) -> Result<String, String> {
-        apply_patch(pr, diff, None).await
+    fn check_patch(&self, pr: &str, diff: &str) -> Result<String, String> {
+        apply_patch(pr, diff, None)
     }
 
-    async fn check_new_pull_request(
+    fn check_new_pull_request(
         &self,
         repository: &str,
         base: &str,
         branch: &str,
         diff: &str,
     ) -> Result<String, String> {
-        check_new_pull_request(repository, base, branch, diff).await
+        check_new_pull_request(repository, base, branch, diff)
     }
 
-    async fn render(&self, pr: &str, markdown: &str) -> Result<String, String> {
-        render(pr, markdown).await
+    fn render(&self, pr: &str, markdown: &str) -> Result<String, String> {
+        render(pr, markdown)
     }
 }
 
 // Checks what an agent answering `subject` proposes and saves it in `db`. `cluster` is the URLs
 // of the pull requests in the cluster of the one it is about. Returns the proposal's ID, or why it
 // cannot be approved, for the agent to fix and propose again.
-pub async fn propose(
+pub fn propose(
     github: &impl GitHub,
     db: &Db,
     subject: &Subject,
@@ -582,14 +664,14 @@ pub async fn propose(
         Subject::Comment {
             comment, thread, ..
         } => {
-            let comment = github.comment(comment).await?;
+            let comment = github.comment(comment)?;
             if comment.pull_request != pr {
                 return Err(format!("comment is on {}, not {pr}", comment.pull_request));
             }
             (Some(comment.comment), None, thread.clone(), "")
         }
         Subject::CheckFailure { id, .. } => {
-            let mut failure = github.check_failure(pr, id).await?;
+            let mut failure = github.check_failure(pr, id)?;
             for excerpt in &excerpts {
                 let check = (failure.checks.iter_mut())
                     .find(|c| c.id == excerpt.check)
@@ -614,7 +696,7 @@ pub async fn propose(
     let thread_id = thread_id.unwrap_or_default();
     let mut earlier_comments = Vec::new();
     if !thread_id.is_empty() {
-        let (on, comments) = github.review_thread(&thread_id).await?;
+        let (on, comments) = github.review_thread(&thread_id)?;
         if on != pr {
             return Err(format!("thread is on {on}, not {pr}"));
         }
@@ -653,7 +735,7 @@ pub async fn propose(
             if message.trim().is_empty() {
                 return Err("`message` is required with `patch`".into());
             }
-            let head_oid = github.check_patch(pr, diff).await?;
+            let head_oid = github.check_patch(pr, diff)?;
             Some(Patch {
                 diff: diff.to_string(),
                 commit_message: message,
@@ -685,7 +767,8 @@ pub async fn propose(
         if other.message.trim().is_empty() {
             return Err(format!("`message` is required with the patch for {url}"));
         }
-        let head_oid = (github.check_patch(url, &other.patch).await)
+        let head_oid = github
+            .check_patch(url, &other.patch)
             .map_err(|e| format!("the patch for {url}: {e}"))?;
         checked.push(Patch {
             diff: other.patch,
@@ -696,7 +779,7 @@ pub async fn propose(
     }
     let open_pull_request = match open_pull_request {
         None => None,
-        Some(new) => Some(check_open_pull_request(github, pr, new).await?),
+        Some(new) => Some(check_open_pull_request(github, pr, new)?),
     };
     // A top-level reply quotes the comment it answers in its own markdown, so the quote shows,
     // and is edited, with the rest of what is posted.
@@ -709,9 +792,9 @@ pub async fn propose(
         }
         _ => reply,
     };
-    let summary_html = github.render(pr, &summary).await?;
-    let reply_html = github.render(pr, &reply).await?;
-    let follow_up_html = github.render(pr, &follow_up).await?;
+    let summary_html = github.render(pr, &summary)?;
+    let reply_html = github.render(pr, &reply)?;
+    let follow_up_html = github.render(pr, &follow_up)?;
 
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -743,14 +826,14 @@ pub async fn propose(
     db.with(|db| {
         db.execute(
             "INSERT INTO proposals (id, proposal) VALUES (?1, ?2)",
-            params![proposal.id, serde_json::to_string(&proposal).unwrap()],
+            params![proposal.id, gem_json::to_string(&proposal)],
         )
     })?;
     Ok(proposal.id)
 }
 
 // Checks a pull request to open, proposed about the pull request at `pr`, which its body must link.
-async fn check_open_pull_request(
+fn check_open_pull_request(
     github: &impl GitHub,
     pr: &str,
     new: OpenPullRequest,
@@ -792,9 +875,8 @@ async fn check_open_pull_request(
             "`open_pull_request.body` must link {pr}, so gem groups the two pull requests"
         ));
     }
-    let head_oid = (github
+    let head_oid = github
         .check_new_pull_request(repository, base, branch, &new.patch)
-        .await)
         .map_err(|e| format!("the patch for the new pull request: {e}"))?;
     Ok(NewPullRequest {
         repository: repository.to_string(),
@@ -802,7 +884,7 @@ async fn check_open_pull_request(
         branch: branch.to_string(),
         title: new.title.trim().to_string(),
         // Rendered where it is posted, so `#123` links an issue of that repository.
-        body_html: (github.render(&format!("https://github.com/{repository}"), &new.body)).await?,
+        body_html: github.render(&format!("https://github.com/{repository}"), &new.body)?,
         body: new.body,
         patch: Some(Patch {
             diff: new.patch,
@@ -818,51 +900,37 @@ pub struct FetchedComment {
     pub pull_request: String,
 }
 
-async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
-    #[derive(Deserialize)]
-    struct Node {
-        id: String,
-        body: String,
-        #[serde(rename = "bodyHTML")]
-        body_html: String,
-        url: String,
-        author: Option<Author>,
-        #[serde(rename = "pullRequest")]
-        pull_request: Option<Url>,
-        #[serde(default)]
-        path: String,
-        line: Option<u32>,
-        #[serde(rename = "diffHunk", default)]
-        diff_hunk: String,
-    }
-    #[derive(Deserialize)]
-    struct Author {
-        login: String,
-    }
-    #[derive(Deserialize)]
-    struct Url {
-        url: String,
-    }
+fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     let fields = "id body bodyHTML url author { login } pullRequest { url }";
     let output = graphql(
-        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line diffHunk }} }} }}"),
+        &format!(
+            "query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line diffHunk }} }} }}"
+        ),
         &[("id", id)],
-    )
-    .await?;
-    let value: serde_json::Value = serde_json::from_slice(&output).map_err(|e| e.to_string())?;
-    let node: Node = serde_json::from_value(value["data"]["node"].clone())
-        .map_err(|_| format!("{id} is not a comment on a pull request"))?;
+    )?;
+    let value = gem_json::parse_bytes(&output).map_err(|e| e.to_string())?;
+    read_comment(&value["data"]["node"])
+        .map_err(|_| format!("{id} is not a comment on a pull request"))
+}
+
+// A comment node, as `fetch_comment` asks for it. Only a review comment has a path, line and
+// diff hunk; the author and pull request are null when deleted.
+fn read_comment(node: &Value) -> Result<FetchedComment, Error> {
+    let author: Option<Value> = node.field("author")?;
+    let author = author.map(|a| a.field::<String>("login")).transpose()?;
+    let pull_request: Option<Value> = node.field("pullRequest")?;
+    let pull_request = (pull_request.map(|p| p.field::<String>("url"))).transpose()?;
     Ok(FetchedComment {
-        pull_request: node.pull_request.map(|p| p.url).unwrap_or_default(),
+        pull_request: pull_request.unwrap_or_default(),
         comment: Comment {
-            id: node.id,
-            author: node.author.map_or("ghost".into(), |a| a.login),
-            body: node.body,
-            url: node.url,
-            body_html: node.body_html,
-            path: node.path,
-            line: node.line.unwrap_or_default(),
-            diff_hunk: node.diff_hunk,
+            id: node.field("id")?,
+            author: author.unwrap_or("ghost".into()),
+            body: node.field("body")?,
+            url: node.field("url")?,
+            body_html: node.field("bodyHTML")?,
+            path: node.field_or_default("path")?,
+            line: node.field::<Option<u32>>("line")?.unwrap_or_default(),
+            diff_hunk: node.field_or_default("diffHunk")?,
         },
     })
 }
@@ -870,15 +938,15 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
 pub fn load(db: &Db) -> Vec<Proposal> {
     let proposals = db.with(|db| {
         db.prepare("SELECT proposal FROM proposals")?
-            .query_map([], |row| row.get::<_, String>(0))?
+            .query_map(params![], |row| row.get::<String>(0))?
             .collect::<Result<Vec<_>, _>>()
     });
     match proposals {
         Ok(proposals) => (proposals.iter())
-            .filter_map(|json| serde_json::from_str(json).ok())
+            .filter_map(|json| gem_json::from_str(json).ok())
             .collect(),
         Err(error) => {
-            tracing::warn!(%error, "cannot read proposals");
+            warn!("cannot read proposals", error = error);
             Vec::new()
         }
     }
@@ -888,18 +956,22 @@ fn save(db: &Db, proposal: &Proposal) {
     let saved = db.with(|db| {
         db.execute(
             "INSERT OR REPLACE INTO proposals (id, proposal) VALUES (?1, ?2)",
-            params![proposal.id, serde_json::to_string(proposal).unwrap()],
+            params![proposal.id, gem_json::to_string(proposal)],
         )
     });
     if let Err(error) = saved {
-        tracing::warn!(proposal = %proposal.id, %error, "cannot save proposal");
+        warn!(
+            "cannot save proposal",
+            proposal = proposal.id,
+            error = error
+        );
     }
 }
 
 fn delete(id: &str) {
     let deleted =
-        crate::db().with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", [id]));
+        crate::db().with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", params![id]));
     if let Err(error) = deleted {
-        tracing::warn!(proposal = id, %error, "cannot delete proposal");
+        warn!("cannot delete proposal", proposal = id, error = error);
     }
 }

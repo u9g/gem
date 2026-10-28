@@ -1,10 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Condvar, Mutex, RwLock},
+    thread,
 };
 
-use gem_db::rusqlite::params;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use gem_db::params;
+use gem_log::warn;
 
 use crate::{
     proto::{PullRequest, PullRequestCluster},
@@ -28,25 +29,45 @@ struct Inner {
     known: RwLock<HashMap<String, String>>,
     // Never cleared, so a failed thread is not retried every refresh; a restart retries it.
     requested: Mutex<HashSet<String>>,
-    threads: Semaphore,
+    // How many more threads may be asked at once, up to CONCURRENT_THREADS.
+    threads: (Mutex<usize>, Condvar),
+}
+
+// A thread being asked; dropping it lets the next one be asked.
+struct Permit<'a>(&'a (Mutex<usize>, Condvar));
+
+impl<'a> Permit<'a> {
+    fn acquire(threads: &'a (Mutex<usize>, Condvar)) -> Permit<'a> {
+        let free = threads.0.lock().unwrap();
+        let mut free = threads.1.wait_while(free, |free| *free == 0).unwrap();
+        *free -= 1;
+        Permit(threads)
+    }
+}
+
+impl Drop for Permit<'_> {
+    fn drop(&mut self) {
+        *self.0.0.lock().unwrap() += 1;
+        self.0.1.notify_one();
+    }
 }
 
 impl Names {
     pub fn load() -> Result<Self, String> {
         let known = crate::db().with(|db| {
             db.prepare("SELECT key, name FROM cluster_names")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map(params![], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect()
         })?;
         Ok(Self(Arc::new(Inner {
             known: RwLock::new(known),
             requested: Mutex::default(),
-            threads: Semaphore::new(CONCURRENT_THREADS),
+            threads: (Mutex::new(CONCURRENT_THREADS), Condvar::new()),
         })))
     }
 
-    pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
-        let known = self.0.known.read().await;
+    pub fn fill(&self, clusters: &mut [PullRequestCluster]) {
+        let known = self.0.known.read().unwrap();
         for cluster in clusters {
             if let Some(name) = known.get(&key(&cluster.pull_requests)) {
                 cluster.name = name.clone();
@@ -54,9 +75,9 @@ impl Names {
         }
     }
 
-    pub async fn request_missing(&self, clusters: &[PullRequestCluster]) {
-        let known = self.0.known.read().await;
-        let mut requested = self.0.requested.lock().await;
+    pub fn request_missing(&self, clusters: &[PullRequestCluster]) {
+        let known = self.0.known.read().unwrap();
+        let mut requested = self.0.requested.lock().unwrap();
         for cluster in clusters {
             let key = key(&cluster.pull_requests);
             if known.contains_key(&key) || !requested.insert(key.clone()) {
@@ -64,9 +85,9 @@ impl Names {
             }
             let names = self.clone();
             let prs = cluster.pull_requests.clone();
-            tokio::spawn(async move {
-                let _permit = names.0.threads.acquire().await.unwrap();
-                if let Some(name) = ask_t3(&prs).await {
+            thread::spawn(move || {
+                let _permit = Permit::acquire(&names.0.threads);
+                if let Some(name) = ask_t3(&prs) {
                     let saved = crate::db().with(|db| {
                         db.execute(
                             "INSERT OR REPLACE INTO cluster_names (key, name) VALUES (?1, ?2)",
@@ -74,9 +95,9 @@ impl Names {
                         )
                     });
                     if let Err(error) = saved {
-                        tracing::warn!(%error, "cannot save a cluster's name");
+                        warn!("cannot save a cluster's name", error = error);
                     }
-                    names.0.known.write().await.insert(key, name);
+                    names.0.known.write().unwrap().insert(key, name);
                 }
             });
         }
@@ -92,7 +113,7 @@ fn key(prs: &[PullRequest]) -> String {
     lines.join("\n")
 }
 
-async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
+fn ask_t3(prs: &[PullRequest]) -> Option<String> {
     let list: Vec<String> = prs
         .iter()
         .map(|pr| format!("- {}#{}: {}", full_name(pr), pr.number, pr.title))
@@ -109,7 +130,6 @@ async fn ask_t3(prs: &[PullRequest]) -> Option<String> {
             list.join("\n")
         ),
     )
-    .await
 }
 
 fn full_name(pr: &PullRequest) -> String {
