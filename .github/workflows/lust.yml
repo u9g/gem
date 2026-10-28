@@ -27,9 +27,12 @@ jobs:
           curl -sSfL https://github.com/t3dotgg/lust-lang/releases/download/v0.2.0/lust-0.2.0-x86_64-linux.tar.gz | tar xz
           echo "$PWD/lust-0.2.0-x86_64-linux/bin" >> "$GITHUB_PATH"
       - run: lust --version
-      # libwebrtc's prebuilt libc++ needs clang 21 or later, and the runner has 18.
-      - name: Install clang 21
+      # LiveKit's Linux build dependencies, and clang 21 or later, which libwebrtc's prebuilt
+      # libc++ needs (the runner has 18).
+      - name: Install LiveKit's build dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libva-dev libglib2.0-dev libgbm-dev libdrm-dev libx11-dev             libxext-dev libxcomposite-dev libxdamage-dev libxfixes-dev libxrandr-dev libxtst-dev             libpulse-dev
           curl -sSfL https://apt.llvm.org/llvm.sh -o "$RUNNER_TEMP/llvm.sh"
           sudo bash "$RUNNER_TEMP/llvm.sh" 21
           echo "CC=clang-21" >> "$GITHUB_ENV"
