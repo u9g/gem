@@ -7,7 +7,8 @@ tune_decision_prompt.py.
 Each review thread someone else started becomes a proposal to change the code as its comment
 asks. A labeller reads the user's replies and what changed near the comment afterwards: approved
 when the user acted on it, dismissed when they declined or ignored it. Comments that ask for no
-change, such as questions or praise, are left out.
+change, such as questions or praise, are left out, as are comments from a reviewer named in
+--unread-before that the user neither answered nor acted on before they read that reviewer.
 
     uv run scripts/review_history.py --since 2026-07-01 --out review-history.sqlite
 """
@@ -107,8 +108,12 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--labeller", default="claude-sonnet-5-5")
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--unread-before", action="append", default=[], metavar="LOGIN=DATE",
+                        help="the user had no time to read LOGIN's comments before DATE")
     args = parser.parse_args()
     login = args.login or gh("api", "user")["login"]
+    unread_before = {reviewer: date.fromisoformat(day) for reviewer, day in
+                     (flag.split("=", 1) for flag in args.unread_before)}
 
     db = sqlite3.connect(args.out, check_same_thread=False)
     db.executescript(MIGRATION.read_text().replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
@@ -146,7 +151,7 @@ def main():
                          LABEL_SCHEMA)
         return job, verdict if isinstance(verdict, dict) else json.loads(verdict)
 
-    counts = {"approved": 0, "dismissed": 0, "not_actionable": 0}
+    counts = {"approved": 0, "dismissed": 0, "not_actionable": 0, "unread": 0}
     with ThreadPoolExecutor(args.workers) as pool:
         for (pr, repo, thread, comments), verdict in pool.map(label, threads()):
             first = comments[0]
@@ -154,13 +159,20 @@ def main():
                 counts["not_actionable"] += 1
                 continue
             decision = "approved" if verdict["label"] == "acted" else "dismissed"
+            author = first["author"]["login"]
+            answered = any((c["author"] or {}).get("login") == login for c in comments)
+            if (decision == "dismissed" and not answered and author in unread_before
+                    and date.fromisoformat(first["createdAt"][:10]) < unread_before[author]):
+                counts["unread"] += 1
+                db.execute("DELETE FROM proposal_decisions WHERE id = ?", (first["id"],))
+                db.commit()
+                continue
             # The reviewer's side of the thread, up to the user's first answer.
             asked = []
             for c in comments:
                 if (c["author"] or {}).get("login") == login:
                     break
                 asked.append(c)
-            author = first["author"]["login"]
             proposal = {
                 "summary": f"Change the code as {author} asks in this review comment",
                 "pull_request_url": pr["url"],
