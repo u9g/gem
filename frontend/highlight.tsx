@@ -2,17 +2,17 @@ import type { ThemedToken } from '@pierre/highlights';
 import { useEffect, useState } from 'react';
 import { Text } from 'react-native';
 
-// T3 Code's highlighter: Pierre's WASM lexers, in T3 Code's dark theme. Both load on first use, so
+import { codeTheme } from './codeTheme';
+
+// T3 Code's highlighter, Pierre's WASM lexers, in gem's theme. The lexers load on first use, so
 // they stay out of the app's first download.
 let loading: Promise<{ highlight: (code: string, language: string) => ThemedToken[][] }> | undefined;
 function load() {
-  loading ??= Promise.all([import('@pierre/highlights'), import('@pierre/highlights/themes/pierre-dark')]).then(
-    ([{ codeToTokens, isSupportedLanguage }, { default: theme }]) => ({
-      // A language the lexers don't know comes out as plain text.
-      highlight: (code: string, language: string) =>
-        codeToTokens(code, { lang: isSupportedLanguage(language) ? language : 'text', theme }).tokens,
-    }),
-  );
+  loading ??= import('@pierre/highlights').then(({ codeToTokens, isSupportedLanguage }) => ({
+    // A language the lexers don't know comes out as plain text.
+    highlight: (code: string, language: string) =>
+      codeToTokens(code, { lang: isSupportedLanguage(language) ? language : 'text', theme: codeTheme }).tokens,
+  }));
   return loading;
 }
 
