@@ -33,6 +33,7 @@ use serde_json::{Value, json};
 use crate::investigations;
 use crate::proposals::{self, GitHub};
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
+use crate::sandbox;
 use crate::tokens::{Subject, Tokens};
 
 const NAME: &str = "gem";
@@ -135,15 +136,20 @@ fn handle(db: &Db, request: &Value) -> Result<Value, (i64, String)> {
             params,
             NAME,
             "gem groups the user's open pull requests into clusters of PRs linked by stacking or \
-        mentions. These tools read the clusters as gem last showed them.",
+        mentions. `execute` runs a script that reads the clusters as gem last showed them and \
+        returns only what you need.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => Ok(tool_result(call(
-            db,
-            params["name"].as_str().unwrap_or_default(),
-            &params["arguments"],
-        ))),
+        "tools/list" => Ok(json!({ "tools": [execute_tool(USER_API)] })),
+        "tools/call" => Ok(tool_result(
+            match params["name"].as_str().unwrap_or_default() {
+                "execute" => code(&params["arguments"]).and_then(|code| {
+                    let db = db.clone();
+                    sandbox::run(code, READS, move |op, args| read(&db, op, &args))
+                }),
+                tool => Err(format!("no tool {tool}")),
+            },
+        )),
         method => Err((-32601, format!("no method {method}"))),
     }
 }
@@ -174,79 +180,138 @@ fn tool_result(text: Result<String, String>) -> Value {
     }
 }
 
-fn tools() -> Value {
-    json!([
-        get_cluster(),
-        {
-            "name": "list_clusters",
-            "description": "Every cluster gem shows, most recently updated first: its name and \
-    its pull requests' URLs and titles.",
-            "inputSchema": { "type": "object", "properties": {} },
-        },
-    ])
-}
-
-fn get_cluster() -> Value {
-    json!(
-        {
-            "name": "get_cluster",
-            "description": "The cluster holding a pull request: its name, and each pull \
-    request's title, review and check state, and the conversations on it still waiting on the \
-    user, with what agents propose answering.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "pull_request_url": {
-                        "type": "string",
-                        "description": "Any pull request in the cluster, e.g. \
-    https://github.com/livekit/agents/pull/123",
-                    },
+// Both servers have one tool, `execute`, in code mode as Cloudflare's and Datadog's MCP servers
+// have: an agent writes a script against the `gem` API that `api` declares in TypeScript, and reads
+// only what it returns. One script joins and filters clusters, investigations and proposals, where
+// a tool per question would put each whole answer in the agent's context.
+fn execute_tool(api: &str) -> Value {
+    json!({
+        "name": "execute",
+        "description": format!(
+            "Runs JavaScript with the `gem` object below, and returns what the script returns, as \
+    JSON, after what it passed to `console.log`. Return only what you need: pick fields, filter and \
+    join in the script. `gem`'s functions are synchronous, and throw an Error saying what is wrong. \
+    The script has no network, file system or modules, and stops after 30 seconds.\n\n\
+    ```ts\n{TYPES}\n\n{api}\n```"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "An async arrow function, such as `async () => \
+    gem.clusters().map(c => c.name)`, or the body of one.",
                 },
-                "required": ["pull_request_url"],
             },
-        }
-    )
+            "required": ["code"],
+            "additionalProperties": false,
+        },
+    })
 }
 
-fn call(db: &Db, tool: &str, arguments: &Value) -> Result<String, String> {
+fn code(arguments: &Value) -> Result<&str, String> {
+    match arguments["code"].as_str() {
+        Some(code) if !code.trim().is_empty() => Ok(code),
+        _ => Err("`code` must be a script to run".into()),
+    }
+}
+
+// The snapshot's types, as pbjson writes them: camelCase, with fields that are false, 0 or empty
+// left out.
+const TYPES: &str = r#"// A cluster of the user's open pull requests, linked by stacking or mentions.
+interface Cluster {
+  name?: string; // Short name for its shared work.
+  updatedAt: string; // RFC 3339.
+  mergeBy?: MergeBy; // Left out when it cannot merge.
+  pullRequests: PullRequest[]; // Oldest first.
+  agents?: Agent[]; // The agents gem started on its pull requests, newest first.
+}
+type MergeBy = "MERGE_BY_APPROVAL" | "MERGE_BY_ADMIN";
+interface PullRequest {
+  url: string;
+  title: string;
+  repository: { owner: string; name: string };
+  number: number;
+  base: string; // The branch it merges into.
+  headOid: string;
+  createdAt: string;
+  approved?: boolean;
+  checks?: { total?: number; done?: number; failed?: number };
+  checksPassing?: boolean;
+  checksFailing?: boolean;
+  behind?: boolean; // It must be rebased onto `base` before it can merge.
+  conflicts?: boolean;
+  mergeBy?: MergeBy;
+  rebasing?: boolean;
+  merging?: boolean;
+  // What agents propose answering the conversations and failed checks waiting on the user.
+  proposals?: Proposal[];
+  noProposalReason?: string; // Why the agent answering its failed checks proposed nothing.
+}
+interface Agent {
+  id: string;
+  title: string;
+  state?: "AGENT_STATE_QUEUED" | "AGENT_STATE_WAITING"; // Left out while it works.
+  pullRequestUrls: string[];
+  reply?: string; // Its latest reply, in markdown.
+  proposals?: Proposal[];
+  startedAt: string;
+}
+interface Proposal {
+  id: string;
+  summary: string;
+  pullRequestUrl: string;
+  comment?: Comment; // The comment it answers.
+  earlierComments?: Comment[]; // The comments before it in its review thread.
+  checkFailure?: { id: string; headOid: string; checks: FailedCheck[] }; // The checks it answers.
+  patch?: Patch;
+  otherPatches?: Patch[];
+  openPullRequest?: { repository: string; base: string; branch: string; title: string; body: string; patch: Patch };
+  reply?: string;
+  resolveThread?: boolean;
+  followUp?: string;
+  rerun?: boolean;
+  closePullRequest?: boolean;
+  requestedTool?: string;
+  error?: string; // Why approving it last failed.
+}
+interface Comment { id: string; author: string; body: string; url: string; path?: string; line?: number; diffHunk?: string }
+interface FailedCheck { id: string; name: string; conclusion: string; url: string; workflowRunId?: string; excerpt?: string }
+interface Patch { diff: string; commitMessage: string; headOid: string; pullRequestUrl?: string }"#;
+
+const USER_API: &str = "declare const gem: {
+  // Every cluster gem shows, most recently updated first.
+  clusters(): Cluster[];
+  // The cluster holding the pull request at `url`, such as https://github.com/livekit/agents/pull/123.
+  cluster(url: string): Cluster | null;
+};";
+
+// What both servers' scripts can read.
+const READS: &[&str] = &["clusters", "cluster"];
+
+// Answers `gem.<op>(...args)` from the snapshot.
+fn read(db: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
     let snapshot = snapshot(db)
         .ok_or("gem has not listed any clusters yet; is its server running?".to_string())?;
     let mut snapshot: Value = serde_json::from_str(&snapshot).map_err(|e| e.to_string())?;
     // Rendered HTML repeats the markdown next to it.
     strip_view(&mut snapshot);
     let clusters = snapshot["clusters"].as_array().cloned().unwrap_or_default();
-    match tool {
-        "get_cluster" => {
-            let url = arguments["pull_request_url"].as_str().unwrap_or_default();
+    match op {
+        "clusters" => Ok(Value::Array(clusters)),
+        "cluster" => {
+            let url = (args.first().and_then(Value::as_str))
+                .ok_or("gem.cluster takes a pull request's URL")?;
             let url = url.trim().trim_end_matches('/');
-            let cluster = clusters
+            Ok(clusters
                 .into_iter()
                 .find(|cluster| {
                     let prs = cluster["pullRequests"].as_array();
                     prs.is_some_and(|prs| prs.iter().any(|pr| pr["url"].as_str() == Some(url)))
                 })
-                .ok_or(format!("no open pull request {url} in gem's clusters"))?;
-            Ok(serde_json::to_string_pretty(&cluster).unwrap())
+                .unwrap_or_default())
         }
-        "list_clusters" => {
-            let clusters: Vec<Value> = (clusters.iter())
-                .map(|cluster| {
-                    let prs = cluster["pullRequests"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
-                    json!({
-                        "name": cluster["name"],
-                        "pullRequests": prs
-                            .iter()
-                            .map(|pr| json!({ "url": pr["url"], "title": pr["title"] }))
-                            .collect::<Vec<_>>(),
-                    })
-                })
-                .collect();
-            Ok(serde_json::to_string_pretty(&clusters).unwrap())
-        }
-        tool => Err(format!("no tool {tool}")),
+        op => Err(format!("no function gem.{op}")),
     }
 }
 
@@ -268,7 +333,7 @@ fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-// A cluster as `get_cluster` returns it, for prompts of agents that may not reach this server.
+// A cluster as `gem.cluster` returns it, for prompts of agents that may not reach this server.
 pub fn cluster_json(cluster: &PullRequestCluster) -> String {
     let mut cluster = serde_json::to_value(cluster).unwrap();
     strip_view(&mut cluster);
@@ -290,6 +355,10 @@ fn strip_view(value: &mut Value) {
 // The MCP server of the agents gem starts to propose, named apart from the user's `gem`, which
 // local sessions also load.
 pub const AGENT_NAME: &str = "gem-agent";
+// How agents' prompts introduce it.
+pub const EXECUTE: &str = "The `execute` tool of the `gem-agent` MCP server runs JavaScript with \
+a `gem` object, which its description declares in TypeScript. One script can read, filter and \
+propose, and returns only what you pick.";
 // A thread keeps the URL it was started with across server restarts, so the port stays the same.
 // GEM_MCP_PORT overrides it.
 const DEFAULT_PORT: u16 = 47474;
@@ -381,7 +450,7 @@ async fn answer<G: GitHub>(
 }
 
 async fn handle_agent<G: GitHub>(
-    endpoint: &Endpoint<G>,
+    endpoint: &Arc<Endpoint<G>>,
     subject: &Subject,
     request: &Value,
 ) -> Result<Value, (i64, String)> {
@@ -391,41 +460,57 @@ async fn handle_agent<G: GitHub>(
             params,
             AGENT_NAME,
             "gem shows the user what agents propose doing about their pull requests, to approve \
-        or dismiss. `propose` records a proposal about what this thread answers, \
-        `get_cluster` reads a cluster as gem shows it now, and `search_investigations` finds what \
-        earlier agents found investigating failures.",
+        or dismiss. `execute` runs a script with `gem.propose`, which records a proposal about \
+        what this thread answers, `gem.cluster`, which reads a cluster as gem shows it now, and \
+        `gem.investigations`, which has what earlier agents found investigating failures.",
         )),
         "ping" => Ok(json!({})),
-        "tools/list" => {
-            Ok(json!({ "tools": [get_cluster(), search_investigations(), propose_tool(subject)] }))
-        }
-        "tools/call" => {
-            let arguments = &params["arguments"];
-            Ok(tool_result(
-                match params["name"].as_str().unwrap_or_default() {
-                    "get_cluster" => call(&endpoint.db, "get_cluster", arguments),
-                    "search_investigations" => match arguments["query"].as_str() {
-                        Some(query) if !query.trim().is_empty() => {
-                            Ok(investigations::search(&endpoint.db, query).await)
-                        }
-                        _ => Err("`query` must be words to search for".into()),
-                    },
-                    "propose" => propose(endpoint, subject, arguments).await,
-                    tool => Err(format!("no tool {tool}")),
+        "tools/list" => Ok(json!({ "tools": [execute_tool(&agent_api(subject))] })),
+        "tools/call" => Ok(tool_result(
+            match params["name"].as_str().unwrap_or_default() {
+                "execute" => match code(&params["arguments"]) {
+                    Ok(code) => execute(endpoint, subject, code.to_string()).await,
+                    Err(error) => Err(error),
                 },
-            ))
-        }
+                tool => Err(format!("no tool {tool}")),
+            },
+        )),
         method => Err((-32601, format!("no method {method}"))),
     }
+}
+
+// Runs an agent's script on a blocking thread, as QuickJS cannot wait: `gem.propose` waits there
+// for GitHub to check the proposal.
+async fn execute<G: GitHub>(
+    endpoint: &Arc<Endpoint<G>>,
+    subject: &Subject,
+    code: String,
+) -> Result<String, String> {
+    let endpoint = Arc::clone(endpoint);
+    let subject = subject.clone();
+    let runtime = tokio::runtime::Handle::current();
+    let ops = [READS, &["investigations", "propose"]].concat();
+    tokio::task::spawn_blocking(move || {
+        sandbox::run(&code, &ops, move |op, args| match op {
+            "investigations" => Ok(Value::Array(investigations::archived(&endpoint.db))),
+            "propose" => {
+                let proposal = args.into_iter().next().unwrap_or_default();
+                runtime.block_on(propose(&endpoint, &subject, proposal))
+            }
+            op => read(&endpoint.db, op, &args),
+        })
+    })
+    .await
+    .map_err(|error| format!("the script stopped: {error}"))?
 }
 
 async fn propose<G: GitHub>(
     endpoint: &Endpoint<G>,
     subject: &Subject,
-    arguments: &Value,
-) -> Result<String, String> {
+    proposal: Value,
+) -> Result<Value, String> {
     let request: proposals::Request =
-        serde_json::from_value(arguments.clone()).map_err(|e| e.to_string())?;
+        serde_json::from_value(proposal).map_err(|e| e.to_string())?;
     let cluster = cluster_of(&endpoint.db, &request.pr);
     let proposed =
         proposals::propose(&endpoint.github, &endpoint.db, subject, &cluster, request).await;
@@ -433,166 +518,74 @@ async fn propose<G: GitHub>(
         Ok(id) => tracing::info!(proposal = %id, subject = subject.id(), "proposal recorded"),
         Err(error) => tracing::info!(subject = subject.id(), %error, "proposal rejected"),
     }
-    proposed.map(|id| format!("Recorded proposal {id}."))
+    proposed.map(Value::String)
 }
 
-fn search_investigations() -> Value {
-    json!({
-        "name": "search_investigations",
-        "description": "The investigations earlier agents finished into failed checks and other \
-    problems on the user's pull requests, the newest 10 first: each one's title, pull requests, \
-    when it started, the failed checks it started from with their log excerpts, and its last \
-    reply, which says what it found. One matches when its title, failed checks or reply has every \
-    word of `query`, ignoring case. `olderMatches` counts the older ones that match too: add words \
-    to narrow the search.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "A few distinctive words, such as the failing test's name or \
-    words of the error.",
-                },
-            },
-            "required": ["query"],
-        },
-    })
-}
-
-// `propose`, with the steps its subject can take.
-fn propose_tool(subject: &Subject) -> Value {
-    let mut properties = json!({
-        "pr": {
-            "type": "string",
-            "description": format!(
-                "The pull request the proposal is about: {}",
-                subject.prs().join(" or ")
-            ),
-        },
-        "summary": {
-            "type": "string",
-            "description": "One line saying what approving does; for `request_tool`, \
-    \"<tool name>: <one line>\".",
-        },
-        "patch": {
-            "type": "string",
-            "description": "A change to the pull request's code, as `git diff` prints it \
-    against its head. Never commit or push it yourself.",
-        },
-        "message": { "type": "string", "description": "The commit message for `patch`." },
-        "other_patches": {
-            "type": "array",
-            "description": "Changes to the other pull requests in `pr`'s cluster, as `get_cluster` \
-    lists them, such as a fix in the pull request that causes the problem, or the same fix in \
-    another repository's matching pull request. Each is `git diff` against that pull request's \
-    head. Never commit or push them yourself.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "pr": { "type": "string", "description": "The pull request it changes." },
-                    "patch": { "type": "string" },
-                    "message": { "type": "string", "description": "The commit message." },
-                },
-                "required": ["pr", "patch", "message"],
-                "additionalProperties": false,
-            },
-        },
-        "open_pull_request": {
-            "type": "object",
-            "description": "A new pull request, such as a fix on the base branch for a test that \
-    fails there too. Approving commits `patch` on `branch` off `base`, pushes it to `repository`, \
-    or to the user's fork of it when they cannot push there, and opens the pull request. Never \
-    commit, push or open it yourself.",
-            "properties": {
-                "repository": {
-                    "type": "string",
-                    "description": "`owner/name` it merges into, such as the repository `pr` merges \
-    into, not a fork.",
-                },
-                "base": { "type": "string", "description": "The branch it merges into." },
-                "branch": {
-                    "type": "string",
-                    "description": "A new branch to commit it on, which neither `repository` nor \
-    the user's fork has.",
-                },
-                "title": { "type": "string" },
-                "body": {
-                    "type": "string",
-                    "description": "Markdown description, posted as the user. Must link `pr`.",
-                },
-                "patch": {
-                    "type": "string",
-                    "description": "The change, as `git diff` prints it against `base`'s head.",
-                },
-                "message": { "type": "string", "description": "The commit message." },
-            },
-            "required": ["repository", "base", "branch", "title", "body", "patch", "message"],
-            "additionalProperties": false,
-        },
-        "reply": {
-            "type": "string",
-            "description": "Markdown posted as the user, in the first person.",
-        },
-        "follow_up": {
-            "type": "string",
-            "description": "A prompt for a T3 Code agent that approving starts.",
-        },
-        "close_pull_request": {
-            "type": "boolean",
-            "description": "Close the pull request without merging it.",
-        },
-        "request_tool": {
-            "type": "string",
-            "description": "Instead of steps: markdown describing a tool you are missing, what \
-    it would do and why this needs it.",
-        },
-    });
-    let mut required = vec!["pr", "summary"];
+// The `gem` of an agent answering `subject`, whose proposals take the steps it can.
+fn agent_api(subject: &Subject) -> String {
+    let mut steps = String::new();
+    let mut excerpts = "";
     match subject {
         Subject::Comment {
             thread: Some(_), ..
-        } => {
-            properties["resolve_thread"] = json!({
-                "type": "boolean",
-                "description": "Resolve the review thread.",
-            });
-        }
+        } => steps.push_str("  resolve_thread?: boolean; // Resolve the review thread.\n"),
         Subject::CheckFailure { .. } => {
-            properties["rerun"] = json!({
-                "type": "boolean",
-                "description": "Rerun the failed GitHub Actions jobs.",
-            });
-            properties["excerpts"] = json!({
-                "type": "array",
-                "description": "For each check the proposal answers, the log lines that show \
-            why it failed: the error itself, at most 10, no setup or timestamps.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "check": { "type": "string", "description": "The check's node ID." },
-                        "lines": { "type": "string" },
-                    },
-                    "required": ["check", "lines"],
-                    "additionalProperties": false,
-                },
-            });
-            required.push("excerpts");
+            steps.push_str("  rerun?: boolean; // Rerun the failed GitHub Actions jobs.\n");
+            excerpts = "
+  // For each check it answers, the log lines that show why it failed: the error itself, at most
+  // 10, no setup or timestamps.
+  excerpts: { check: string /* The check's node ID. */; lines: string }[];";
         }
         _ => {}
     }
-    json!({
-        "name": "propose",
-        "description": "Records a proposal for the user to approve or dismiss in gem. It is \
-    checked first: an error says what is wrong, to fix and propose again. Approving runs its steps \
-    in this order: `follow_up`, `patch`, `other_patches`, `open_pull_request`, `reply`, \
-    `resolve_thread`, `rerun`, `close_pull_request`.",
-        "inputSchema": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": false,
-        },
-    })
+    format!(
+        "declare const gem: {{
+  // Every cluster gem shows, most recently updated first.
+  clusters(): Cluster[];
+  // The cluster holding the pull request at `url`, as gem shows it now.
+  cluster(url: string): Cluster | null;
+  // The investigations earlier agents finished into failed checks and other problems on the
+  // user's pull requests, newest first. `reply` says what each found. Find ones into the same
+  // failure by the failing test's name or words of the error in `title`, `failedChecks` and `reply`.
+  investigations(): {{ title: string; pullRequestUrls: string[]; startedAt: string; failedChecks: string; reply: string }}[];
+  // Records a proposal for the user to approve or dismiss in gem, and returns its ID. It is
+  // checked first: an Error says what is wrong, to fix and propose again. Approving runs its steps
+  // in this order: follow_up, patch, other_patches, open_pull_request, reply, resolve_thread,
+  // rerun, close_pull_request.
+  propose(proposal: NewProposal): string;
+}};
+interface NewProposal {{
+  pr: string; // The pull request it is about: {prs}.
+  summary: string; // One line saying what approving does; for request_tool, \"<tool name>: <one line>\".{excerpts}
+  // A change to pr's code, as `git diff` prints it against its head, and its commit message.
+  // Never commit or push it yourself.
+  patch?: string;
+  message?: string;
+  // Changes to the other pull requests of pr's cluster, such as a fix in the pull request that
+  // causes the problem, or the same fix in another repository's matching pull request. Each is
+  // `git diff` against that pull request's head. Never commit or push them yourself.
+  other_patches?: {{ pr: string; patch: string; message: string }}[];
+  // A new pull request, such as a fix on the base branch for a test that fails there too.
+  // Approving commits patch on branch off base, pushes it to repository, or to the user's fork of
+  // it when they cannot push there, and opens it. Never commit, push or open it yourself.
+  open_pull_request?: {{
+    repository: string; // owner/name it merges into, such as the repository pr merges into, not a fork.
+    base: string; // The branch it merges into.
+    branch: string; // A new branch, which neither repository nor the user's fork has.
+    title: string;
+    body: string; // Markdown description, posted as the user. Must link pr.
+    patch: string; // As `git diff` prints it against base's head.
+    message: string;
+  }};
+  reply?: string; // Markdown posted as the user, in the first person.
+  follow_up?: string; // A prompt for a T3 Code agent that approving starts.
+  close_pull_request?: boolean; // Close the pull request without merging it.
+{steps}  // Instead of steps: markdown describing a tool you are missing, what it would do and why
+  // this needs it.
+  request_tool?: string;
+}}",
+        prs = subject.prs().join(" or "),
+    )
 }
 
 #[cfg(test)]
@@ -717,8 +710,8 @@ mod tests {
             (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
         }
 
-        // The result of calling `tool`.
-        async fn call(&self, token: &str, tool: &str, arguments: Value) -> Value {
+        // The result of running `code` with `execute`.
+        async fn execute(&self, token: &str, code: &str) -> Value {
             let (status, response) = self
                 .post(
                     Some(token),
@@ -726,12 +719,18 @@ mod tests {
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "tools/call",
-                        "params": { "name": tool, "arguments": arguments },
+                        "params": { "name": "execute", "arguments": { "code": code } },
                     }),
                 )
                 .await;
             assert_eq!(status, StatusCode::OK);
             response["result"].clone()
+        }
+
+        // The result of a script that passes `proposal` to `gem.propose`.
+        async fn propose(&self, token: &str, proposal: Value) -> Value {
+            self.execute(token, &format!("async () => gem.propose({proposal})"))
+                .await
         }
 
         fn proposals(&self) -> Vec<Proposal> {
@@ -778,6 +777,11 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompts_name_the_agents_server() {
+        assert!(EXECUTE.contains(&format!("`{AGENT_NAME}`")));
+    }
+
     #[tokio::test]
     async fn notifications_are_accepted_without_a_response() {
         let server = Server::new("notification");
@@ -793,32 +797,32 @@ mod tests {
     async fn propose_offers_the_steps_its_subject_can_take() {
         let server = Server::new("tools");
         let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
-        let propose = async |subject: Subject| {
+        let api = async |subject: Subject| {
             let token = server.token(&subject).await;
             let (_, response) = server.post(Some(&token), list.clone()).await;
             let tools = response["result"]["tools"].as_array().unwrap().clone();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-            assert_eq!(names, ["get_cluster", "search_investigations", "propose"]);
-            tools[2]["inputSchema"].clone()
+            assert_eq!(names, ["execute"]);
+            tools[0]["description"].as_str().unwrap().to_string()
         };
 
-        let schema = propose(in_thread()).await;
-        assert!(schema["properties"]["resolve_thread"].is_object());
-        assert!(schema["properties"]["rerun"].is_null());
+        let api = api(in_thread()).await;
+        assert!(api.contains("propose(proposal: NewProposal)"), "{api}");
+        assert!(api.contains("resolve_thread?: boolean"));
+        assert!(!api.contains("rerun?: boolean; // Rerun") && !api.contains("excerpts: {"));
 
-        let schema = propose(Subject::CheckFailure {
-            pr: PR.into(),
-            id: "abc,CR_1".into(),
-        })
-        .await;
-        assert!(schema["properties"]["rerun"].is_object());
-        assert!(
-            schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("excerpts"))
-        );
-        assert!(schema["properties"]["resolve_thread"].is_null());
+        let token = server
+            .token(&Subject::CheckFailure {
+                pr: PR.into(),
+                id: "abc,CR_1".into(),
+            })
+            .await;
+        let (_, response) = server.post(Some(&token), list.clone()).await;
+        let api = response["result"]["tools"][0]["description"]
+            .as_str()
+            .unwrap();
+        assert!(api.contains("rerun?: boolean; // Rerun") && api.contains("excerpts: {"));
+        assert!(!api.contains("resolve_thread?: boolean"));
     }
 
     #[tokio::test]
@@ -826,9 +830,8 @@ mod tests {
         let server = Server::new("valid");
         let token = server.token(&in_thread()).await;
         let result = server
-            .call(
+            .propose(
                 &token,
-                "propose",
                 json!({
                     "pr": PR,
                     "summary": "Rename it",
@@ -844,7 +847,7 @@ mod tests {
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
         };
-        assert_eq!(text(&result), format!("Recorded proposal {}.", proposal.id));
+        assert_eq!(text(&result), proposal.id);
         assert_eq!(proposal.pull_request_url, PR);
         assert_eq!(proposal.comment.as_ref().unwrap().id, "PRRC_1");
         assert_eq!(proposal.thread_id, "PRRT_1");
@@ -868,9 +871,8 @@ mod tests {
         };
         let token = server.token(&subject).await;
         let result = server
-            .call(
+            .propose(
                 &token,
-                "propose",
                 json!({ "pr": PR, "summary": "Reply", "reply": "Done." }),
             )
             .await;
@@ -891,9 +893,8 @@ mod tests {
         };
         let token = server.token(&subject).await;
         let result = server
-            .call(
+            .propose(
                 &token,
-                "propose",
                 json!({ "pr": OTHER, "summary": "Fix it", "follow_up": "Fix it." }),
             )
             .await;
@@ -931,13 +932,13 @@ mod tests {
         };
 
         for body in ["Fixes the test.".to_string(), format!("Found on {PR}0.")] {
-            let result = server.call(&token, "propose", open(&body)).await;
+            let result = server.propose(&token, open(&body)).await;
             assert_eq!(result["isError"], true, "{result}");
             assert!(server.proposals().is_empty());
         }
 
         let body = format!("Fixes the test that fails on {PR}.");
-        let result = server.call(&token, "propose", open(&body)).await;
+        let result = server.propose(&token, open(&body)).await;
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -961,9 +962,8 @@ mod tests {
         };
         let token = server.token(&subject).await;
         let result = server
-            .call(
+            .propose(
                 &token,
-                "propose",
                 json!({
                     "pr": PR,
                     "summary": "Rerun it",
@@ -994,7 +994,7 @@ mod tests {
             json!({ "summary": "Reply", "reply": "No PR." }),
         ];
         for arguments in invalid {
-            let result = server.call(&token, "propose", arguments.clone()).await;
+            let result = server.propose(&token, arguments.clone()).await;
             assert_eq!(result["isError"], true, "{arguments} gave {result}");
             assert!(!text(&result).is_empty());
         }
@@ -1006,9 +1006,8 @@ mod tests {
         let server = Server::new("scope");
         let token = server.token(&in_thread()).await;
         let result = server
-            .call(
+            .propose(
                 &token,
-                "propose",
                 json!({ "pr": OTHER, "summary": "Reply", "reply": "Elsewhere." }),
             )
             .await;
@@ -1018,9 +1017,8 @@ mod tests {
 
         // Only a check failure's agent can rerun, so a comment's cannot reach one.
         let result = server
-            .call(
+            .propose(
                 &token,
-                "propose",
                 json!({
                     "pr": PR,
                     "summary": "Rerun",
@@ -1062,17 +1060,17 @@ mod tests {
         };
 
         for pr in [PR, ELSEWHERE] {
-            let result = server.call(&token, "propose", other_patch(pr)).await;
+            let result = server.propose(&token, other_patch(pr)).await;
             assert_eq!(result["isError"], true, "{pr} gave {result}");
         }
         let mut twice = other_patch(OTHER);
         let patch = twice["other_patches"][0].clone();
         twice["other_patches"].as_array_mut().unwrap().push(patch);
-        let result = server.call(&token, "propose", twice).await;
+        let result = server.propose(&token, twice).await;
         assert_eq!(result["isError"], true, "{result}");
         assert!(server.proposals().is_empty());
 
-        let result = server.call(&token, "propose", other_patch(OTHER)).await;
+        let result = server.propose(&token, other_patch(OTHER)).await;
         assert_eq!(result["isError"], Value::Null, "{result}");
         let [proposal] = &server.proposals()[..] else {
             panic!("{:?}", server.proposals());
@@ -1087,7 +1085,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_cluster_reads_the_snapshot() {
+    async fn scripts_read_the_snapshot() {
         let server = Server::new("cluster");
         let snapshot = json!({ "clusters": [{
             "name": "Renames",
@@ -1104,15 +1102,35 @@ mod tests {
             .unwrap();
         let token = server.token(&in_thread()).await;
         let result = server
-            .call(&token, "get_cluster", json!({ "pull_request_url": PR }))
+            .execute(&token, &format!("async () => gem.cluster('{PR}/')"))
             .await;
         let cluster: Value = serde_json::from_str(text(&result)).unwrap();
         assert_eq!(cluster["name"], "Renames");
         assert_eq!(cluster["pullRequests"][0]["titleHtml"], Value::Null);
+
+        let script = format!(
+            "const none = gem.cluster('{OTHER}');
+             const titles = gem.clusters().flatMap(c => c.pullRequests.map(pr => pr.title));
+             return {{ none, titles }};"
+        );
+        let result = server.execute(&token, &script).await;
+        assert_eq!(
+            text(&result),
+            serde_json::to_string_pretty(&json!({ "none": null, "titles": ["Rename"] })).unwrap()
+        );
+
+        // The user's own server reads the same snapshot.
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "execute", "arguments": { "code": "gem.clusters()[0].name" } },
+        });
+        assert_eq!(text(&handle(server.db(), &request).unwrap()), "Renames");
     }
 
     #[tokio::test]
-    async fn search_investigations_reads_the_closed_investigations() {
+    async fn scripts_read_the_closed_investigations() {
         let server = Server::new("search");
         let investigation = json!({
             "id": "18f",
@@ -1130,13 +1148,16 @@ mod tests {
             })
             .unwrap();
         let token = server.token(&in_thread()).await;
-        let result = server
-            .call(&token, "search_investigations", json!({ "query": "test_join" }))
-            .await;
+        let script = "async () => gem.investigations()
+            .filter(i => /test_join/i.test(i.title + i.failedChecks + i.reply))
+            .map(i => i.pullRequestUrls)";
+        let result = server.execute(&token, script).await;
         let found: Value = serde_json::from_str(text(&result)).unwrap();
-        assert_eq!(found["investigations"][0]["pullRequestUrls"], json!([PR]));
+        assert_eq!(found, json!([[PR]]));
 
-        let result = server.call(&token, "search_investigations", json!({})).await;
+        let result = server.execute(&token, "async () => gem.cluster()").await;
+        assert_eq!(result["isError"], true);
+        let result = server.execute(&token, "").await;
         assert_eq!(result["isError"], true);
     }
 }

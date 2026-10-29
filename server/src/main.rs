@@ -42,6 +42,7 @@ mod merges;
 mod names;
 mod proposals;
 mod rebases;
+mod sandbox;
 mod search;
 mod tokens;
 
