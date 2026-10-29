@@ -490,16 +490,14 @@ impl Target {
     }
 }
 
-// The title and prompt of the agent answering `comment`. Replaying past comments found this as
-// good as a prompt twice as long that also explained each step, how to word replies and when to
-// hand work off, and better than one that only asked for a proposal.
+// The title and prompt of the agent answering `comment`. Replaying 20 past comments, this answered
+// as often as longer prompts that also listed the steps, said to read the pull request, and
+// introduced `execute`, or more often. Without "once per reasonable alternative", agents made one
+// proposal and answered far less often.
 fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String, String) {
-    let (where_, resolve) = match thread_id {
-        Some(thread) => (
-            format!("in the review thread {thread}"),
-            ", resolve the review thread (`resolve_thread`)",
-        ),
-        None => ("in the pull request's top-level comments".to_string(), ""),
+    let where_ = match thread_id {
+        Some(thread) => format!("in the review thread {thread}"),
+        None => "in the pull request's top-level comments".to_string(),
     };
     let quoted: String = comment
         .body
@@ -512,14 +510,8 @@ fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String
 comment ({comment_url}):
 
 {quoted}
-Read the conversation and the pull request with `gh`, work out how {login} should answer, and \
-record it with `gem.propose`, with `pr` {url}. A proposal can change the code (`patch`: what \
-`git diff` prints in a clone at the pull request's head), reply as {login} in the first person \
-(`reply`){resolve}, hand bigger work to another agent (`follow_up`), open a new pull request \
-(`open_pull_request`), or close this one (`close_pull_request`). Propose once per reasonable \
-alternative. If the comment needs nothing from {login}, propose nothing.
-
-{EXECUTE}
+Record how {login} should answer with `gem.propose`, with `pr` {url}. Propose once per reasonable \
+alternative.
 
 Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
@@ -530,7 +522,6 @@ settle this thread. Then reply with one line saying what you proposed.",
         url = pr.url,
         title = pr.title,
         comment_url = comment.url,
-        EXECUTE = mcp::EXECUTE,
     );
     let title = format!(
         "Answer {} on {}#{}",
