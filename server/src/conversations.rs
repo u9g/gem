@@ -490,19 +490,16 @@ impl Target {
     }
 }
 
-// The title and prompt of the agent answering `comment`.
+// The title and prompt of the agent answering `comment`. Replaying past comments found this as
+// good as a prompt twice as long that also explained each step, how to word replies and when to
+// hand work off, and better than one that only asked for a proposal.
 fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String, String) {
-    let (where_, reply_kind, resolve) = match thread_id {
+    let (where_, resolve) = match thread_id {
         Some(thread) => (
             format!("in the review thread {thread}"),
-            "a reply in the review thread",
-            "\n- resolve the review thread, with `resolve_thread`.",
+            ", resolve the review thread (`resolve_thread`)",
         ),
-        None => (
-            "in the pull request's top-level comments".to_string(),
-            "a top-level comment that quotes their comment above it",
-            "",
-        ),
+        None => ("in the pull request's top-level comments".to_string(), ""),
     };
     let quoted: String = comment
         .body
@@ -515,46 +512,12 @@ fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String
 comment ({comment_url}):
 
 {quoted}
-Read the whole conversation and the pull request with `gh`, then work out how {login} should answer \
-and propose it. A proposal can:
-- change the code, with `patch` and `message`: clone {full_name} into a temporary directory, run \
-`gh pr checkout {number}` in it, edit, and pass what `git diff` prints as `patch`. Never commit or \
-push.
-- change other pull requests of this one's cluster, with `other_patches`: when the change belongs \
-on them, alone or with `patch`, such as in a pull request that produces what this one consumes, \
-or the same fix in another repository's port of this pull request. Before declining a concern this \
-pull request cannot fix, check whether another pull request of the cluster causes it. Make each \
-patch the same way, against its own pull request. The `get_cluster` tool of the `{server}` MCP \
-server lists the cluster's pull requests.
-- open a new pull request, with `open_pull_request`: when the change belongs in a pull request of \
-its own, such as a fix on the base branch. Make its `patch` the same way against the latest \
-`origin/<base branch>`, and link {url} in its description.
-- reply as {login}, in the first person, with `reply`: the markdown is posted as {reply_kind}. \
-Open with what {login} is doing about the comment, then why: {login} reads only the first lines \
-before approving, and they must not concede a suggestion the reply goes on to decline. Pin each \
-link to the commit you read the lines at, so the lines it highlights are the ones you \
-describe.{resolve}
-- hand the work to another agent, with `follow_up`: when the right fix is too big to review as \
-patches, such as matching changes in other repositories with no pull request in this cluster, \
-write a prompt for a T3 Code agent. It must stand alone: the repositories (checked out under \
-~/code), the branches or pull requests to build on, what to change, and how to verify it. \
-Approving starts that agent, so pair it with a reply saying the work follows. Prefer `patch` and \
-`other_patches` when the change fits this pull request and its cluster's. The agent must be able \
-to finish without anyone else reviewing, merging or releasing something first: when the fix waits \
-on that, reply saying what it waits on instead.
-- close the pull request without merging it, with `close_pull_request`: when the conversation \
-settles that it should not land, such as being superseded or no longer wanted. Pair it with a \
-reply saying why.
-
-Record each proposal by calling the `propose` tool of the `{server}` MCP server, with `pr` {url}, \
-a `summary` of one line saying what approving does, and its steps. Approving a proposal runs all \
-its steps. Call it once per alternative when more than one answer is reasonable. It checks the \
-proposal and returns an error with the reason when something is wrong: fix it and call it again. \
-If the comment needs nothing from {login}, propose nothing.
-
-If answering well needs something these steps cannot do, call `propose` with `request_tool` \
-instead of steps: markdown describing the missing tool (what it would do and why this \
-conversation needs it), with a `summary` of \"<tool name>: <one line>\".
+Read the conversation and the pull request with `gh`, work out how {login} should answer, and \
+record it with the `propose` tool of the `{server}` MCP server, with `pr` {url}. A proposal can \
+change the code (`patch`: what `git diff` prints in a clone at the pull request's head), reply as \
+{login} in the first person (`reply`){resolve}, hand bigger work to another agent (`follow_up`), \
+open a new pull request (`open_pull_request`), or close this one (`close_pull_request`). Propose \
+once per reasonable alternative. If the comment needs nothing from {login}, propose nothing.
 
 Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
@@ -565,8 +528,6 @@ settle this thread. Then reply with one line saying what you proposed.",
         url = pr.url,
         title = pr.title,
         comment_url = comment.url,
-        full_name = pr.full_name,
-        number = pr.number,
         server = mcp::AGENT_NAME,
     );
     let title = format!(
