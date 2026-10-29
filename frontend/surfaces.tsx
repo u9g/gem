@@ -10,7 +10,7 @@ import {
   RotateCcw,
   Undo2,
 } from 'lucide-react';
-import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useState } from 'react';
+import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
@@ -117,10 +117,9 @@ function DiffFile({
   const [stat] = diffFiles(piece);
   const hunks = onChange && newSides(piece);
   const edited = suggested !== undefined && piece !== suggested;
-  // Wide enough for the file's longest line number, so numbers never wrap.
-  const numbers = editing && hunks ? hunks.map((hunk) => hunk.start + hunk.lines.length - 1) : file.lines.map((line) => line.number ?? 0);
-  const digits = String(Math.max(0, ...numbers)).length;
-  const gutter = { width: digits * 7 + 14 };
+  const gutter = gutterWidth(
+    editing && hunks ? hunks.map((hunk) => hunk.start + hunk.lines.length - 1) : file.lines.map((line) => line.number ?? 0),
+  );
   const lines =
     editing && hunks
       ? hunks.map((hunk, i) => (
@@ -178,38 +177,152 @@ function DiffFile({
           ),
         );
   return (
-    <View style={styles.diffSurface}>
-      <View style={styles.diffHeader}>
-        <Icon icon={FileCode} size={14} />
-        <Text numberOfLines={1} style={styles.diffPath}>
-          {file.path.split('/').slice(-2).join('/')}
-        </Text>
-        {edited && <Text style={styles.edited}>Edited</Text>}
+    <CodeSurface
+      path={file.path}
+      header={
+        <>
+          {edited && <Text style={styles.edited}>Edited</Text>}
         {edited && (
           <Pressable accessibilityLabel="Revert to the suggestion" onPress={() => onChange!(suggested)} style={styles.revert}>
             <Icon icon={Undo2} size={12} />
           </Pressable>
         )}
-        {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
-        {hunks && (
-          <View style={[styles.segmented, { marginLeft: 4 }]}>
-            {[false, true].map((edit) => (
-              <Pressable key={String(edit)} onPress={() => setEditing(edit)} style={[styles.segment, editing === edit && styles.segmentOn]}>
-                <Text style={[styles.segmentText, editing === edit && { color: t3.foreground }]}>{edit ? 'Edit' : 'Diff'}</Text>
-              </Pressable>
-            ))}
-          </View>
-        )}
-      </View>
-      {editing && hunks ? (
-        lines
-      ) : (
-        <ScrollView horizontal contentContainerStyle={styles.diffLines}>
-          <View style={styles.diffLines}>{lines}</View>
-        </ScrollView>
+          {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
+          {hunks && (
+            <View style={[styles.segmented, { marginLeft: 4 }]}>
+              {[false, true].map((edit) => (
+                <Pressable key={String(edit)} onPress={() => setEditing(edit)} style={[styles.segment, editing === edit && styles.segmentOn]}>
+                  <Text style={[styles.segmentText, editing === edit && { color: t3.foreground }]}>{edit ? 'Edit' : 'Diff'}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </>
+      }
+    >
+      {editing && hunks ? lines : <CodeLines>{lines}</CodeLines>}
+    </CodeSurface>
+  );
+}
+
+// T3 Code's code surface: the file's name over its code, with `header` after the name, or the code
+// alone without a path. Given `href`, the name links to the file.
+function CodeSurface({ path, href, header, children }: { path?: string; href?: string; header?: ReactNode; children: ReactNode }) {
+  const name = (
+    <Text numberOfLines={1} style={styles.diffPath}>
+      {path?.split('/').slice(-2).join('/')}
+    </Text>
+  );
+  return (
+    <View style={styles.diffSurface}>
+      {path !== undefined && (
+        <View style={styles.diffHeader}>
+          <Icon icon={FileCode} size={14} />
+          {href ? (
+            // Inline, as a link in .markdown-body would otherwise take the stylesheet's link color.
+            <a href={href} style={{ display: 'flex', flex: 1, minWidth: 0, color: 'inherit', textDecoration: 'none' }}>
+              {name}
+            </a>
+          ) : (
+            name
+          )}
+          {header}
+        </View>
       )}
+      {children}
     </View>
   );
+}
+
+// Lines of code, scrolling sideways together.
+function CodeLines({ children }: { children: ReactNode }) {
+  return (
+    <ScrollView horizontal contentContainerStyle={styles.diffLines}>
+      <View style={styles.diffLines}>{children}</View>
+    </ScrollView>
+  );
+}
+
+// A gutter wide enough for the longest of `numbers`, so none wraps.
+function gutterWidth(numbers: number[]) {
+  return { width: String(Math.max(0, ...numbers)).length * 7 + 14 };
+}
+
+// Code in a body, highlighted as GitHub highlights it: the lines of a file GitHub embeds for a
+// permalink to them, or a fenced block, which has no file or line numbers and is one piece of HTML.
+type Code = { path?: string; url?: string; lines: { number?: number; html: string }[] };
+
+function CodeBlock({ code }: { code: Code }) {
+  const gutter = code.path !== undefined && gutterWidth(code.lines.map((line) => line.number ?? 0));
+  return (
+    <View style={{ marginBottom: 16 }}>
+      <CodeSurface path={code.path} href={code.url}>
+        <CodeLines>
+          {code.lines.map((line, i) => (
+            <View key={i} style={styles.diffLine}>
+              {gutter && (
+                <Text numberOfLines={1} style={[styles.gutter, gutter]}>
+                  {line.number}
+                </Text>
+              )}
+              <span style={gutter ? codeText : { ...codeText, padding: '8px 12px' }} dangerouslySetInnerHTML={{ __html: line.html }} />
+            </View>
+          ))}
+        </CodeLines>
+      </CodeSurface>
+    </View>
+  );
+}
+
+// As styles.diffText.
+const codeText: CSSProperties = {
+  color: t3.muted,
+  fontFamily: t3.mono,
+  fontSize: 11,
+  lineHeight: '18px',
+  paddingRight: 12,
+  whiteSpace: 'pre',
+};
+
+// GitHub's rendering of a body cut into its HTML and the code at its top level: a fenced block is a
+// <pre>, in a .highlight when it names a language; a permalink's lines are a Box holding a header
+// that links to them and a table with a row per line.
+function pieces(html: string): (string | Code)[] {
+  const body = new DOMParser().parseFromString(html, 'text/html').body;
+  const out: (string | Code)[] = [];
+  const chunk = document.createElement('div');
+  const flush = () => {
+    if (chunk.childNodes.length) out.push(chunk.innerHTML);
+    chunk.replaceChildren();
+  };
+  for (const node of [...body.childNodes]) {
+    const pre = node instanceof Element && (node.matches('pre') ? node : node.querySelector(':scope.highlight > pre'));
+    if (pre) {
+      flush();
+      // A block without a language wraps its code in a <code>; the last line ends in a newline.
+      out.push({ lines: [{ html: (pre.querySelector(':scope > code') ?? pre).innerHTML.trimEnd() }] });
+      continue;
+    }
+    const code = node instanceof Element && node.querySelector(':scope > .blob-wrapper-embedded');
+    const link = code && node.querySelector<HTMLAnchorElement>('.Box-header a');
+    if (!code || !link) {
+      chunk.append(node);
+      continue;
+    }
+    flush();
+    out.push({
+      // /owner/repo/blob/sha/path
+      path: new URL(link.href).pathname.split('/').slice(5).join('/'),
+      url: link.href,
+      lines: [...code.querySelectorAll('tr')].map((row) => ({
+        number: Number(row.querySelector('[data-line-number]')?.getAttribute('data-line-number')),
+        // GitHub puts a space on either side of each line's code.
+        html: row.querySelector('.blob-code')?.innerHTML.replace(/^ /, '').trimEnd() ?? '',
+      })),
+    });
+  }
+  flush();
+  return out;
 }
 
 // T3 Code's message bubble: rounded-2xl on the message surface, at most 80% wide. The user's messages
@@ -327,18 +440,28 @@ export function Html({
   className?: string;
   style?: CSSProperties;
 }) {
+  // Cut only when there is code, so everything else stays a direct child of .markdown-body.
+  const parts = useMemo(() => (/<pre|blob-wrapper-embedded/.test(html) ? pieces(html) : undefined), [html]);
   return (
     <div
       className={className ? `markdown-body ${className}` : 'markdown-body'}
       style={{ ...markdownBody, ...style }}
-      dangerouslySetInnerHTML={{ __html: html }}
+      dangerouslySetInnerHTML={parts ? undefined : { __html: html }}
       onClick={(event) => {
         const link = (event.target as Element).closest('a');
         if (!link) return onPress?.();
         event.preventDefault();
         window.open(link.href, '_blank');
       }}
-    />
+    >
+      {parts?.map((part, i) =>
+        typeof part === 'string' ? (
+          <div key={i} dangerouslySetInnerHTML={{ __html: part }} />
+        ) : (
+          <CodeBlock key={i} code={part} />
+        ),
+      )}
+    </div>
   );
 }
 
