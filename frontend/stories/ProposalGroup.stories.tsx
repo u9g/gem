@@ -3,7 +3,7 @@ import { View } from 'react-native';
 
 import { bySubject, ProposalGroup } from '../ProposalView';
 import { t3 } from '../t3';
-import { checkProposals, proposals } from './fixtures';
+import { checkProposals, permalinkProposals, proposals } from './fixtures';
 
 const meta: Meta = { title: 'Proposals', parameters: { layout: 'fullscreen' } };
 export default meta;
@@ -49,4 +49,13 @@ export const OneApproving: StoryObj = {
       </View>
     );
   },
+};
+
+export const Permalink: StoryObj = {
+  name: 'Permalink',
+  render: () => (
+    <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
+      <ProposalGroup proposals={permalinkProposals} onApprove={() => {}} onDismiss={() => {}} />
+    </View>
+  ),
 };
