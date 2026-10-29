@@ -16,6 +16,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 import 'github-markdown-css/github-markdown-dark.css';
 
 import type { CheckFailure, Comment, NewPullRequest, Proposal } from './gen/gem_pb';
+import { languageOf, Tokens, useTokens } from './highlight';
 import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
@@ -113,7 +114,22 @@ function DiffFile({
 }) {
   const [editing, setEditing] = useState(false);
   const [file] = parseDiff(piece);
+  // Each side of the file is highlighted on its own, so a line reads as it does in its version.
+  const language = languageOf(file?.path ?? '');
+  const side = (kind: DiffLine['kind']) => (file?.lines ?? []).filter((line) => line.kind === 'ctx' || line.kind === kind);
+  const newTokens = useTokens(side('add').map((line) => line.text).join('\n'), language);
+  const oldTokens = useTokens(side('del').map((line) => line.text).join('\n'), language);
   if (!file) return null;
+  let [newLine, oldLine] = [0, 0];
+  const tokens = file.lines.map((line) =>
+    line.kind === 'add'
+      ? newTokens?.[newLine++]
+      : line.kind === 'del'
+        ? oldTokens?.[oldLine++]
+        : line.kind === 'ctx'
+          ? (oldLine++, newTokens?.[newLine++])
+          : undefined,
+  );
   const [stat] = diffFiles(piece);
   const hunks = onChange && newSides(piece);
   const edited = suggested !== undefined && piece !== suggested;
@@ -171,7 +187,7 @@ function DiffFile({
                   line.kind === 'del' && { color: '#FCA5A5' },
                 ]}
               >
-                {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} {line.text}
+                {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} <Tokens tokens={tokens[i]} text={line.text} />
               </Text>
             </View>
           ),
@@ -248,41 +264,36 @@ function gutterWidth(numbers: number[]) {
   return { width: String(Math.max(0, ...numbers)).length * 7 + 14 };
 }
 
-// Code in a body, highlighted as GitHub highlights it: the lines of a file GitHub embeds for a
-// permalink to them, or a fenced block, which has no file or line numbers and is one piece of HTML.
-type Code = { path?: string; url?: string; lines: { number?: number; html: string }[] };
+// Code in a body: the lines of a file GitHub embeds for a permalink to them, or a fenced block,
+// which has no file or line numbers.
+type Code = { path?: string; url?: string; language: string; lines: { number?: number; text: string }[] };
 
 function CodeBlock({ code }: { code: Code }) {
+  const tokens = useTokens(code.lines.map((line) => line.text).join('\n'), code.language);
   const gutter = code.path !== undefined && gutterWidth(code.lines.map((line) => line.number ?? 0));
   return (
     <View style={{ marginBottom: 16 }}>
       <CodeSurface path={code.path} href={code.url}>
         <CodeLines>
-          {code.lines.map((line, i) => (
-            <View key={i} style={styles.diffLine}>
-              {gutter && (
-                <Text numberOfLines={1} style={[styles.gutter, gutter]}>
-                  {line.number}
+          <View style={!gutter && { paddingVertical: 8 }}>
+            {code.lines.map((line, i) => (
+              <View key={i} style={styles.diffLine}>
+                {gutter && (
+                  <Text numberOfLines={1} style={[styles.gutter, gutter]}>
+                    {line.number}
+                  </Text>
+                )}
+                <Text style={[styles.diffText, !gutter && { paddingLeft: 12 }]}>
+                  <Tokens tokens={tokens?.[i]} text={line.text} />
                 </Text>
-              )}
-              <span style={gutter ? codeText : { ...codeText, padding: '8px 12px' }} dangerouslySetInnerHTML={{ __html: line.html }} />
-            </View>
-          ))}
+              </View>
+            ))}
+          </View>
         </CodeLines>
       </CodeSurface>
     </View>
   );
 }
-
-// As styles.diffText.
-const codeText: CSSProperties = {
-  color: t3.muted,
-  fontFamily: t3.mono,
-  fontSize: 11,
-  lineHeight: '18px',
-  paddingRight: 12,
-  whiteSpace: 'pre',
-};
 
 // GitHub's rendering of a body cut into its HTML and the code at its top level: a fenced block is a
 // <pre>, in a .highlight when it names a language; a permalink's lines are a Box holding a header
@@ -299,8 +310,13 @@ function pieces(html: string): (string | Code)[] {
     const pre = node instanceof Element && (node.matches('pre') ? node : node.querySelector(':scope.highlight > pre'));
     if (pre) {
       flush();
-      // A block without a language wraps its code in a <code>; the last line ends in a newline.
-      out.push({ lines: [{ html: (pre.querySelector(':scope > code') ?? pre).innerHTML.trimEnd() }] });
+      // GitHub names the language by its grammar's scope, as in highlight-source-python or
+      // highlight-text-html-basic. The last line ends in a newline.
+      const scope = /\bhighlight-(?:source|text)-(\S+)/.exec((node as Element).className)?.[1];
+      out.push({
+        language: scope?.split('-')[0] ?? 'text',
+        lines: (pre.textContent ?? '').trimEnd().split('\n').map((text) => ({ text })),
+      });
       continue;
     }
     const code = node instanceof Element && node.querySelector(':scope > .blob-wrapper-embedded');
@@ -310,14 +326,16 @@ function pieces(html: string): (string | Code)[] {
       continue;
     }
     flush();
+    // /owner/repo/blob/sha/path
+    const path = new URL(link.href).pathname.split('/').slice(5).join('/');
     out.push({
-      // /owner/repo/blob/sha/path
-      path: new URL(link.href).pathname.split('/').slice(5).join('/'),
+      path,
       url: link.href,
+      language: languageOf(path),
       lines: [...code.querySelectorAll('tr')].map((row) => ({
         number: Number(row.querySelector('[data-line-number]')?.getAttribute('data-line-number')),
         // GitHub puts a space on either side of each line's code.
-        html: row.querySelector('.blob-code')?.innerHTML.replace(/^ /, '').trimEnd() ?? '',
+        text: row.querySelector('.blob-code')?.textContent?.replace(/^ /, '').trimEnd() ?? '',
       })),
     });
   }
