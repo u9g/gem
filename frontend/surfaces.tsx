@@ -14,6 +14,7 @@ import { createContext, type CSSProperties, type ReactNode, useContext, useEffec
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import 'github-markdown-css/github-markdown-dark.css';
+import './markdown.css';
 
 import type { CheckFailure, Comment, NewPullRequest, Proposal } from './gen/gem_pb';
 import { editHunk, newSides, splitFiles } from './patch';

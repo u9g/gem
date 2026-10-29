@@ -1,0 +1,55 @@
+/* GitHub renders a permalink to lines of code as a Box: a header naming the file and lines over a
+   table with a row per line. github-markdown-css leaves out GitHub's classes for it, so the table
+   would take the stylesheet's table look. These make the lines a code block like a fenced one. */
+.markdown-body .Box:has(> .blob-wrapper-embedded) {
+  margin-bottom: 1rem;
+}
+
+.markdown-body .Box-header {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #9198a1;
+}
+
+.markdown-body .Box-header p {
+  margin: 0;
+}
+
+/* As .markdown-body .highlight pre. */
+.markdown-body .blob-wrapper-embedded {
+  padding: 1rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+  font-size: 85%;
+  line-height: 1.45;
+  color: #f0f6fc;
+  background-color: #151b23;
+  border-radius: 6px;
+}
+
+.markdown-body .blob-wrapper-embedded table {
+  display: table;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  overflow: visible;
+}
+
+/* :nth-child(n) outranks the stylesheet's striping of even rows. */
+.markdown-body .blob-wrapper-embedded tr:nth-child(n) {
+  background-color: transparent;
+  border: 0;
+}
+
+/* A fenced block has no line numbers; the header says which lines these are. */
+.markdown-body .blob-wrapper-embedded .blob-num {
+  display: none;
+}
+
+/* GitHub puts a space before each line's code, which -1ch takes back. */
+.markdown-body .blob-wrapper-embedded .blob-code {
+  padding: 0;
+  border: 0;
+  white-space: pre;
+  text-indent: -1ch;
+}
