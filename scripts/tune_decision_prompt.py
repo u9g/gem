@@ -3,10 +3,10 @@
 # ///
 """Tunes a prompt that predicts whether the user approves or dismisses a proposal.
 
-A champion prompt judges every recorded decision. Each round, an optimizer reads the champion's
-misses and writes a challenger; both judge the same decisions, and the challenger replaces the
-champion only when its balanced accuracy is higher. Stops once the champion predicts every
-decision, or after --rounds rounds.
+Each --db's decisions are split in half. Each round, an optimizer reads the champion prompt's
+misses on the training half and writes a challenger; both judge the held-out half, and the
+challenger replaces the champion only when its balanced accuracy there is higher. Stops once the
+champion predicts every held-out decision, or after --rounds rounds.
 
     uv run scripts/tune_decision_prompt.py --db server/gem.sqlite [--db more.sqlite] --out prompt.txt
 """
@@ -53,14 +53,24 @@ def claude(model, system, prompt, schema=None):
     return result.get("structured_output") or result["result"]
 
 
-def load(paths):
-    decisions = {}
+# Up to half of `limit` decisions of each label from each database, split into a training half
+# and a held-out half with each label in both.
+def load(paths, limit):
+    train, test = [], []
+    rng = random.Random(0)
     for path in paths:
         db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        for id, proposal, decision in db.execute("SELECT id, proposal, decision FROM proposal_decisions"):
+        by_label = {"approved": [], "dismissed": []}
+        for id, proposal, decision in db.execute("SELECT id, proposal, decision FROM proposal_decisions ORDER BY id"):
             text = json.dumps(strip(json.loads(proposal)), indent=1)
-            decisions[id] = {"id": id, "proposal": text[:40000], "decision": decision}
-    return list(decisions.values())
+            by_label[decision].append({"id": id, "proposal": text[:40000], "decision": decision, "source": path})
+        for items in by_label.values():
+            rng.shuffle(items)
+        for items in by_label.values():
+            items = items[: limit // 2]
+            train += items[::2]
+            test += items[1::2]
+    return train, test
 
 
 class Judge:
@@ -82,17 +92,27 @@ class Judge:
             verdicts = list(pool.map(lambda item: self(prompt, item), items))
         self.cache_path.write_text(json.dumps(self.cache))
         results = [{**item, **{"predicted": v["decision"], "reason": v["reason"]}} for item, v in zip(items, verdicts)]
-        # Balanced, so a prompt that approves everything scores 0.5 however rare dismissals are.
-        recalls = [
-            sum(r["predicted"] == label for r in results if r["decision"] == label)
-            / max(1, sum(r["decision"] == label for r in results))
-            for label in ("approved", "dismissed")
-        ]
-        return sum(recalls) / 2, results
+        return balanced(results), results
+
+
+# Balanced, so a prompt that approves everything scores 0.5 however rare dismissals are.
+def balanced(results):
+    recalls = [
+        sum(r["predicted"] == label for r in results if r["decision"] == label)
+        / max(1, sum(r["decision"] == label for r in results))
+        for label in ("approved", "dismissed")
+    ]
+    return sum(recalls) / 2
+
+
+def by_source(results):
+    sources = sorted({r["source"] for r in results})
+    return ", ".join(f"{Path(s).name} {balanced([r for r in results if r['source'] == s]):.3f}" for s in sources)
 
 
 def challenger(model, champion, results):
     misses = [r for r in results if r["predicted"] != r["decision"]]
+    misses = random.sample(misses, k=min(20, len(misses)))
     hits = random.sample([r for r in results if r["predicted"] == r["decision"]],
                          k=min(4, len(results) - len(misses)))
     show = lambda r: (f"<proposal>\n{r['proposal'][:6000]}\n</proposal>\nThe user {r['decision']} it. "
@@ -117,29 +137,33 @@ def main():
     parser.add_argument("--judge", default="claude-sonnet-5-5")
     parser.add_argument("--optimizer", default="claude-opus-5-5")
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--limit", type=int, default=200, help="decisions taken from each --db")
     args = parser.parse_args()
 
-    items = load(args.db)
-    print(f"{len(items)} decisions: {sum(i['decision'] == 'dismissed' for i in items)} dismissed", file=sys.stderr)
+    train, test = load(args.db, args.limit)
+    print(f"{len(train)} training and {len(test)} held-out decisions", file=sys.stderr)
     judge = Judge(args.judge, args.out.with_suffix(".cache.json"))
     champion = args.out.read_text() if args.out.exists() else SEED
-    best, results = judge.score(champion, items, args.workers)
-    print(f"champion: {best:.3f}", file=sys.stderr)
+    _, train_results = judge.score(champion, train, args.workers)
+    best, test_results = judge.score(champion, test, args.workers)
+    print(f"champion: held-out {best:.3f} ({by_source(test_results)})", file=sys.stderr)
     for round in range(1, args.rounds + 1):
         if best == 1:
             break
-        prompt = challenger(args.optimizer, champion, results)
-        score, challenger_results = judge.score(prompt, items, args.workers)
+        prompt = challenger(args.optimizer, champion, train_results)
+        score, challenger_test = judge.score(prompt, test, args.workers)
         won = score > best
-        print(f"round {round}: challenger {score:.3f} vs champion {best:.3f}{' -> new champion' if won else ''}",
-              file=sys.stderr)
+        print(f"round {round}: challenger {score:.3f} ({by_source(challenger_test)}) vs champion {best:.3f}"
+              f"{' -> new champion' if won else ''}", file=sys.stderr)
         if won:
-            champion, best, results = prompt, score, challenger_results
+            champion, best, test_results = prompt, score, challenger_test
+            _, train_results = judge.score(champion, train, args.workers)
             args.out.write_text(champion)
     args.out.write_text(champion)
-    for r in results:
+    for r in test_results:
         if r["predicted"] != r["decision"]:
-            print(f"miss {r['id']}: user {r['decision']}, predicted {r['predicted']}: {r['reason']}", file=sys.stderr)
+            print(f"held-out miss {r['id']}: user {r['decision']}, predicted {r['predicted']}: {r['reason']}",
+                  file=sys.stderr)
 
 
 if __name__ == "__main__":
