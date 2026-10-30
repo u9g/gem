@@ -193,17 +193,25 @@ pub async fn progress(thread_id: &str) -> Option<(bool, bool)> {
     Some((thread.settled || stopped, thread.pending_request_count > 0))
 }
 
-// A busy thread gets the message as its next turn.
+// A busy thread gets the message as its next turn. Fails when the thread is gone.
 pub async fn send(thread_id: &str, message: &str) -> Result<(), String> {
-    t3(&["thread", "send", "--json", thread_id, "-"], message)
+    let output = run(&["thread", "send", "--json", thread_id, "-"], message)
         .await
-        .map(drop)
-        .ok_or("t3: could not run the CLI".into())
+        .ok_or("t3: could not run the CLI")?;
+    match output.status.success() {
+        true => Ok(()),
+        false => Err(format!("t3: thread send {}", output.status)),
+    }
+}
+
+// The CLI's stdout, whether it succeeded or not.
+async fn t3(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
+    Some(run(args, stdin).await?.stdout)
 }
 
 // T3 Code installs its CLI here and keeps it pointing at the running app; on Windows it is a
 // batch file. Batch files cannot take arguments with newlines, so `stdin` carries any message.
-async fn t3(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
+async fn run(args: &[&str], stdin: &str) -> Option<std::process::Output> {
     let name = if cfg!(windows) { "t3.cmd" } else { "t3" };
     let cli = home().ok()?.join("bin").join(name);
     let mut child = Command::new(cli)
@@ -215,7 +223,7 @@ async fn t3(args: &[&str], stdin: &str) -> Option<Vec<u8>> {
     let mut input = child.stdin.take()?;
     input.write_all(stdin.as_bytes()).await.ok()?;
     drop(input);
-    Some(child.wait_with_output().await.ok()?.stdout)
+    child.wait_with_output().await.ok()
 }
 
 #[cfg(test)]

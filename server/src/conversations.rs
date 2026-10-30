@@ -320,8 +320,8 @@ impl Conversations {
     }
 
     // Tells the agent answering the comments on `proposal`'s cluster that the user approved it, so
-    // it updates the proposals the approval affects.
-    pub async fn approved(&self, proposal: &Proposal) {
+    // it updates the proposals the approval affects. `edited` when the user changed it first.
+    pub async fn approved(&self, proposal: &Proposal, edited: bool) {
         let Some(comment) = &proposal.comment else {
             return;
         };
@@ -331,9 +331,13 @@ impl Conversations {
         else {
             return;
         };
+        let edited = match edited {
+            true => " after editing it: read what was posted on GitHub",
+            false => "",
+        };
         let message = format!(
             "{login} approved the proposal {id} on {url} (\"{summary}\"), answering {comment}, and \
-gem ran it. Update the open proposals it affects, each by proposing its new version with \
+gem ran it{edited}. Update the open proposals it affects, each by proposing its new version with \
 `replaces`.",
             login = login(),
             id = proposal.id,
@@ -359,6 +363,44 @@ gem ran it. Update the open proposals it affects, each by proposing its new vers
 
     // `clusters` hold `prs`, oldest pull request first.
     pub async fn refresh(&self, prs: &[SearchedPullRequest], clusters: &[PullRequestCluster]) {
+        let closed: Vec<String> = {
+            let mut threads = self.0.threads.lock().await;
+            let closed: Vec<String> = (threads.keys())
+                .filter(|pr| !prs.iter().any(|open| open.url == **pr))
+                .cloned()
+                .collect();
+            threads.retain(|pr, _| !closed.contains(pr));
+            save("DELETE FROM cluster_agents WHERE pr = ?1", closed.iter().map(|pr| [pr]));
+            closed
+        };
+        // The comments sent to an agent whose oldest pull request closed, which it proposed
+        // nothing for yet, go to their cluster's next agent.
+        let orphaned: Vec<String> = {
+            let keys = self.0.clusters.read().await;
+            let known = self.0.prs.read().await;
+            let mut orphaned = Vec::new();
+            for (url, known) in known.iter() {
+                if !keys.get(url).is_some_and(|key| closed.contains(&key.url)) {
+                    continue;
+                }
+                for conversation in &known.waiting {
+                    if let Conversation::Comment { comment, .. } = conversation
+                        && !proposals::exist_for(&comment.id).await
+                    {
+                        orphaned.push(comment.id.clone());
+                    }
+                }
+            }
+            orphaned
+        };
+        if !orphaned.is_empty() {
+            self.0.started.lock().await.retain(|id| !orphaned.contains(id));
+            save(
+                "DELETE FROM started_conversations WHERE id = ?1",
+                orphaned.iter().map(|id| [id]),
+            );
+            self.0.handled.lock().await.retain(|id| !orphaned.contains(id));
+        }
         {
             let by_url: HashMap<&str, &SearchedPullRequest> =
                 prs.iter().map(|pr| (pr.url.as_str(), pr)).collect();
@@ -374,15 +416,6 @@ gem ran it. Update the open proposals it affects, each by proposing its new vers
                     keys.insert(pr.url.clone(), Target::new(oldest));
                 }
             }
-        }
-        {
-            let mut threads = self.0.threads.lock().await;
-            let closed: Vec<String> = (threads.keys())
-                .filter(|pr| !prs.iter().any(|open| open.url == **pr))
-                .cloned()
-                .collect();
-            threads.retain(|pr, _| !closed.contains(pr));
-            save("DELETE FROM cluster_agents WHERE pr = ?1", closed.iter().map(|pr| [pr]));
         }
         let changed: Vec<&SearchedPullRequest> = {
             let known = self.0.prs.read().await;
@@ -460,8 +493,7 @@ gem ran it. Update the open proposals it affects, each by proposing its new vers
 
     // Queues an agent for each waiting failed checks no agent was queued for, and sends each
     // cluster's agent the comments waiting on the user it was not sent. `stale` are proposals
-    // answering comments that were deleted as their patches no longer apply, whose comments are
-    // sent again with them.
+    // answering comments whose patches went stale, whose comments are sent again with them.
     async fn answer_waiting(&self, stale: Vec<Proposal>) {
         let known = self.0.prs.read().await;
         let clusters = self.0.clusters.read().await;
@@ -527,40 +559,40 @@ gem ran it. Update the open proposals it affects, each by proposing its new vers
             let _turn = turn.lock().await;
             let _permit = this.0.agents.acquire().await.unwrap();
             let thread = this.0.threads.lock().await.get(&key.url).cloned();
-            if thread.is_none() && asked.is_empty() {
-                return;
-            }
-            {
-                let mut started = this.0.started.lock().await;
-                started.extend(asked.iter().cloned());
-                save(
-                    "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                    asked.iter().map(|id| [id]),
-                );
-            }
-            let sent = match thread {
-                Some(thread_id) => t3::send(&thread_id, &message).await.map(|()| thread_id),
-                None => {
-                    let subject = Subject::Cluster {
-                        pr: key.url.clone(),
-                    };
-                    let prompt = format!("{}\n\n{message}", answer(&key));
-                    let started = match mcp::agent_config(&subject).await {
-                        Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
-                        Err(error) => Err(error),
-                    };
-                    if let Ok(thread_id) = &started {
-                        (this.0.threads.lock().await).insert(key.url.clone(), thread_id.clone());
-                        save(
-                            "INSERT OR REPLACE INTO cluster_agents (pr, thread_id) VALUES (?1, ?2)",
-                            [params![key.url, thread_id]],
-                        );
-                    }
-                    started
+            let mut sent = Err("no agent answers the cluster's comments".to_string());
+            if let Some(thread_id) = thread {
+                sent = t3::send(&thread_id, &message).await.map(|()| thread_id);
+                if sent.is_err() {
+                    this.forget_thread(&key.url).await;
                 }
-            };
+            }
+            if sent.is_err() && !asked.is_empty() {
+                let subject = Subject::Cluster {
+                    pr: key.url.clone(),
+                };
+                let prompt = format!("{}\n\n{message}", answer(&key));
+                sent = match mcp::agent_config(&subject).await {
+                    Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                    Err(error) => Err(error),
+                };
+                if let Ok(thread_id) = &sent {
+                    (this.0.threads.lock().await).insert(key.url.clone(), thread_id.clone());
+                    save(
+                        "INSERT OR REPLACE INTO cluster_agents (pr, thread_id) VALUES (?1, ?2)",
+                        [params![key.url, thread_id]],
+                    );
+                }
+            }
             match sent {
                 Ok(thread_id) => {
+                    {
+                        let mut started = this.0.started.lock().await;
+                        started.extend(asked.iter().cloned());
+                        save(
+                            "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
+                            asked.iter().map(|id| [id]),
+                        );
+                    }
                     (this.0.answering.lock().await)
                         .entry(key.url.clone())
                         .or_insert_with(|| Answering {
@@ -572,10 +604,20 @@ gem ran it. Update the open proposals it affects, each by proposing its new vers
                         .thread_id = Some(thread_id.clone());
                     t3::wait(&thread_id).await;
                 }
-                Err(e) => eprintln!("{title}: {e}"),
+                // The next refresh asks about them again.
+                Err(e) => {
+                    eprintln!("{title}: {e}");
+                    (this.0.handled.lock().await).retain(|id| !asked.contains(id));
+                }
             }
             this.0.answering.lock().await.remove(&key.url);
         });
+    }
+
+    // Forgets the thread answering the comments on the cluster whose oldest pull request is `pr`.
+    async fn forget_thread(&self, pr: &str) {
+        self.0.threads.lock().await.remove(pr);
+        save("DELETE FROM cluster_agents WHERE pr = ?1", [[pr]]);
     }
 
     // Queues an agent answering `failure` on `pr`.
@@ -686,8 +728,8 @@ saying what you proposed.",
     )
 }
 
-// Asks a cluster's agent to answer `comment` on `pr`, saying which of its proposals answering it
-// were `removed`.
+// Asks a cluster's agent to answer `comment` on `pr`, saying which proposals answering it went
+// stale and need replacing.
 fn ask(
     pr: &Target,
     thread_id: &Option<String>,
@@ -717,8 +759,8 @@ fn ask(
                 .collect();
             format!(
                 "
-gem removed these proposals answering it, as their patches no longer apply to the pull requests' \
-new heads. Propose again against the new heads what is still needed:
+These proposals answering it have patches made against older heads of the pull requests. Replace \
+each with one against the new heads, with `replaces`:
 
 {listed}"
             )

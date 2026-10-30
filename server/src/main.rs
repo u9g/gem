@@ -491,7 +491,11 @@ async fn run_server() {
                     }
                 }
                 if let (Ok(_), Some(proposal)) = (&closed, &proposal) {
-                    conversations.approved(proposal).await;
+                    let edited = (!request.reply.is_empty() && request.reply != proposal.reply)
+                        || (!request.follow_up.is_empty() && request.follow_up != proposal.follow_up)
+                        || (!request.diff.is_empty()
+                            && proposal.patch.as_ref().is_some_and(|p| p.diff != request.diff));
+                    conversations.approved(proposal, edited).await;
                 }
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.

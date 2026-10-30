@@ -142,7 +142,7 @@ async fn approve_proposal(
         }
         Ok(()) => {
             let answered = answers(&proposal);
-            for other in &proposals {
+            for other in &load(crate::db()) {
                 if answers(other).iter().any(|a| answered.contains(a)) {
                     delete(&other.id);
                 }
@@ -157,12 +157,15 @@ async fn approve_proposal(
     }
 }
 
+// Why a proposal answering a comment waits on its agent: set once its patches went stale.
+const STALE: &str = "Its patch was made against an older head; the agent is updating it.";
+
 // A proposal is stale once it has a patch written against a head commit its branch has since moved
-// past, or for another pull request no longer open, keyed by open PR URL in `heads`. Deletes each
-// stale proposal. Failed checks are answered again against the new heads, so every proposal
-// answering them goes too, and their IDs are returned. The stale proposals answering comments are
-// returned for their cluster's agent to propose again. An investigation's proposals are
-// independent, so only its stale ones go.
+// past, or for another pull request no longer open, keyed by open PR URL in `heads`. Failed checks
+// are answered again against the new heads, so every proposal answering them goes, and their IDs
+// are returned. A stale proposal answering a comment stays, marked STALE, for its cluster's agent
+// to replace: the ones newly marked are returned. An investigation's proposals are independent, so
+// only its stale ones go.
 pub async fn remove_stale(heads: &HashMap<&str, &str>) -> (HashSet<String>, Vec<Proposal>) {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
@@ -182,17 +185,22 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> (HashSet<String>, Vec<
     let failures: HashSet<String> = (stale.iter())
         .filter_map(|p| p.check_failure.as_ref().map(|f| f.id.clone()))
         .collect();
+    let mut comments = Vec::new();
     for proposal in &proposals {
         let answers_stale =
             (proposal.check_failure.as_ref()).is_some_and(|f| failures.contains(&f.id));
-        if answers_stale || stale.iter().any(|p| p.id == proposal.id) {
+        let is_stale = stale.iter().any(|p| p.id == proposal.id);
+        if proposal.comment.is_some() {
+            if is_stale && proposal.error != STALE {
+                let mut marked = proposal.clone();
+                marked.error = STALE.to_string();
+                save(crate::db(), &marked);
+                comments.push(marked);
+            }
+        } else if answers_stale || is_stale {
             delete(&proposal.id);
         }
     }
-    let comments = (stale.into_iter())
-        .filter(|p| p.comment.is_some())
-        .cloned()
-        .collect();
     (failures, comments)
 }
 
@@ -605,6 +613,13 @@ pub async fn propose(
             let on = &replaced.pull_request_url;
             if !matches!(subject, Subject::Cluster { .. }) || !(on == pr || cluster.contains(on)) {
                 return Err(format!("proposal {id} is not one of this cluster's"));
+            }
+            let answered = replaced.comment.as_ref().map(|c| c.id.as_str());
+            if answered != Some(comment.trim()) {
+                return Err(format!(
+                    "proposal {id} answers {}, so its replacement must too",
+                    answered.unwrap_or_default()
+                ));
             }
             Some(replaced.id)
         }

@@ -919,6 +919,10 @@ mod tests {
 
         let result = server.propose(&token, reply("Second.", "nope")).await;
         assert_eq!(result["isError"], true, "{result}");
+        let mut elsewhere = reply("Second.", &first);
+        elsewhere["comment"] = json!("IC_2");
+        let result = server.propose(&token, elsewhere).await;
+        assert_eq!(result["isError"], true, "{result}");
         let investigation = server
             .token(&Subject::Investigation {
                 id: "inv".into(),
