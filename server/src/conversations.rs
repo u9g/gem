@@ -96,29 +96,6 @@ impl Conversation {
             Conversation::Checks { check_failure } => &check_failure.id,
         }
     }
-
-    // The title and prompt of the agent answering it on `pr`.
-    fn prompt(&self, pr: &Target) -> (String, String) {
-        match self {
-            Conversation::Comment { thread_id, comment } => answer(pr, thread_id, comment),
-            Conversation::Checks { check_failure } => fix(pr, check_failure),
-        }
-    }
-
-    // What the agent answering it on the PR at `pr` proposes on.
-    fn subject(&self, pr: &str) -> Subject {
-        match self {
-            Conversation::Comment { thread_id, comment } => Subject::Comment {
-                pr: pr.to_string(),
-                comment: comment.id.clone(),
-                thread: thread_id.clone(),
-            },
-            Conversation::Checks { check_failure } => Subject::CheckFailure {
-                pr: pr.to_string(),
-                id: check_failure.id.clone(),
-            },
-        }
-    }
 }
 
 // The failed checks of the PR with node ID `pr`, while `id` is still their ID.
@@ -410,64 +387,124 @@ impl Conversations {
                 if !handled.insert(conversation.id().to_string()) {
                     continue;
                 }
-                let (title, _) = conversation.prompt(&pr.target);
-                let answering = Answering {
-                    pr: pr.target.url.clone(),
-                    title,
-                    thread_id: None,
-                    queued_at: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(0, |since| since.as_secs() as i64),
-                };
-                (self.0.answering.lock().await).insert(conversation.id().to_string(), answering);
-                let this = self.clone();
-                let pr = pr.target.clone();
-                let conversation = conversation.clone();
-                tokio::spawn(async move {
-                    let _permit = this.0.agents.acquire().await.unwrap();
-                    {
-                        let mut started = this.0.started.lock().await;
-                        started.insert(conversation.id().to_string());
-                        save(
-                            "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                            [[conversation.id()]],
-                        );
+                match conversation {
+                    Conversation::Comment { thread_id, comment } => {
+                        self.answer_comment(pr.target.clone(), thread_id.clone(), comment.clone())
+                            .await;
                     }
-                    let id = conversation.id();
-                    let (title, prompt) = conversation.prompt(&pr);
-                    let subject = conversation.subject(&pr.url);
-                    let started = match mcp::agent_config(&subject).await {
-                        Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
-                        Err(error) => Err(error),
-                    };
-                    match started {
-                        Ok(thread_id) => {
-                            if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
-                                answering.thread_id = Some(thread_id.clone());
-                            }
-                            let reply = t3::wait(&thread_id).await;
-                            if let Conversation::Checks { check_failure } = &conversation {
-                                let reply = reply.trim();
-                                investigations::archive(&title, &pr.url, check_failure, reply)
-                                    .await;
-                                if !proposals::exist_for(id).await {
-                                    let mut no_proposal = this.0.no_proposal.lock().await;
-                                    save(
-                                        "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
-                                         VALUES (?1, ?2)",
-                                        [params![id, reply]],
-                                    );
-                                    no_proposal.insert(id.to_string(), reply.to_string());
-                                }
-                            }
-                        }
-                        Err(e) => eprintln!("{title}: {e}"),
+                    Conversation::Checks { check_failure } => {
+                        self.answer_checks(pr.target.clone(), check_failure.clone())
+                            .await;
                     }
-                    this.0.answering.lock().await.remove(id);
-                });
+                }
             }
         }
     }
+
+    // Queues an agent answering `comment` on `pr`, in the review thread `thread` when it has one.
+    async fn answer_comment(&self, pr: Target, thread: Option<String>, comment: Comment) {
+        let (title, prompt) = answer(&pr, &thread, &comment);
+        let answering = Answering {
+            pr: pr.url.clone(),
+            title: title.clone(),
+            thread_id: None,
+            queued_at: now(),
+        };
+        (self.0.answering.lock().await).insert(comment.id.clone(), answering);
+        let this = self.clone();
+        tokio::spawn(async move {
+            let _permit = this.0.agents.acquire().await.unwrap();
+            let id = comment.id.as_str();
+            {
+                let mut started = this.0.started.lock().await;
+                started.insert(id.to_string());
+                save(
+                    "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
+                    [[id]],
+                );
+            }
+            let subject = Subject::Comment {
+                pr: pr.url.clone(),
+                comment: id.to_string(),
+                thread,
+            };
+            let started = match mcp::agent_config(&subject).await {
+                Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                Err(error) => Err(error),
+            };
+            match started {
+                Ok(thread_id) => {
+                    if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
+                        answering.thread_id = Some(thread_id.clone());
+                    }
+                    t3::wait(&thread_id).await;
+                }
+                Err(e) => eprintln!("{title}: {e}"),
+            }
+            this.0.answering.lock().await.remove(id);
+        });
+    }
+
+    // Queues an agent answering `failure` on `pr`.
+    async fn answer_checks(&self, pr: Target, failure: CheckFailure) {
+        let (title, prompt) = fix(&pr, &failure);
+        let answering = Answering {
+            pr: pr.url.clone(),
+            title: title.clone(),
+            thread_id: None,
+            queued_at: now(),
+        };
+        (self.0.answering.lock().await).insert(failure.id.clone(), answering);
+        let this = self.clone();
+        tokio::spawn(async move {
+            let _permit = this.0.agents.acquire().await.unwrap();
+            let id = failure.id.as_str();
+            {
+                let mut started = this.0.started.lock().await;
+                started.insert(id.to_string());
+                save(
+                    "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
+                    [[id]],
+                );
+            }
+            let subject = Subject::CheckFailure {
+                pr: pr.url.clone(),
+                id: id.to_string(),
+            };
+            let started = match mcp::agent_config(&subject).await {
+                Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                Err(error) => Err(error),
+            };
+            match started {
+                Ok(thread_id) => {
+                    if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
+                        answering.thread_id = Some(thread_id.clone());
+                    }
+                    let reply = t3::wait(&thread_id).await;
+                    let reply = reply.trim();
+                    investigations::archive(&title, &pr.url, &failure, reply).await;
+                    if !proposals::exist_for(id).await {
+                        let mut no_proposal = this.0.no_proposal.lock().await;
+                        save(
+                            "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
+                             VALUES (?1, ?2)",
+                            [params![id, reply]],
+                        );
+                        no_proposal.insert(id.to_string(), reply.to_string());
+                    }
+                }
+                Err(e) => eprintln!("{title}: {e}"),
+            }
+            this.0.answering.lock().await.remove(id);
+        });
+    }
+}
+
+// Seconds since the epoch.
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
 }
 
 // What an agent needs to know about the PR it answers on.
