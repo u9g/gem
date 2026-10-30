@@ -524,14 +524,20 @@ async fn propose<G: GitHub>(
 // The `gem` of an agent answering `subject`, whose proposals take the steps it can.
 fn agent_api(subject: &Subject) -> String {
     let mut steps = String::new();
-    let mut excerpts = "";
+    let mut fields = "";
+    let mut prs = subject.prs().join(" or ");
     match subject {
-        Subject::Comment {
-            thread: Some(_), ..
-        } => steps.push_str("  resolve_thread?: boolean; // Resolve the review thread.\n"),
+        Subject::Cluster { pr } => {
+            steps.push_str("  resolve_thread?: boolean; // Resolve the review thread.\n");
+            fields = "
+  comment: string; // The node ID of the comment it answers.
+  thread?: string; // The node ID of the review thread holding comment, when it is in one.
+  replaces?: string; // The ID of a proposal this one replaces, which goes when this is recorded.";
+            prs = format!("one in the cluster holding {pr}");
+        }
         Subject::CheckFailure { .. } => {
             steps.push_str("  rerun?: boolean; // Rerun the failed GitHub Actions jobs.\n");
-            excerpts = "
+            fields = "
   // For each check it answers, the log lines that show why it failed: the error itself, at most
   // 10, no setup or timestamps.
   excerpts: { check: string /* The check's node ID. */; lines: string }[];";
@@ -556,7 +562,7 @@ fn agent_api(subject: &Subject) -> String {
 }};
 interface NewProposal {{
   pr: string; // The pull request it is about: {prs}.
-  summary: string; // One line saying what approving does; for request_tool, \"<tool name>: <one line>\".{excerpts}
+  summary: string; // One line saying what approving does; for request_tool, \"<tool name>: <one line>\".{fields}
   // A change to pr's code, as `git diff` prints it against its head, and its commit message.
   // Never commit or push it yourself.
   patch?: string;
@@ -584,7 +590,6 @@ interface NewProposal {{
   // this needs it.
   request_tool?: string;
 }}",
-        prs = subject.prs().join(" or "),
     )
 }
 
@@ -739,11 +744,7 @@ mod tests {
     }
 
     fn in_thread() -> Subject {
-        Subject::Comment {
-            pr: PR.into(),
-            comment: "PRRC_1".into(),
-            thread: Some("PRRT_1".into()),
-        }
+        Subject::Cluster { pr: PR.into() }
     }
 
     fn initialize() -> Value {
@@ -770,7 +771,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(response["result"]["serverInfo"]["name"], AGENT_NAME);
 
-        server.tokens.revoke("PRRC_1").await;
+        server.tokens.revoke(PR).await;
         assert_eq!(
             server.post(Some(&token), initialize()).await.0,
             StatusCode::UNAUTHORIZED
@@ -834,6 +835,8 @@ mod tests {
                 &token,
                 json!({
                     "pr": PR,
+                    "comment": "PRRC_1",
+                    "thread": "PRRT_1",
                     "summary": "Rename it",
                     "patch": "diff --git a/x b/x\n",
                     "message": "Rename it",
@@ -864,16 +867,11 @@ mod tests {
     #[tokio::test]
     async fn a_top_level_reply_opens_by_quoting_the_comment() {
         let server = Server::new("quote");
-        let subject = Subject::Comment {
-            pr: PR.into(),
-            comment: "IC_1".into(),
-            thread: None,
-        };
-        let token = server.token(&subject).await;
+        let token = server.token(&in_thread()).await;
         let result = server
             .propose(
                 &token,
-                json!({ "pr": PR, "summary": "Reply", "reply": "Done." }),
+                json!({ "pr": PR, "comment": "IC_1", "summary": "Reply", "reply": "Done." }),
             )
             .await;
         assert_eq!(result["isError"], Value::Null, "{result}");
@@ -882,6 +880,65 @@ mod tests {
         };
         assert_eq!(proposal.reply, "> IC_1's body\n\nDone.");
         assert_eq!(proposal.reply_html, "<p>> IC_1's body\n\nDone.</p>");
+    }
+
+    #[tokio::test]
+    async fn a_clusters_agent_names_the_comment_and_its_thread() {
+        let server = Server::new("comment");
+        let token = server.token(&in_thread()).await;
+        let reply = |fields: Value| {
+            let mut proposal = json!({ "pr": PR, "summary": "Reply", "reply": "Done." });
+            proposal
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            proposal
+        };
+        for fields in [json!({}), json!({ "comment": "IC_1", "thread": "PRRT_1" })] {
+            let result = server.propose(&token, reply(fields.clone())).await;
+            assert_eq!(result["isError"], true, "{fields} gave {result}");
+        }
+        assert!(server.proposals().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_proposal_replaces_an_earlier_one_of_its_cluster() {
+        let server = Server::new("replaces");
+        let token = server.token(&in_thread()).await;
+        let reply = |text: &str, replaces: &str| {
+            json!({
+                "pr": PR,
+                "comment": "IC_1",
+                "summary": text,
+                "reply": text,
+                "replaces": replaces,
+            })
+        };
+        let first = server.propose(&token, reply("First.", "")).await;
+        let first = text(&first).to_string();
+
+        let result = server.propose(&token, reply("Second.", "nope")).await;
+        assert_eq!(result["isError"], true, "{result}");
+        let investigation = server
+            .token(&Subject::Investigation {
+                id: "inv".into(),
+                prs: vec![PR.into()],
+            })
+            .await;
+        let result = server
+            .propose(
+                &investigation,
+                json!({ "pr": PR, "summary": "Fix", "follow_up": "Fix it.", "replaces": first }),
+            )
+            .await;
+        assert_eq!(result["isError"], true, "{result}");
+
+        let second = server.propose(&token, reply("Second.", &first)).await;
+        let [proposal] = &server.proposals()[..] else {
+            panic!("{:?}", server.proposals());
+        };
+        assert_eq!(proposal.id, text(&second));
+        assert_eq!(proposal.summary, "Second.");
     }
 
     #[tokio::test]
@@ -1053,6 +1110,7 @@ mod tests {
         let other_patch = |pr: &str| {
             json!({
                 "pr": PR,
+                "comment": "IC_1",
                 "summary": "Port it",
                 "reply": "Ported.",
                 "other_patches": [{ "pr": pr, "patch": "diff --git a/x b/x\n", "message": "Port it" }],

@@ -470,8 +470,9 @@ async fn run_server() {
             }),
         )
         .route("/proposals/approve", {
-            let prs = prs.clone();
+            let (prs, conversations) = (prs.clone(), conversations.clone());
             post(|Json(request): Json<ApproveProposalRequest>| async move {
+                let proposal = proposals::find(&request.id).await;
                 let closed = proposals::approve(
                     &request.id,
                     &request.reply,
@@ -488,6 +489,9 @@ async fn run_server() {
                     Err(error) => {
                         tracing::warn!(proposal = %request.id, %error, "proposal approve failed")
                     }
+                }
+                if let (Ok(_), Some(proposal)) = (&closed, &proposal) {
+                    conversations.approved(proposal).await;
                 }
                 // Search can list a PR as open for a while after it closes, so drop it here
                 // rather than wait for the next refresh.
@@ -687,7 +691,7 @@ async fn open_pull_requests(
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
-    conversations.refresh(&prs).await;
+    conversations.refresh(&prs, &clusters).await;
     Some(ListOpenPullRequestsResponse {
         clusters,
         login: login().to_string(),

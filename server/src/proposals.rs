@@ -159,10 +159,11 @@ async fn approve_proposal(
 
 // A proposal is stale once it has a patch written against a head commit its branch has since moved
 // past, or for another pull request no longer open, keyed by open PR URL in `heads`. Deletes each
-// stale proposal, and every proposal answering the same conversation. Returns those conversations'
-// IDs, so they can be answered again against the new heads. An investigation's proposals are
+// stale proposal. Failed checks are answered again against the new heads, so every proposal
+// answering them goes too, and their IDs are returned. The stale proposals answering comments are
+// returned for their cluster's agent to propose again. An investigation's proposals are
 // independent, so only its stale ones go.
-pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
+pub async fn remove_stale(heads: &HashMap<&str, &str>) -> (HashSet<String>, Vec<Proposal>) {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
     };
@@ -178,18 +179,21 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
                 })
         })
         .collect();
-    let conversations: HashSet<String> = (stale.iter())
-        .filter(|p| p.investigation_id.is_empty())
-        .filter_map(|p| subject(p).map(str::to_string))
+    let failures: HashSet<String> = (stale.iter())
+        .filter_map(|p| p.check_failure.as_ref().map(|f| f.id.clone()))
         .collect();
     for proposal in &proposals {
-        let answers_stale = proposal.investigation_id.is_empty()
-            && subject(proposal).is_some_and(|id| conversations.contains(id));
+        let answers_stale =
+            (proposal.check_failure.as_ref()).is_some_and(|f| failures.contains(&f.id));
         if answers_stale || stale.iter().any(|p| p.id == proposal.id) {
             delete(&proposal.id);
         }
     }
-    conversations
+    let comments = (stale.into_iter())
+        .filter(|p| p.comment.is_some())
+        .cloned()
+        .collect();
+    (failures, comments)
 }
 
 // Deletes every proposal on the PRs at `urls`, except investigations'.
@@ -406,6 +410,11 @@ pub struct Request {
     pub close_pull_request: bool,
     pub excerpts: Vec<Excerpt>,
     pub request_tool: String,
+    // The comment it answers, and the review thread holding it, for an agent answering a cluster.
+    pub comment: String,
+    pub thread: String,
+    // The ID of an earlier proposal of the cluster's that this one replaces.
+    pub replaces: String,
 }
 
 // A diff for another pull request of the cluster, and the message to commit it with.
@@ -563,6 +572,9 @@ pub async fn propose(
         close_pull_request,
         excerpts,
         request_tool,
+        comment,
+        thread,
+        replaces,
     } = request;
     let pr = pr.trim().trim_end_matches('/');
     if pr.is_empty() {
@@ -571,22 +583,47 @@ pub async fn propose(
     if summary.trim().is_empty() {
         return Err("`summary` is required".into());
     }
-    if !subject.prs().iter().any(|p| p == pr) {
+    let answers_on = match subject {
+        Subject::Cluster { pr: key } => key == pr || cluster.contains(key),
+        _ => subject.prs().iter().any(|p| p == pr),
+    };
+    if !answers_on {
         return Err(format!(
             "{pr} is not a pull request this thread answers on; propose on {}",
-            subject.prs().join(" or ")
+            match subject {
+                Subject::Cluster { pr } => format!("a pull request of the cluster holding {pr}"),
+                _ => subject.prs().join(" or "),
+            }
         ));
     }
+    let replaced = match replaces.trim() {
+        "" => None,
+        id => {
+            let replaced = (load(db).into_iter())
+                .find(|p| p.id == id && p.comment.is_some())
+                .ok_or(format!("no proposal {id} answering a comment to replace"))?;
+            let on = &replaced.pull_request_url;
+            if !matches!(subject, Subject::Cluster { .. }) || !(on == pr || cluster.contains(on)) {
+                return Err(format!("proposal {id} is not one of this cluster's"));
+            }
+            Some(replaced.id)
+        }
+    };
 
     let (comment, check_failure, thread_id, investigation_id) = match subject {
-        Subject::Comment {
-            comment, thread, ..
-        } => {
-            let comment = github.comment(comment).await?;
+        Subject::Cluster { .. } => {
+            if comment.trim().is_empty() {
+                return Err("`comment` is required: the ID of the comment it answers".into());
+            }
+            let comment = github.comment(comment.trim()).await?;
             if comment.pull_request != pr {
                 return Err(format!("comment is on {}, not {pr}", comment.pull_request));
             }
-            (Some(comment.comment), None, thread.clone(), "")
+            let thread = Some(thread.trim().to_string()).filter(|t| !t.is_empty());
+            if thread.is_none() && !comment.comment.path.is_empty() {
+                return Err("`thread` is required: the review thread holding the comment".into());
+            }
+            (Some(comment.comment), None, thread, "")
         }
         Subject::CheckFailure { id, .. } => {
             let mut failure = github.check_failure(pr, id).await?;
@@ -617,6 +654,11 @@ pub async fn propose(
         let (on, comments) = github.review_thread(&thread_id).await?;
         if on != pr {
             return Err(format!("thread is on {on}, not {pr}"));
+        }
+        if let Some(comment) = &comment
+            && !comments.iter().any(|c| c.id == comment.id)
+        {
+            return Err(format!("thread {thread_id} does not hold {}", comment.id));
         }
         earlier_comments = comments
             .into_iter()
@@ -746,6 +788,9 @@ pub async fn propose(
             params![proposal.id, serde_json::to_string(&proposal).unwrap()],
         )
     })?;
+    if let Some(replaced) = replaced {
+        db.with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", [replaced]))?;
+    }
     Ok(proposal.id)
 }
 
