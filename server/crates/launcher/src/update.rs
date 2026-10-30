@@ -10,7 +10,7 @@ use std::{
 
 use crate::log;
 
-const WORKTREE: &str = "deploy";
+pub const WORKTREE: &str = "deploy";
 
 #[derive(Default)]
 pub struct Updates {

@@ -12,14 +12,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{log, update::git};
+use crate::{
+    log,
+    update::{WORKTREE, git},
+};
 
 // How long a stopped server gets to leave its room before it is killed.
 #[cfg(unix)]
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn start(exe: &Path, dotenv: &[OsString]) -> Child {
-    match git(&["rev-parse", "--short", "HEAD"]) {
+    match git(&["-C", WORKTREE, "rev-parse", "--short", "HEAD"]) {
         Some(head) => log(&format!("starting the server at {head}")),
         None => log("starting the server"),
     }
