@@ -23,12 +23,9 @@ pub const DIR: &str = "agent-tokens";
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
-    // A comment on `pr`, in the review thread `thread` when it has one.
-    Comment {
-        pr: String,
-        comment: String,
-        thread: Option<String>,
-    },
+    // The comments waiting on the user in the cluster holding `pr`, whichever pull requests it
+    // holds when the agent proposes.
+    Cluster { pr: String },
     // The failed checks on `pr` with that check failure ID.
     CheckFailure {
         pr: String,
@@ -45,15 +42,16 @@ impl Subject {
     // The ID of the conversation or investigation, which no other subject shares.
     pub fn id(&self) -> &str {
         match self {
-            Subject::Comment { comment, .. } => comment,
+            Subject::Cluster { pr } => pr,
             Subject::CheckFailure { id, .. } | Subject::Investigation { id, .. } => id,
         }
     }
 
-    // The PRs it may propose on.
+    // The PRs it may propose on. A cluster's agent may also propose on the others its cluster
+    // holds with `pr`.
     pub fn prs(&self) -> &[String] {
         match self {
-            Subject::Comment { pr, .. } | Subject::CheckFailure { pr, .. } => {
+            Subject::Cluster { pr } | Subject::CheckFailure { pr, .. } => {
                 std::slice::from_ref(pr)
             }
             Subject::Investigation { prs, .. } => prs,
@@ -225,11 +223,10 @@ pub mod tests {
             .to_string()
     }
 
-    fn comment(id: &str) -> Subject {
-        Subject::Comment {
+    fn failure(id: &str) -> Subject {
+        Subject::CheckFailure {
             pr: "https://github.com/o/r/pull/1".into(),
-            comment: id.into(),
-            thread: None,
+            id: id.into(),
         }
     }
 
@@ -237,7 +234,7 @@ pub mod tests {
     async fn an_issued_token_points_its_agent_at_the_server_with_its_subject() {
         let tokens = tokens("issue");
         let config = tokens
-            .issue(&comment("IC_1"), "http://127.0.0.1:1/mcp")
+            .issue(&failure("IC_1"), "http://127.0.0.1:1/mcp")
             .await
             .unwrap();
         let json: serde_json::Value =
@@ -245,26 +242,26 @@ pub mod tests {
         let server = &json["mcpServers"][crate::mcp::AGENT_NAME];
         assert_eq!(server["type"], "http");
         assert_eq!(server["url"], "http://127.0.0.1:1/mcp");
-        assert_eq!(tokens.subject(&token(&config)).await, Some(comment("IC_1")));
+        assert_eq!(tokens.subject(&token(&config)).await, Some(failure("IC_1")));
     }
 
     #[tokio::test]
     async fn a_new_agent_for_a_subject_revokes_the_earlier_ones_token() {
         let tokens = tokens("replace");
         let url = "http://127.0.0.1:1/mcp";
-        let first = token(&tokens.issue(&comment("IC_1"), url).await.unwrap());
-        let other = token(&tokens.issue(&comment("IC_2"), url).await.unwrap());
-        let second = token(&tokens.issue(&comment("IC_1"), url).await.unwrap());
+        let first = token(&tokens.issue(&failure("IC_1"), url).await.unwrap());
+        let other = token(&tokens.issue(&failure("IC_2"), url).await.unwrap());
+        let second = token(&tokens.issue(&failure("IC_1"), url).await.unwrap());
         assert_eq!(tokens.subject(&first).await, None);
-        assert_eq!(tokens.subject(&second).await, Some(comment("IC_1")));
-        assert_eq!(tokens.subject(&other).await, Some(comment("IC_2")));
+        assert_eq!(tokens.subject(&second).await, Some(failure("IC_1")));
+        assert_eq!(tokens.subject(&other).await, Some(failure("IC_2")));
     }
 
     #[tokio::test]
     async fn revoking_a_subject_removes_its_token_and_config() {
         let tokens = tokens("revoke");
         let config = tokens
-            .issue(&comment("IC_1"), "http://127.0.0.1:1/mcp")
+            .issue(&failure("IC_1"), "http://127.0.0.1:1/mcp")
             .await
             .unwrap();
         let token = token(&config);

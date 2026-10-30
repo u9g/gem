@@ -118,6 +118,9 @@ async fn approve_proposal(
         return Err(format!("no proposal {id}"));
     };
     tracing::Span::current().record("pull_request", proposal.pull_request_url.as_str());
+    if proposal.error == STALE {
+        return Err(STALE.to_string());
+    }
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
@@ -142,7 +145,7 @@ async fn approve_proposal(
         }
         Ok(()) => {
             let answered = answers(&proposal);
-            for other in &proposals {
+            for other in &load(crate::db()) {
                 if answers(other).iter().any(|a| answered.contains(a)) {
                     delete(&other.id);
                 }
@@ -157,11 +160,15 @@ async fn approve_proposal(
     }
 }
 
+// Why a proposal answering a comment waits on its agent: set once its patches went stale.
+pub const STALE: &str = "Its patch was made against an older head; the agent is updating it.";
+
 // A proposal is stale once it has a patch written against a head commit its branch has since moved
-// past, or for another pull request no longer open, keyed by open PR URL in `heads`. Deletes each
-// stale proposal, and every proposal answering the same conversation. Returns those conversations'
-// IDs, so they can be answered again against the new heads. An investigation's proposals are
-// independent, so only its stale ones go.
+// past, or for another pull request no longer open, keyed by open PR URL in `heads`. Failed checks
+// are answered again against the new heads, so every proposal answering them goes, and their IDs
+// are returned. A stale proposal answering a comment stays, marked STALE, for its cluster's agent
+// to replace: the IDs of the comments with ones newly marked are returned too. An investigation's
+// proposals are independent, so only its stale ones go.
 pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
@@ -178,18 +185,25 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
                 })
         })
         .collect();
-    let conversations: HashSet<String> = (stale.iter())
-        .filter(|p| p.investigation_id.is_empty())
-        .filter_map(|p| subject(p).map(str::to_string))
+    let mut again: HashSet<String> = (stale.iter())
+        .filter_map(|p| p.check_failure.as_ref().map(|f| f.id.clone()))
         .collect();
     for proposal in &proposals {
-        let answers_stale = proposal.investigation_id.is_empty()
-            && subject(proposal).is_some_and(|id| conversations.contains(id));
-        if answers_stale || stale.iter().any(|p| p.id == proposal.id) {
+        let answers_stale =
+            (proposal.check_failure.as_ref()).is_some_and(|f| again.contains(&f.id));
+        let is_stale = stale.iter().any(|p| p.id == proposal.id);
+        if let Some(comment) = &proposal.comment {
+            if is_stale && proposal.error != STALE {
+                let mut marked = proposal.clone();
+                marked.error = STALE.to_string();
+                save(crate::db(), &marked);
+                again.insert(comment.id.clone());
+            }
+        } else if answers_stale || is_stale {
             delete(&proposal.id);
         }
     }
-    conversations
+    again
 }
 
 // Deletes every proposal on the PRs at `urls`, except investigations'.
@@ -406,6 +420,11 @@ pub struct Request {
     pub close_pull_request: bool,
     pub excerpts: Vec<Excerpt>,
     pub request_tool: String,
+    // The comment it answers, and the review thread holding it, for an agent answering a cluster.
+    pub comment: String,
+    pub thread: String,
+    // The ID of an earlier proposal of the cluster's that this one replaces.
+    pub replaces: String,
 }
 
 // A diff for another pull request of the cluster, and the message to commit it with.
@@ -563,6 +582,9 @@ pub async fn propose(
         close_pull_request,
         excerpts,
         request_tool,
+        comment,
+        thread,
+        replaces,
     } = request;
     let pr = pr.trim().trim_end_matches('/');
     if pr.is_empty() {
@@ -571,22 +593,54 @@ pub async fn propose(
     if summary.trim().is_empty() {
         return Err("`summary` is required".into());
     }
-    if !subject.prs().iter().any(|p| p == pr) {
+    let answers_on = match subject {
+        Subject::Cluster { pr: key } => key == pr || cluster.contains(key),
+        _ => subject.prs().iter().any(|p| p == pr),
+    };
+    if !answers_on {
         return Err(format!(
             "{pr} is not a pull request this thread answers on; propose on {}",
-            subject.prs().join(" or ")
+            match subject {
+                Subject::Cluster { pr } => format!("a pull request of the cluster holding {pr}"),
+                _ => subject.prs().join(" or "),
+            }
         ));
     }
+    let replaced = match replaces.trim() {
+        "" => None,
+        id => {
+            let replaced = (load(db).into_iter())
+                .find(|p| p.id == id && p.comment.is_some())
+                .ok_or(format!("no proposal {id} answering a comment to replace"))?;
+            let on = &replaced.pull_request_url;
+            if !matches!(subject, Subject::Cluster { .. }) || !(on == pr || cluster.contains(on)) {
+                return Err(format!("proposal {id} is not one of this cluster's"));
+            }
+            let answered = replaced.comment.as_ref().map(|c| c.id.as_str());
+            if answered != Some(comment.trim()) {
+                return Err(format!(
+                    "proposal {id} answers {}, so its replacement must too",
+                    answered.unwrap_or_default()
+                ));
+            }
+            Some(replaced.id)
+        }
+    };
 
     let (comment, check_failure, thread_id, investigation_id) = match subject {
-        Subject::Comment {
-            comment, thread, ..
-        } => {
-            let comment = github.comment(comment).await?;
+        Subject::Cluster { .. } => {
+            if comment.trim().is_empty() {
+                return Err("`comment` is required: the ID of the comment it answers".into());
+            }
+            let comment = github.comment(comment.trim()).await?;
             if comment.pull_request != pr {
                 return Err(format!("comment is on {}, not {pr}", comment.pull_request));
             }
-            (Some(comment.comment), None, thread.clone(), "")
+            let thread = Some(thread.trim().to_string()).filter(|t| !t.is_empty());
+            if thread.is_none() && !comment.comment.path.is_empty() {
+                return Err("`thread` is required: the review thread holding the comment".into());
+            }
+            (Some(comment.comment), None, thread, "")
         }
         Subject::CheckFailure { id, .. } => {
             let mut failure = github.check_failure(pr, id).await?;
@@ -617,6 +671,11 @@ pub async fn propose(
         let (on, comments) = github.review_thread(&thread_id).await?;
         if on != pr {
             return Err(format!("thread is on {on}, not {pr}"));
+        }
+        if let Some(comment) = &comment
+            && !comments.iter().any(|c| c.id == comment.id)
+        {
+            return Err(format!("thread {thread_id} does not hold {}", comment.id));
         }
         earlier_comments = comments
             .into_iter()
@@ -740,12 +799,27 @@ pub async fn propose(
         other_patches: checked,
         open_pull_request,
     };
-    db.with(|db| {
-        db.execute(
+    // The proposal it replaces may have been approved or dismissed meanwhile.
+    let recorded = db.with(|db| {
+        let tx = db.unchecked_transaction()?;
+        if let Some(replaced) = &replaced
+            && tx.execute("DELETE FROM proposals WHERE id = ?1", [replaced])? == 0
+        {
+            return Ok(false);
+        }
+        tx.execute(
             "INSERT INTO proposals (id, proposal) VALUES (?1, ?2)",
             params![proposal.id, serde_json::to_string(&proposal).unwrap()],
-        )
+        )?;
+        tx.commit()?;
+        Ok(true)
     })?;
+    if !recorded {
+        return Err(format!(
+            "proposal {} is gone: the user approved or dismissed it",
+            replaced.unwrap_or_default()
+        ));
+    }
     Ok(proposal.id)
 }
 

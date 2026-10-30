@@ -13,7 +13,7 @@ use crate::{
     SearchedPullRequest,
     agents::Running,
     gh, investigations, login, mcp, proposals,
-    proto::{CheckFailure, Comment, PullRequestCluster},
+    proto::{CheckFailure, Comment, Proposal, PullRequestCluster},
     t3,
     tokens::{Subject, Tokens},
 };
@@ -96,29 +96,6 @@ impl Conversation {
             Conversation::Checks { check_failure } => &check_failure.id,
         }
     }
-
-    // The title and prompt of the agent answering it on `pr`.
-    fn prompt(&self, pr: &Target) -> (String, String) {
-        match self {
-            Conversation::Comment { thread_id, comment } => answer(pr, thread_id, comment),
-            Conversation::Checks { check_failure } => fix(pr, check_failure),
-        }
-    }
-
-    // What the agent answering it on the PR at `pr` proposes on.
-    fn subject(&self, pr: &str) -> Subject {
-        match self {
-            Conversation::Comment { thread_id, comment } => Subject::Comment {
-                pr: pr.to_string(),
-                comment: comment.id.clone(),
-                thread: thread_id.clone(),
-            },
-            Conversation::Checks { check_failure } => Subject::CheckFailure {
-                pr: pr.to_string(),
-                id: check_failure.id.clone(),
-            },
-        }
-    }
 }
 
 // The failed checks of the PR with node ID `pr`, while `id` is still their ID.
@@ -198,8 +175,17 @@ struct Inner {
     // restart answers conversations that were only queued, and not the others.
     started: Mutex<HashSet<String>>,
     agents: Semaphore,
-    // By the ID of the conversation they answer, until they stop or the user closes them.
+    // By the ID of the failed checks they answer, or the URL of the cluster whose comments they
+    // answer, until they stop or the user closes them.
     answering: Mutex<HashMap<String, Answering>>,
+    // The oldest pull request of each open PR's cluster, by PR URL, as last refreshed.
+    clusters: RwLock<HashMap<String, Target>>,
+    // The thread answering each cluster's comments, by the URL of its oldest pull request when it
+    // started. Persisted to cluster_agents.
+    threads: Mutex<HashMap<String, String>>,
+    // Held by whatever is telling a cluster's agent something, by the same URL, so it hears one
+    // message at a time and a cluster starts one agent.
+    telling: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     // Persisted to no_proposal_reasons.
     no_proposal: Mutex<HashMap<String, String>>,
 }
@@ -230,7 +216,7 @@ fn save<P: gem_db::rusqlite::Params>(sql: &str, params: impl IntoIterator<Item =
 
 impl Conversations {
     pub fn load() -> Result<Self, String> {
-        let (handled, no_proposal) = crate::db().with(|db| {
+        let (handled, no_proposal, threads) = crate::db().with(|db| {
             let handled: HashSet<String> = db
                 .prepare("SELECT id FROM started_conversations")?
                 .query_map([], |row| row.get(0))?
@@ -239,7 +225,11 @@ impl Conversations {
                 .prepare("SELECT id, reason FROM no_proposal_reasons")?
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<Result<_, _>>()?;
-            Ok((handled, no_proposal))
+            let threads: HashMap<String, String> = db
+                .prepare("SELECT pr, thread_id FROM cluster_agents")?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            Ok((handled, no_proposal, threads))
         })?;
         Ok(Self(Arc::new(Inner {
             prs: RwLock::default(),
@@ -247,12 +237,15 @@ impl Conversations {
             started: Mutex::new(handled),
             agents: Semaphore::new(CONCURRENT_AGENTS),
             answering: Mutex::default(),
+            clusters: RwLock::default(),
+            threads: Mutex::new(threads),
+            telling: Mutex::default(),
             no_proposal: Mutex::new(no_proposal),
         })))
     }
 
-    // The agents answering conversations, by the ID of the conversation each answers. One without
-    // a thread is queued.
+    // The agents answering conversations, by the ID of the failed checks or the URL of the cluster
+    // each answers. One without a thread is queued.
     pub async fn running(&self) -> Vec<(String, Running)> {
         (self.0.answering.lock().await.iter())
             .map(|(id, answering)| {
@@ -268,13 +261,12 @@ impl Conversations {
             .collect()
     }
 
-    // The thread of the agent answering the conversation `id`, once it started.
+    // The thread of the agent answering `id`, once it started.
     pub async fn thread_of(&self, id: &str) -> Option<String> {
         (self.0.answering.lock().await.get(id)).and_then(|answering| answering.thread_id.clone())
     }
 
-    // Stops showing the agent answering the conversation `id`. A queued one still starts, but does
-    // not show.
+    // Stops showing the agent answering `id`. A queued one still starts, but does not show.
     pub async fn forget(&self, id: &str) {
         self.0.answering.lock().await.remove(id);
     }
@@ -295,9 +287,17 @@ impl Conversations {
     }
 
     // Deletes the proposals on the PRs at `urls`, forgets that agents answered their waiting
-    // conversations, and queues new agents for them.
+    // conversations and their clusters' agents, and queues new agents for them.
     pub async fn restart(&self, urls: &[String]) {
         proposals::remove_on(urls).await;
+        let keys: HashSet<String> = {
+            let clusters = self.0.clusters.read().await;
+            (urls.iter().filter_map(|url| clusters.get(url)))
+                .map(|key| key.url.clone())
+                .collect()
+        };
+        self.0.threads.lock().await.retain(|pr, _| !keys.contains(pr));
+        save("DELETE FROM cluster_agents WHERE pr = ?1", keys.iter().map(|pr| [pr]));
         let ids: HashSet<String> = {
             let prs = self.0.prs.read().await;
             urls.iter()
@@ -319,6 +319,45 @@ impl Conversations {
         self.answer_waiting().await;
     }
 
+    // Tells the agent answering the comments on `proposal`'s cluster that the user approved it, so
+    // it updates the proposals the approval affects. `edited` when the user changed it first.
+    pub async fn approved(&self, proposal: &Proposal, edited: bool) {
+        let Some(comment) = &proposal.comment else {
+            return;
+        };
+        let Some(key) = (self.0.clusters.read().await)
+            .get(&proposal.pull_request_url)
+            .cloned()
+        else {
+            return;
+        };
+        let edited = match edited {
+            true => " after editing it: read what was posted on GitHub",
+            false => "",
+        };
+        // A cluster's agent that is gone is replaced only when it has proposals to update.
+        let start = {
+            let clusters = self.0.clusters.read().await;
+            (proposals::load(crate::db()).iter()).any(|other| {
+                other.comment.is_some()
+                    && clusters
+                        .get(&other.pull_request_url)
+                        .is_some_and(|k| k.url == key.url)
+            })
+        };
+        let message = format!(
+            "{login} approved the proposal {id} on {url} (\"{summary}\"), answering {comment}, and \
+gem ran it{edited}. Update the open proposals it affects, each by proposing its new version with \
+`replaces`.",
+            login = login(),
+            id = proposal.id,
+            url = proposal.pull_request_url,
+            summary = proposal.summary,
+            comment = comment.url,
+        );
+        self.tell(key, message, Vec::new(), start).await;
+    }
+
     // Each PR's reason its failed checks have no proposal, while they still wait on the user.
     pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
         let prs = self.0.prs.read().await;
@@ -332,7 +371,33 @@ impl Conversations {
         }
     }
 
-    pub async fn refresh(&self, prs: &[SearchedPullRequest]) {
+    // `clusters` hold `prs`, oldest pull request first.
+    pub async fn refresh(&self, prs: &[SearchedPullRequest], clusters: &[PullRequestCluster]) {
+        {
+            let mut threads = self.0.threads.lock().await;
+            let closed: Vec<String> = (threads.keys())
+                .filter(|pr| !prs.iter().any(|open| open.url == **pr))
+                .cloned()
+                .collect();
+            threads.retain(|pr, _| !closed.contains(pr));
+            save("DELETE FROM cluster_agents WHERE pr = ?1", closed.iter().map(|pr| [pr]));
+        }
+        {
+            let by_url: HashMap<&str, &SearchedPullRequest> =
+                prs.iter().map(|pr| (pr.url.as_str(), pr)).collect();
+            let mut keys = self.0.clusters.write().await;
+            keys.clear();
+            for cluster in clusters {
+                let Some(oldest) = (cluster.pull_requests.first())
+                    .and_then(|pr| by_url.get(pr.url.as_str()))
+                else {
+                    continue;
+                };
+                for pr in &cluster.pull_requests {
+                    keys.insert(pr.url.clone(), Target::new(oldest));
+                }
+            }
+        }
         let changed: Vec<&SearchedPullRequest> = {
             let known = self.0.prs.read().await;
             prs.iter()
@@ -372,11 +437,13 @@ impl Conversations {
                 }
             }
             // An agent's token goes once what it answers no longer waits on the user, when its
-            // proposals no longer show. A PR whose fetch failed keeps its agents' tokens.
+            // proposals no longer show, and a cluster's once its oldest pull request closes. A PR
+            // whose fetch failed keeps its agents' tokens.
             Tokens::here()
                 .retain(|subject| match subject {
                     Subject::Investigation { .. } => true,
-                    Subject::Comment { pr, .. } | Subject::CheckFailure { pr, .. } => {
+                    Subject::Cluster { pr } => prs.iter().any(|open| open.url == *pr),
+                    Subject::CheckFailure { pr, .. } => {
                         prs.iter().any(|open| open.url == *pr)
                             && known.get(pr).is_none_or(|known| {
                                 known.waiting.iter().any(|c| c.id() == subject.id())
@@ -401,73 +468,209 @@ impl Conversations {
         self.answer_waiting().await;
     }
 
-    // Queues an agent for each waiting conversation that no agent was queued for.
+    // Queues an agent for each waiting failed checks no agent was queued for, and sends each
+    // cluster's agent the comments waiting on the user it was not sent, each with its proposals
+    // whose patches went stale. A comment with no proposal on a cluster with no agent is sent
+    // again: the agent it went to is gone, such as when its oldest pull request closed.
     async fn answer_waiting(&self) {
+        let proposals = proposals::load(crate::db());
+        let answered: HashSet<&str> = (proposals.iter())
+            .filter_map(|p| p.comment.as_ref().map(|c| c.id.as_str()))
+            .collect();
         let known = self.0.prs.read().await;
+        let clusters = self.0.clusters.read().await;
+        let threads = self.0.threads.lock().await.clone();
+        let answering: HashSet<String> = self.0.answering.lock().await.keys().cloned().collect();
         let mut handled = self.0.handled.lock().await;
+        // By the URL of the cluster's oldest pull request: it, the comments asked about, and their
+        // IDs.
+        let mut asks: HashMap<String, (Target, Vec<String>, Vec<String>)> = HashMap::new();
         for pr in known.values() {
             for conversation in &pr.waiting {
-                if !handled.insert(conversation.id().to_string()) {
-                    continue;
-                }
-                let (title, _) = conversation.prompt(&pr.target);
-                let answering = Answering {
-                    pr: pr.target.url.clone(),
-                    title,
-                    thread_id: None,
-                    queued_at: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(0, |since| since.as_secs() as i64),
-                };
-                (self.0.answering.lock().await).insert(conversation.id().to_string(), answering);
-                let this = self.clone();
-                let pr = pr.target.clone();
-                let conversation = conversation.clone();
-                tokio::spawn(async move {
-                    let _permit = this.0.agents.acquire().await.unwrap();
-                    {
-                        let mut started = this.0.started.lock().await;
-                        started.insert(conversation.id().to_string());
-                        save(
-                            "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                            [[conversation.id()]],
-                        );
-                    }
-                    let id = conversation.id();
-                    let (title, prompt) = conversation.prompt(&pr);
-                    let subject = conversation.subject(&pr.url);
-                    let started = match mcp::agent_config(&subject).await {
-                        Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
-                        Err(error) => Err(error),
-                    };
-                    match started {
-                        Ok(thread_id) => {
-                            if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
-                                answering.thread_id = Some(thread_id.clone());
-                            }
-                            let reply = t3::wait(&thread_id).await;
-                            if let Conversation::Checks { check_failure } = &conversation {
-                                let reply = reply.trim();
-                                investigations::archive(&title, &pr.url, check_failure, reply)
-                                    .await;
-                                if !proposals::exist_for(id).await {
-                                    let mut no_proposal = this.0.no_proposal.lock().await;
-                                    save(
-                                        "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
-                                         VALUES (?1, ?2)",
-                                        [params![id, reply]],
-                                    );
-                                    no_proposal.insert(id.to_string(), reply.to_string());
-                                }
-                            }
+                let id = conversation.id().to_string();
+                match conversation {
+                    Conversation::Comment { thread_id, comment } => {
+                        let Some(key) = clusters.get(&pr.target.url) else {
+                            continue;
+                        };
+                        let orphaned = !answered.contains(id.as_str())
+                            && !threads.contains_key(&key.url)
+                            && !answering.contains(&key.url);
+                        if !handled.insert(id.clone()) && !orphaned {
+                            continue;
                         }
-                        Err(e) => eprintln!("{title}: {e}"),
+                        let removed: Vec<&Proposal> = (proposals.iter())
+                            .filter(|p| p.error == proposals::STALE)
+                            .filter(|p| p.comment.as_ref().is_some_and(|c| c.id == id))
+                            .collect();
+                        let (_, asked, ids) = (asks.entry(key.url.clone()))
+                            .or_insert_with(|| (key.clone(), Vec::new(), Vec::new()));
+                        asked.push(ask(&pr.target, thread_id, comment, &removed));
+                        ids.push(id);
                     }
-                    this.0.answering.lock().await.remove(id);
-                });
+                    Conversation::Checks { check_failure } => {
+                        if handled.insert(id) {
+                            self.answer_checks(pr.target.clone(), check_failure.clone())
+                                .await;
+                        }
+                    }
+                }
             }
         }
+        for (key, asked, ids) in asks.into_values() {
+            self.tell(key, asked.join("\n"), ids, true).await;
+        }
     }
+
+    // Sends `message` to the agent answering the comments on the cluster whose oldest pull request
+    // is `key`, starting one when the cluster has none and `start`. `asked` are the IDs of the
+    // comments it asks about.
+    async fn tell(&self, key: Target, message: String, asked: Vec<String>, start: bool) {
+        let title = format!("Answer comments on {}#{}", key.full_name, key.number);
+        if start {
+            (self.0.answering.lock().await)
+                .entry(key.url.clone())
+                .or_insert_with(|| Answering {
+                    pr: key.url.clone(),
+                    title: title.clone(),
+                    thread_id: None,
+                    queued_at: now(),
+                });
+        }
+        let turn = Arc::clone(
+            (self.0.telling.lock().await)
+                .entry(key.url.clone())
+                .or_default(),
+        );
+        let this = self.clone();
+        tokio::spawn(async move {
+            let delivering = turn.lock().await;
+            let _permit = this.0.agents.acquire().await.unwrap();
+            let thread = this.0.threads.lock().await.get(&key.url).cloned();
+            let mut sent = Err("no agent answers the cluster's comments".to_string());
+            if let Some(thread_id) = thread {
+                sent = t3::send(&thread_id, &message).await.map(|()| thread_id);
+                if sent.is_err() {
+                    this.forget_thread(&key.url).await;
+                }
+            }
+            if sent.is_err() && start {
+                let subject = Subject::Cluster {
+                    pr: key.url.clone(),
+                };
+                let prompt = format!("{}\n\n{message}", answer(&key));
+                sent = match mcp::agent_config(&subject).await {
+                    Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                    Err(error) => Err(error),
+                };
+                if let Ok(thread_id) = &sent {
+                    (this.0.threads.lock().await).insert(key.url.clone(), thread_id.clone());
+                    save(
+                        "INSERT OR REPLACE INTO cluster_agents (pr, thread_id) VALUES (?1, ?2)",
+                        [params![key.url, thread_id]],
+                    );
+                }
+            }
+            match sent {
+                Ok(thread_id) => {
+                    {
+                        let mut started = this.0.started.lock().await;
+                        started.extend(asked.iter().cloned());
+                        save(
+                            "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
+                            asked.iter().map(|id| [id]),
+                        );
+                    }
+                    (this.0.answering.lock().await)
+                        .entry(key.url.clone())
+                        .or_insert_with(|| Answering {
+                            pr: key.url.clone(),
+                            title,
+                            thread_id: None,
+                            queued_at: now(),
+                        })
+                        .thread_id = Some(thread_id.clone());
+                    // The message reached the agent: later ones can be sent while it works, and
+                    // are its next turns.
+                    drop(delivering);
+                    t3::wait(&thread_id).await;
+                }
+                // The next refresh asks about them again.
+                Err(e) => {
+                    eprintln!("{title}: {e}");
+                    (this.0.handled.lock().await).retain(|id| !asked.contains(id));
+                }
+            }
+            this.0.answering.lock().await.remove(&key.url);
+        });
+    }
+
+    // Forgets the thread answering the comments on the cluster whose oldest pull request is `pr`.
+    async fn forget_thread(&self, pr: &str) {
+        self.0.threads.lock().await.remove(pr);
+        save("DELETE FROM cluster_agents WHERE pr = ?1", [[pr]]);
+    }
+
+    // Queues an agent answering `failure` on `pr`.
+    async fn answer_checks(&self, pr: Target, failure: CheckFailure) {
+        let (title, prompt) = fix(&pr, &failure);
+        let answering = Answering {
+            pr: pr.url.clone(),
+            title: title.clone(),
+            thread_id: None,
+            queued_at: now(),
+        };
+        (self.0.answering.lock().await).insert(failure.id.clone(), answering);
+        let this = self.clone();
+        tokio::spawn(async move {
+            let _permit = this.0.agents.acquire().await.unwrap();
+            let id = failure.id.as_str();
+            {
+                let mut started = this.0.started.lock().await;
+                started.insert(id.to_string());
+                save(
+                    "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
+                    [[id]],
+                );
+            }
+            let subject = Subject::CheckFailure {
+                pr: pr.url.clone(),
+                id: id.to_string(),
+            };
+            let started = match mcp::agent_config(&subject).await {
+                Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
+                Err(error) => Err(error),
+            };
+            match started {
+                Ok(thread_id) => {
+                    if let Some(answering) = this.0.answering.lock().await.get_mut(id) {
+                        answering.thread_id = Some(thread_id.clone());
+                    }
+                    let reply = t3::wait(&thread_id).await;
+                    let reply = reply.trim();
+                    investigations::archive(&title, &pr.url, &failure, reply).await;
+                    if !proposals::exist_for(id).await {
+                        let mut no_proposal = this.0.no_proposal.lock().await;
+                        save(
+                            "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
+                             VALUES (?1, ?2)",
+                            [params![id, reply]],
+                        );
+                        no_proposal.insert(id.to_string(), reply.to_string());
+                    }
+                }
+                Err(e) => eprintln!("{title}: {e}"),
+            }
+            this.0.answering.lock().await.remove(id);
+        });
+    }
+}
+
+// Seconds since the epoch.
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
 }
 
 // What an agent needs to know about the PR it answers on.
@@ -490,44 +693,84 @@ impl Target {
     }
 }
 
-// The title and prompt of the agent answering `comment`. Replaying 20 past comments, this answered
-// as often as longer prompts that also listed the steps, said to read the pull request, and
-// introduced `execute`, or more often. Without "once per reasonable alternative", agents made one
-// proposal and answered far less often.
-fn answer(pr: &Target, thread_id: &Option<String>, comment: &Comment) -> (String, String) {
-    let where_ = match thread_id {
-        Some(thread) => format!("in the review thread {thread}"),
-        None => "in the pull request's top-level comments".to_string(),
+// The prompt of the agent answering the comments on the cluster whose oldest pull request is `key`,
+// before the comments it starts on. It keeps the wording of the prompt that answered one comment:
+// replaying 20 past comments, that answered as often as longer prompts that also listed the steps,
+// said to read the pull request, and introduced `execute`, or more often. Without "once per
+// reasonable alternative", agents made one proposal and answered far less often.
+fn answer(key: &Target) -> String {
+    format!(
+        "You answer the comments waiting on {login} on the cluster of their pull requests holding \
+{url} (\"{title}\"): `gem.cluster({url:?})` shows it now, with what is already proposed. gem sends \
+you each comment in this thread as it comes, and tells you when {login} approves a proposal. A \
+message can be out of date by the time you read it: check what is proposed now, and skip a change \
+an earlier message already made.
+
+Record how {login} should answer each comment with `gem.propose`, with `pr` the pull request it is \
+on, and `comment` and `thread` as given. Propose once per reasonable alternative. To change a \
+proposal, propose its new version with `replaces` set to its ID.
+
+Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
+
+When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
+settle this thread, and again after answering each message gem sends. Then reply with one line \
+saying what you proposed.",
+        login = login(),
+        url = key.url,
+        title = key.title,
+    )
+}
+
+// Asks a cluster's agent to answer `comment` on `pr`, saying which proposals answering it went
+// stale and need replacing.
+fn ask(
+    pr: &Target,
+    thread_id: &Option<String>,
+    comment: &Comment,
+    removed: &[&Proposal],
+) -> String {
+    let (where_, thread) = match thread_id {
+        Some(thread) => (
+            format!("in the review thread {thread}"),
+            format!(", `thread` {thread:?}"),
+        ),
+        None => (
+            "in the pull request's top-level comments".to_string(),
+            String::new(),
+        ),
     };
     let quoted: String = comment
         .body
         .lines()
         .map(|line| format!("> {line}\n"))
         .collect();
+    let removed = match removed {
+        [] => String::new(),
+        removed => {
+            let listed: String = (removed.iter())
+                .map(|p| format!("- {} ({})\n", p.summary, p.id))
+                .collect();
+            format!(
+                "
+These proposals answering it have patches made against older heads of the pull requests. Replace \
+each with one against the new heads, with `replaces`:
 
-    let prompt = format!(
-        "{author} is waiting on {login} {where_} on the pull request {url} (\"{title}\"). Their latest \
-comment ({comment_url}):
+{listed}"
+            )
+        }
+    };
+    format!(
+        "{author} is waiting on {login} {where_} on the pull request {url} (\"{title}\"). Their \
+latest comment ({comment_url}), with `comment` {id:?}{thread}:
 
-{quoted}
-Record how {login} should answer with `gem.propose`, with `pr` {url}. Propose once per reasonable \
-alternative.
-
-Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
-
-When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
-settle this thread. Then reply with one line saying what you proposed.",
+{quoted}{removed}",
         author = comment.author,
         login = login(),
         url = pr.url,
         title = pr.title,
         comment_url = comment.url,
-    );
-    let title = format!(
-        "Answer {} on {}#{}",
-        comment.author, pr.full_name, pr.number
-    );
-    (title, prompt)
+        id = comment.id,
+    )
 }
 
 // The title and prompt of the agent answering `failure`.
