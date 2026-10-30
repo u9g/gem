@@ -118,6 +118,9 @@ async fn approve_proposal(
         return Err(format!("no proposal {id}"));
     };
     tracing::Span::current().record("pull_request", proposal.pull_request_url.as_str());
+    if proposal.error == STALE {
+        return Err(STALE.to_string());
+    }
     let closes = proposal.close_pull_request;
     if !reply.is_empty() && !proposal.reply.is_empty() {
         proposal.reply = reply.to_string();
@@ -158,15 +161,15 @@ async fn approve_proposal(
 }
 
 // Why a proposal answering a comment waits on its agent: set once its patches went stale.
-const STALE: &str = "Its patch was made against an older head; the agent is updating it.";
+pub const STALE: &str = "Its patch was made against an older head; the agent is updating it.";
 
 // A proposal is stale once it has a patch written against a head commit its branch has since moved
 // past, or for another pull request no longer open, keyed by open PR URL in `heads`. Failed checks
 // are answered again against the new heads, so every proposal answering them goes, and their IDs
 // are returned. A stale proposal answering a comment stays, marked STALE, for its cluster's agent
-// to replace: the ones newly marked are returned. An investigation's proposals are independent, so
-// only its stale ones go.
-pub async fn remove_stale(heads: &HashMap<&str, &str>) -> (HashSet<String>, Vec<Proposal>) {
+// to replace: the IDs of the comments with ones newly marked are returned too. An investigation's
+// proposals are independent, so only its stale ones go.
+pub async fn remove_stale(heads: &HashMap<&str, &str>) -> HashSet<String> {
     let moved = |pr: &str, patch: &Patch| {
         !patch.head_oid.is_empty() && heads.get(pr).is_some_and(|head| *head != patch.head_oid)
     };
@@ -182,26 +185,25 @@ pub async fn remove_stale(heads: &HashMap<&str, &str>) -> (HashSet<String>, Vec<
                 })
         })
         .collect();
-    let failures: HashSet<String> = (stale.iter())
+    let mut again: HashSet<String> = (stale.iter())
         .filter_map(|p| p.check_failure.as_ref().map(|f| f.id.clone()))
         .collect();
-    let mut comments = Vec::new();
     for proposal in &proposals {
         let answers_stale =
-            (proposal.check_failure.as_ref()).is_some_and(|f| failures.contains(&f.id));
+            (proposal.check_failure.as_ref()).is_some_and(|f| again.contains(&f.id));
         let is_stale = stale.iter().any(|p| p.id == proposal.id);
-        if proposal.comment.is_some() {
+        if let Some(comment) = &proposal.comment {
             if is_stale && proposal.error != STALE {
                 let mut marked = proposal.clone();
                 marked.error = STALE.to_string();
                 save(crate::db(), &marked);
-                comments.push(marked);
+                again.insert(comment.id.clone());
             }
         } else if answers_stale || is_stale {
             delete(&proposal.id);
         }
     }
-    (failures, comments)
+    again
 }
 
 // Deletes every proposal on the PRs at `urls`, except investigations'.
@@ -797,14 +799,26 @@ pub async fn propose(
         other_patches: checked,
         open_pull_request,
     };
-    db.with(|db| {
-        db.execute(
+    // The proposal it replaces may have been approved or dismissed meanwhile.
+    let recorded = db.with(|db| {
+        let tx = db.unchecked_transaction()?;
+        if let Some(replaced) = &replaced
+            && tx.execute("DELETE FROM proposals WHERE id = ?1", [replaced])? == 0
+        {
+            return Ok(false);
+        }
+        tx.execute(
             "INSERT INTO proposals (id, proposal) VALUES (?1, ?2)",
             params![proposal.id, serde_json::to_string(&proposal).unwrap()],
-        )
+        )?;
+        tx.commit()?;
+        Ok(true)
     })?;
-    if let Some(replaced) = replaced {
-        db.with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", [replaced]))?;
+    if !recorded {
+        return Err(format!(
+            "proposal {} is gone: the user approved or dismissed it",
+            replaced.unwrap_or_default()
+        ));
     }
     Ok(proposal.id)
 }

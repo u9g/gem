@@ -156,11 +156,21 @@ pub async fn show(thread_id: &str) -> Option<(bool, String)> {
 }
 
 // Returns the thread's latest reply once its agent stops working: it finished, stopped, or waits
-// on the user.
+// on the user. Returns nothing once the thread cannot be read 3 times in a row, such as when it
+// was deleted.
 pub async fn wait(thread_id: &str) -> String {
+    let mut unread = 0;
     loop {
         tokio::time::sleep(Duration::from_secs(10)).await;
-        if let Some((false, reply)) = show(thread_id).await {
+        let Some((working, reply)) = show(thread_id).await else {
+            unread += 1;
+            if unread == 3 {
+                return String::new();
+            }
+            continue;
+        };
+        unread = 0;
+        if !working {
             return reply;
         }
     }

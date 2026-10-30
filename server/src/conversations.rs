@@ -316,7 +316,7 @@ impl Conversations {
             no_proposal.retain(|id, _| !ids.contains(id));
             save("DELETE FROM no_proposal_reasons WHERE id = ?1", ids.iter().map(|id| [id]));
         }
-        self.answer_waiting(Vec::new()).await;
+        self.answer_waiting().await;
     }
 
     // Tells the agent answering the comments on `proposal`'s cluster that the user approved it, so
@@ -335,6 +335,16 @@ impl Conversations {
             true => " after editing it: read what was posted on GitHub",
             false => "",
         };
+        // A cluster's agent that is gone is replaced only when it has proposals to update.
+        let start = {
+            let clusters = self.0.clusters.read().await;
+            (proposals::load(crate::db()).iter()).any(|other| {
+                other.comment.is_some()
+                    && clusters
+                        .get(&other.pull_request_url)
+                        .is_some_and(|k| k.url == key.url)
+            })
+        };
         let message = format!(
             "{login} approved the proposal {id} on {url} (\"{summary}\"), answering {comment}, and \
 gem ran it{edited}. Update the open proposals it affects, each by proposing its new version with \
@@ -345,7 +355,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
             summary = proposal.summary,
             comment = comment.url,
         );
-        self.tell(key, message, Vec::new()).await;
+        self.tell(key, message, Vec::new(), start).await;
     }
 
     // Each PR's reason its failed checks have no proposal, while they still wait on the user.
@@ -363,7 +373,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
 
     // `clusters` hold `prs`, oldest pull request first.
     pub async fn refresh(&self, prs: &[SearchedPullRequest], clusters: &[PullRequestCluster]) {
-        let closed: Vec<String> = {
+        {
             let mut threads = self.0.threads.lock().await;
             let closed: Vec<String> = (threads.keys())
                 .filter(|pr| !prs.iter().any(|open| open.url == **pr))
@@ -371,35 +381,6 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                 .collect();
             threads.retain(|pr, _| !closed.contains(pr));
             save("DELETE FROM cluster_agents WHERE pr = ?1", closed.iter().map(|pr| [pr]));
-            closed
-        };
-        // The comments sent to an agent whose oldest pull request closed, which it proposed
-        // nothing for yet, go to their cluster's next agent.
-        let orphaned: Vec<String> = {
-            let keys = self.0.clusters.read().await;
-            let known = self.0.prs.read().await;
-            let mut orphaned = Vec::new();
-            for (url, known) in known.iter() {
-                if !keys.get(url).is_some_and(|key| closed.contains(&key.url)) {
-                    continue;
-                }
-                for conversation in &known.waiting {
-                    if let Conversation::Comment { comment, .. } = conversation
-                        && !proposals::exist_for(&comment.id).await
-                    {
-                        orphaned.push(comment.id.clone());
-                    }
-                }
-            }
-            orphaned
-        };
-        if !orphaned.is_empty() {
-            self.0.started.lock().await.retain(|id| !orphaned.contains(id));
-            save(
-                "DELETE FROM started_conversations WHERE id = ?1",
-                orphaned.iter().map(|id| [id]),
-            );
-            self.0.handled.lock().await.retain(|id| !orphaned.contains(id));
         }
         {
             let by_url: HashMap<&str, &SearchedPullRequest> =
@@ -476,11 +457,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
             .iter()
             .map(|pr| (pr.url.as_str(), pr.head_oid.as_str()))
             .collect();
-        let (failures, comments) = proposals::remove_stale(&heads).await;
-        let stale: HashSet<String> = (comments.iter())
-            .filter_map(|p| p.comment.as_ref().map(|c| c.id.clone()))
-            .chain(failures)
-            .collect();
+        let stale = proposals::remove_stale(&heads).await;
         if !stale.is_empty() {
             let mut started = self.0.started.lock().await;
             started.retain(|id| !stale.contains(id));
@@ -488,15 +465,22 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
         }
 
         self.0.handled.lock().await.retain(|id| !stale.contains(id));
-        self.answer_waiting(comments).await;
+        self.answer_waiting().await;
     }
 
     // Queues an agent for each waiting failed checks no agent was queued for, and sends each
-    // cluster's agent the comments waiting on the user it was not sent. `stale` are proposals
-    // answering comments whose patches went stale, whose comments are sent again with them.
-    async fn answer_waiting(&self, stale: Vec<Proposal>) {
+    // cluster's agent the comments waiting on the user it was not sent, each with its proposals
+    // whose patches went stale. A comment with no proposal on a cluster with no agent is sent
+    // again: the agent it went to is gone, such as when its oldest pull request closed.
+    async fn answer_waiting(&self) {
+        let proposals = proposals::load(crate::db());
+        let answered: HashSet<&str> = (proposals.iter())
+            .filter_map(|p| p.comment.as_ref().map(|c| c.id.as_str()))
+            .collect();
         let known = self.0.prs.read().await;
         let clusters = self.0.clusters.read().await;
+        let threads = self.0.threads.lock().await.clone();
+        let answering: HashSet<String> = self.0.answering.lock().await.keys().cloned().collect();
         let mut handled = self.0.handled.lock().await;
         // By the URL of the cluster's oldest pull request: it, the comments asked about, and their
         // IDs.
@@ -509,10 +493,14 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                         let Some(key) = clusters.get(&pr.target.url) else {
                             continue;
                         };
-                        if !handled.insert(id.clone()) {
+                        let orphaned = !answered.contains(id.as_str())
+                            && !threads.contains_key(&key.url)
+                            && !answering.contains(&key.url);
+                        if !handled.insert(id.clone()) && !orphaned {
                             continue;
                         }
-                        let removed: Vec<&Proposal> = (stale.iter())
+                        let removed: Vec<&Proposal> = (proposals.iter())
+                            .filter(|p| p.error == proposals::STALE)
                             .filter(|p| p.comment.as_ref().is_some_and(|c| c.id == id))
                             .collect();
                         let (_, asked, ids) = (asks.entry(key.url.clone()))
@@ -530,16 +518,16 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
             }
         }
         for (key, asked, ids) in asks.into_values() {
-            self.tell(key, asked.join("\n"), ids).await;
+            self.tell(key, asked.join("\n"), ids, true).await;
         }
     }
 
     // Sends `message` to the agent answering the comments on the cluster whose oldest pull request
-    // is `key`. `asked` are the IDs of the comments it asks about: with any, an agent starts when
-    // the cluster has none.
-    async fn tell(&self, key: Target, message: String, asked: Vec<String>) {
+    // is `key`, starting one when the cluster has none and `start`. `asked` are the IDs of the
+    // comments it asks about.
+    async fn tell(&self, key: Target, message: String, asked: Vec<String>, start: bool) {
         let title = format!("Answer comments on {}#{}", key.full_name, key.number);
-        if !asked.is_empty() {
+        if start {
             (self.0.answering.lock().await)
                 .entry(key.url.clone())
                 .or_insert_with(|| Answering {
@@ -556,7 +544,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
         );
         let this = self.clone();
         tokio::spawn(async move {
-            let _turn = turn.lock().await;
+            let delivering = turn.lock().await;
             let _permit = this.0.agents.acquire().await.unwrap();
             let thread = this.0.threads.lock().await.get(&key.url).cloned();
             let mut sent = Err("no agent answers the cluster's comments".to_string());
@@ -566,7 +554,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                     this.forget_thread(&key.url).await;
                 }
             }
-            if sent.is_err() && !asked.is_empty() {
+            if sent.is_err() && start {
                 let subject = Subject::Cluster {
                     pr: key.url.clone(),
                 };
@@ -602,6 +590,9 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                             queued_at: now(),
                         })
                         .thread_id = Some(thread_id.clone());
+                    // The message reached the agent: later ones can be sent while it works, and
+                    // are its next turns.
+                    drop(delivering);
                     t3::wait(&thread_id).await;
                 }
                 // The next refresh asks about them again.
@@ -711,7 +702,9 @@ fn answer(key: &Target) -> String {
     format!(
         "You answer the comments waiting on {login} on the cluster of their pull requests holding \
 {url} (\"{title}\"): `gem.cluster({url:?})` shows it now, with what is already proposed. gem sends \
-you each comment in this thread as it comes, and tells you when {login} approves a proposal.
+you each comment in this thread as it comes, and tells you when {login} approves a proposal. A \
+message can be out of date by the time you read it: check what is proposed now, and skip a change \
+an earlier message already made.
 
 Record how {login} should answer each comment with `gem.propose`, with `pr` the pull request it is \
 on, and `comment` and `thread` as given. Propose once per reasonable alternative. To change a \
