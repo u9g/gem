@@ -16,7 +16,7 @@ export const Sidebar: StoryObj = {
     <View style={{ minHeight: '100%', width: 375, padding: 8, backgroundColor: '#1D2630' }}>
       <SectionTitle>Agents</SectionTitle>
       {agents.map((agent, i) => (
-        <AgentRow key={agent.str('id')} agent={agent} selected={i === 1} onPress={() => {}} />
+        <AgentRow key={agent.id} agent={agent} selected={i === 1} onPress={() => {}} />
       ))}
     </View>
   ),

@@ -1,20 +1,19 @@
+import type { Write, Shape } from '../../db';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Node } from '../../db';
-import type { Input } from '../../memory';
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
-import type { Agent, AgentState, PullRequest } from '../../shapes';
+import { Agent, AgentState, PullRequest } from '../../shapes';
 import { Icon, t3 } from '../../t3';
 import { mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // A pull request being made up, before it's stored.
-type Row = { -readonly [K in keyof Input<PullRequest>]: Input<PullRequest>[K] };
+type Row = { -readonly [K in keyof Write<typeof PullRequest>]: Write<typeof PullRequest>[K] };
 // The rows as the components read them.
-const nodes = <S,>(rows: readonly Input<S>[]) => rows.map((row) => stored<S>(row));
+const views = <S extends Shape>(shape: S, rows: readonly Write<S>[]) => rows.map((row) => stored(shape, row));
 
 // Made-up cluster: one change across three repositories.
 const pullRequest = (
@@ -47,16 +46,16 @@ const moved = (id: string, to: Row) => ({ ...proposals.find((p) => p.id === id)!
 agents.proposals = proposals.filter((p) => !['quote-reply', 'failed'].includes(p.id ?? ''));
 agentsJs.proposals = [moved('quote-reply', agentsJs)];
 pending.proposals = [moved('failed', pending)];
-const cluster = nodes<PullRequest>([agents, agentsJs, protocol, pending]);
+const cluster = views(PullRequest, [agents, agentsJs, protocol, pending]);
 
-function ref(pr: Node<PullRequest>) {
-  return `${pr.node('repository')?.str('name')}#${pr.num('number')}`;
+function ref(pr: PullRequest) {
+  return `${pr.repository?.name}#${pr.number}`;
 }
 
 // Checks on the head commit: failed, passed, or still running.
-function ChecksIcon({ pr, size = 14 }: { pr: Node<PullRequest>; size?: number }) {
-  if (pr.bool('checksFailing')) return <Icon icon={CircleX} size={size} color={t3.deletion} />;
-  if (pr.bool('checksPassing')) return <Icon icon={CircleCheck} size={size} color={t3.addition} />;
+function ChecksIcon({ pr, size = 14 }: { pr: PullRequest; size?: number }) {
+  if (pr.checksFailing) return <Icon icon={CircleX} size={size} color={t3.deletion} />;
+  if (pr.checksPassing) return <Icon icon={CircleCheck} size={size} color={t3.addition} />;
   return <Icon icon={CircleDashed} size={size} color={t3.warning} />;
 }
 
@@ -75,13 +74,13 @@ function Title({ children }: { children?: ReactNode }) {
   );
 }
 
-function Page({ header, proposalsShown }: { header: ReactNode; proposalsShown: Node<PullRequest>[] }) {
+function Page({ header, proposalsShown }: { header: ReactNode; proposalsShown: PullRequest[] }) {
   return (
     <View style={styles.page}>
       <View style={styles.column}>
         {header}
-        {bySubject(proposalsShown.flatMap((pr) => pr.list('proposals'))).map((group) => (
-          <ProposalGroup key={group[0].str('id')} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
+        {bySubject(proposalsShown.flatMap((pr) => pr.proposals)).map((group) => (
+          <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
         ))}
       </View>
     </View>
@@ -100,11 +99,11 @@ function Chips() {
         <Title>
           <View style={styles.chips}>
             {cluster.map((pr) => (
-              <Pressable key={pr.str('url')} style={styles.chip}>
+              <Pressable key={pr.url} style={styles.chip}>
                 <ChecksIcon pr={pr} size={12} />
                 <Text style={styles.chipText}>{ref(pr)}</Text>
-                {pr.bool('approved') && <Check size={12} color={t3.addition} strokeWidth={2.5} />}
-                <Count n={pr.list('proposals').length} />
+                {pr.approved && <Check size={12} color={t3.addition} strokeWidth={2.5} />}
+                <Count n={pr.proposals.length} />
               </Pressable>
             ))}
           </View>
@@ -136,8 +135,8 @@ function List() {
 // The PRs are tabs over the conversations: All, then one per PR with its checks and how many
 // proposals wait on it. Picking one shows its title and only its conversations.
 function Tabs() {
-  const [picked, setPicked] = useState<Node<PullRequest>>();
-  const total = cluster.reduce((n, pr) => n + pr.list('proposals').length, 0);
+  const [picked, setPicked] = useState<PullRequest>();
+  const total = cluster.reduce((n, pr) => n + pr.proposals.length, 0);
   return (
     <Page
       proposalsShown={picked ? [picked] : cluster}
@@ -150,23 +149,23 @@ function Tabs() {
               <Count n={total} />
             </Pressable>
             {cluster.map((pr) => (
-              <Pressable key={pr.str('url')} onPress={() => setPicked(pr)} style={[styles.tab, picked === pr && styles.tabOn]}>
+              <Pressable key={pr.url} onPress={() => setPicked(pr)} style={[styles.tab, picked === pr && styles.tabOn]}>
                 <ChecksIcon pr={pr} size={12} />
                 <Text style={[styles.tabText, picked === pr && { color: t3.foreground }]}>{ref(pr)}</Text>
-                <Count n={pr.list('proposals').length} />
+                <Count n={pr.proposals.length} />
               </Pressable>
             ))}
           </View>
           {picked && (
             <Text style={styles.meta}>
-              <Text style={{ color: t3.foreground }}>{picked.str('title')}</Text>
+              <Text style={{ color: t3.foreground }}>{picked.title}</Text>
               {'  ·  '}
-              <Text style={picked.bool('approved') && { color: t3.addition }}>
-                {picked.bool('approved') ? 'Approved' : 'Review required'}
+              <Text style={picked.approved && { color: t3.addition }}>
+                {picked.approved ? 'Approved' : 'Review required'}
               </Text>
               {'  ·  '}
-              <Text style={{ color: picked.bool('checksFailing') ? t3.deletion : picked.bool('checksPassing') ? t3.addition : t3.warning }}>
-                {picked.bool('checksFailing') ? 'Checks failing' : picked.bool('checksPassing') ? 'Checks passing' : 'Checks running'}
+              <Text style={{ color: picked.checksFailing ? t3.deletion : picked.checksPassing ? t3.addition : t3.warning }}>
+                {picked.checksFailing ? 'Checks failing' : picked.checksPassing ? 'Checks passing' : 'Checks running'}
               </Text>
             </Text>
           )}
@@ -185,7 +184,7 @@ export const CTabs: StoryObj = { name: 'C · Tabs', render: () => <Tabs /> };
 
 // Behind a base that requires it up to date, conflicting with its base, being rebased, and being
 // rebased by an agent with a question.
-const rebasing = nodes<PullRequest>([
+const rebasing = views(PullRequest, [
   { ...agents, behind: true },
   { ...pullRequest('client-sdk-swift', 611, 'Close data channels idle for 30 s', {}), behind: true, conflicts: true },
   { ...agentsJs, behind: true, rebasing: true },
@@ -200,7 +199,7 @@ export const DRebase: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={rebasing} agents={nodes<Agent>(rebasingAgents)} onRebase={() => {}} />
+          <PullRequestList pullRequests={rebasing} agents={views(Agent, rebasingAgents)} onRebase={() => {}} />
         </View>
       }
     />
@@ -247,7 +246,7 @@ const restarted = [
 ];
 
 // The agents on the rows above, as the server lists them.
-const agent = (id: string, title: string, url: string, state: AgentState = 'AGENT_STATE_WORKING'): Input<Agent> => ({
+const agent = (id: string, title: string, url: string, state: AgentState = 'AGENT_STATE_WORKING'): Write<typeof Agent> => ({
   id,
   title,
   pullRequestUrls: [url],
@@ -277,7 +276,7 @@ export const FRestarted: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={nodes<PullRequest>(restarted)} agents={nodes<Agent>(restartedAgents)} />
+          <PullRequestList pullRequests={views(PullRequest, restarted)} agents={views(Agent, restartedAgents)} />
         </View>
       }
     />
@@ -292,7 +291,7 @@ export const EStatus: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={nodes<PullRequest>(steps)} agents={nodes<Agent>(stepAgents)} onRebase={() => {}} />
+          <PullRequestList pullRequests={views(PullRequest, steps)} agents={views(Agent, stepAgents)} onRebase={() => {}} />
         </View>
       }
     />

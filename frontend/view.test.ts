@@ -10,9 +10,9 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { Hasher } from 'xitdb';
 
-import { BrowserSha1, type Db, type Kept, type Node, same, select } from './db';
+import { BrowserSha1, type Db, type Kept, same, select, shape, str, View } from './db';
 import { MemoryDb } from './memory';
-import { agentState, type Cluster, clusterKey, type Moment, mergeBy, view } from './shapes';
+import { clusterKey, type Moment, PullRequest, shown } from './shapes';
 import { Replica, viewBytes } from './view';
 
 // On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, as here:
@@ -68,50 +68,58 @@ test('the replica follows the bytes the server sends', { skip }, () => {
   assert.equal(replica.apply({ ...full.sent, fileId: '1' }, full.bytes), 'applied');
 });
 
-test('the getters read every stored shape as the server wrote it', { skip }, () => {
+test('views read every field kind as the server wrote it', { skip }, () => {
   const { full, first } = fixture();
-  const { clusters, agents, login, search } = view(replicaOf(full).moment());
+  const { clusters, agents, login, search } = shown(replicaOf(full).moment());
   assert.equal(login, first.login);
   assert.equal(search, first.search);
   assert.deepEqual(clusters.map(clusterKey), first.clusters.map((c: any) => c.pullRequests[0].url));
   const cluster = clusters[0];
   const expected = first.clusters[0];
   // Enums by name, and the first value when left out.
-  assert.equal(mergeBy(cluster), 'MERGE_BY_ADMIN');
-  const [even, odd] = cluster.list('pullRequests');
-  assert.equal(mergeBy(even), 'MERGE_BY_APPROVAL');
-  assert.equal(agentState(cluster.list('agents')[0]), 'AGENT_STATE_WAITING');
-  assert.equal(agentState(agents[0]), 'AGENT_STATE_WORKING');
+  assert.equal(cluster.mergeBy, 'MERGE_BY_ADMIN');
+  const [even, odd] = cluster.pullRequests;
+  assert.equal(even.mergeBy, 'MERGE_BY_APPROVAL');
+  assert.equal(cluster.agents[0].state, 'AGENT_STATE_WAITING');
+  assert.equal(agents[0].state, 'AGENT_STATE_WORKING');
   // Timestamps.
-  assert.equal(cluster.time('updatedAt')?.getTime(), Date.parse(expected.updatedAt));
-  assert.equal(odd.time('createdAt')?.getTime(), Date.parse(expected.pullRequests[1].createdAt));
+  assert.equal(cluster.updatedAt?.getTime(), Date.parse(expected.updatedAt));
+  assert.equal(odd.createdAt?.getTime(), Date.parse(expected.pullRequests[1].createdAt));
   // `bl`-tagged bools, and false when left out.
-  assert.equal(even.bool('approved'), true);
-  assert.equal(odd.bool('approved'), false);
-  assert.equal(odd.bool('checksFailing'), true);
+  assert.equal(even.approved, true);
+  assert.equal(odd.approved, false);
+  assert.equal(odd.checksFailing, true);
   // 32-bit integers, and 64-bit ones past 2^53.
-  assert.equal(odd.num('number'), 101);
-  assert.equal(odd.node('checks')?.num('failed'), 1);
-  assert.equal(even.node('checks')?.num('failed'), 0);
-  const check = odd.list('proposals')[0].node('checkFailure')!.list('checks')[0];
-  assert.equal(check.int64('workflowRunId'), 1152921504606846977n);
-  assert.equal(check.str('workflowRunId'), '1152921504606846977');
-  // Nested maps, lists and lists of strings.
-  assert.equal(odd.node('repository')?.str('name'), 'gem');
-  assert.deepEqual(cluster.list('agents')[0].strings('pullRequestUrls'), [`${clusterKey(cluster)}`]);
-  assert.equal(odd.list('proposals')[0].str('reply'), expected.pullRequests[1].proposals[0].reply);
+  assert.equal(odd.number, 101);
+  assert.equal(odd.checks?.failed, 1);
+  assert.equal(even.checks?.failed, 0);
+  const { workflowRunId } = odd.proposals[0].checkFailure!.checks[0];
+  assert.equal(workflowRunId, 1152921504606846977n);
+  // Nested messages, lists and lists of strings.
+  assert.equal(odd.repository?.name, 'gem');
+  assert.deepEqual(cluster.agents[0].pullRequestUrls, [clusterKey(cluster)]);
+  assert.equal(odd.proposals[0].reply, expected.pullRequests[1].proposals[0].reply);
   // Fields left out: their defaults, and no message.
-  assert.equal(odd.str('noProposalReason'), '');
-  assert.equal(odd.bool('rebasing'), false);
-  assert.equal(odd.has('files'), false);
-  assert.deepEqual(odd.list('files'), []);
-  assert.equal(odd.list('proposals')[0].node('comment'), undefined);
-  // The same stored value is the same node.
-  assert.equal(cluster.list('pullRequests')[1], odd);
+  assert.equal(odd.noProposalReason, '');
+  assert.equal(odd.rebasing, false);
+  assert.deepEqual(odd.files, []);
+  assert.equal(odd.proposals[0].comment, undefined);
+  assert.equal(agents[0].startedAt?.getTime(), Date.parse(first.agents[0].startedAt));
+  // They behave as plain objects: destructuring, mapping, spreading, and they can't be changed.
+  const { title, url } = odd;
+  assert.deepEqual([title, url], [expected.pullRequests[1].title, expected.pullRequests[1].url]);
+  assert.deepEqual({ ...odd.repository }, { owner: 'u9g', name: 'gem' });
+  assert.throws(() => {
+    (odd as { title: string }).title = 'changed';
+  });
+  assert.throws(() => (cluster.pullRequests as PullRequest[]).push(odd));
+  // The same stored value is the same view, and the same list the same array.
+  assert.equal(cluster.pullRequests[1], odd);
+  assert.equal(shown(replicaOf(full).moment()).clusters[0].pullRequests.length, 3);
 });
 
 // What `useDb` gives a component: React re-renders it when this is another value.
-function selecting<T>(db: Db, read: (moment: Node<Moment> | undefined) => T) {
+function selecting<T>(db: Db, read: (moment: Moment | undefined) => T) {
   let kept: Kept<T> | undefined;
   return () => (kept = select(db, read, kept)).value;
 }
@@ -121,25 +129,33 @@ test('a read changes only when what it read changed', { skip }, () => {
   const replica = replicaOf(full);
   let notified = 0;
   replica.subscribe(() => notified++);
-  const cluster = (key: string) => (moment: Node<Moment> | undefined) => moment?.node('clusters')?.at<Cluster>(key);
+  const cluster = (key: string) => (moment: Moment | undefined) => moment?.clusters.get(key);
   const untouched = selecting(replica, cluster('https://github.com/o/r/pull/2/0'));
   const renamed = selecting(replica, cluster('https://github.com/o/r/pull/1/0'));
-  const order = selecting(replica, (moment) => moment?.strings('order'));
-  const name = selecting(replica, (moment) => moment?.node('clusters')?.at<Cluster>('https://github.com/o/r/pull/2/0')?.str('name'));
-  const before = { untouched: untouched(), renamed: renamed(), order: order(), name: name() };
+  const order = selecting(replica, (moment) => moment?.order);
+  const name = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/2/0')?.name);
+  const before = { untouched: untouched()!, renamed: renamed()!, order: order(), name: name() };
   // Asked again with nothing applied, each is what it was.
   assert.equal(untouched(), before.untouched);
   assert.equal(order(), before.order);
 
   assert.equal(replica.apply(delta.sent, delta.bytes), 'applied');
   assert.equal(notified, 1);
-  // The cluster the change didn't touch is the same node, and what was read of it the same value,
-  // so a component that read it isn't rendered again.
+  // The cluster the change didn't touch is the same view, as are its lists and nested messages,
+  // and what was read of it the same value, so a component that read it isn't rendered again.
   assert.equal(untouched(), before.untouched);
+  assert.equal(untouched()!.pullRequests, before.untouched.pullRequests);
+  assert.equal(untouched()!.pullRequests[1].repository, before.untouched.pullRequests[1].repository);
   assert.equal(name(), before.name);
-  // The cluster it changed, and the order, are new.
-  assert.notEqual(renamed(), before.renamed);
-  assert.equal(renamed()?.str('name'), 'renamed');
+  // The cluster it changed, its list of pull requests and the one it changed, and the order, are
+  // new; the pull request in it that didn't change is the same view.
+  const changed = renamed()!;
+  assert.notEqual(changed, before.renamed);
+  assert.equal(changed.name, 'renamed');
+  assert.notEqual(changed.pullRequests, before.renamed.pullRequests);
+  assert.notEqual(changed.pullRequests[0], before.renamed.pullRequests[0]);
+  assert.equal(changed.pullRequests[1], before.renamed.pullRequests[1]);
+  assert.equal(changed.pullRequests[2].checks, undefined);
   assert.notEqual(order(), before.order);
   assert.deepEqual(order(), second.clusters.map((c: any) => c.pullRequests[0].url));
 });
@@ -147,7 +163,7 @@ test('a read changes only when what it read changed', { skip }, () => {
 test('reading one cluster reads nothing of the others', { skip }, () => {
   const { full } = fixture();
   const replica = replicaOf(full);
-  const { clusters } = view(replica.moment());
+  const { clusters } = shown(replica.moment());
   let lookups = 0;
   const digest = BrowserSha1.prototype.digest;
   BrowserSha1.prototype.digest = function (data) {
@@ -155,13 +171,20 @@ test('reading one cluster reads nothing of the others', { skip }, () => {
     return digest.call(this, data);
   };
   try {
-    clusters[0].str('name');
-    clusters[0].list('pullRequests')[0].str('title');
+    void clusters[0].name;
+    void clusters[0].pullRequests[0].title;
+    // Read again, each is kept on its view.
+    void clusters[0].name;
   } finally {
     BrowserSha1.prototype.digest = digest;
   }
   // One key looked up for each field read, and nothing else.
   assert.equal(lookups, 3);
+  // The fields not read are still getters.
+  const unread = (view: object, field: string) => Object.getOwnPropertyDescriptor(view, field)?.get !== undefined;
+  assert.ok(unread(clusters[0], 'agents'));
+  assert.ok(unread(clusters[0].pullRequests[1], 'title'));
+  assert.ok(clusters.slice(1).every((other) => unread(other, 'name') && unread(other, 'pullRequests')));
 });
 
 test('a fixture written in TypeScript reads like the server writes', () => {
@@ -186,21 +209,22 @@ test('a fixture written in TypeScript reads like the server writes', () => {
   });
   let notified = 0;
   db.subscribe(() => notified++);
-  const { clusters, login } = view(db.moment());
-  const [pr] = clusters[0].list('pullRequests');
+  const { clusters, login } = shown(db.moment());
+  const [pr] = clusters[0].pullRequests;
   assert.equal(login, 'u9g');
-  assert.equal(mergeBy(clusters[0]), 'MERGE_BY_APPROVAL');
-  assert.equal(clusters[0].time('updatedAt')?.toISOString(), '2026-10-31T12:00:00.000Z');
-  assert.equal(pr.bool('approved'), true);
-  assert.equal(pr.num('number'), 1);
-  assert.equal(pr.node('repository')?.str('owner'), 'livekit');
-  assert.equal(pr.list('proposals')[0].node('checkFailure')?.list('checks')[0].int64('workflowRunId'), 1n << 60n);
-  assert.equal(pr.bool('merging'), false);
+  assert.equal(clusters[0].mergeBy, 'MERGE_BY_APPROVAL');
+  assert.equal(clusters[0].updatedAt?.toISOString(), '2026-10-31T12:00:00.000Z');
+  assert.equal(pr.approved, true);
+  assert.equal(pr.number, 1);
+  assert.equal(pr.repository?.owner, 'livekit');
+  assert.equal(pr.proposals[0].checkFailure?.checks[0].workflowRunId, 1n << 60n);
+  assert.equal(pr.merging, false);
+  assert.ok(pr instanceof View);
   db.show({ login: 'other' });
   assert.equal(notified, 1);
-  assert.equal(view(db.moment()).login, 'other');
+  assert.equal(shown(db.moment()).login, 'other');
   // A value stored alone, as stories use one.
-  assert.equal(new MemoryDb().put<{ title: string }>({ title: 't' }).str('title'), 't');
+  assert.equal(new MemoryDb().put(shape({ title: str }), { title: 't' }).title, 't');
 });
 
 test('same compares what reads return', () => {

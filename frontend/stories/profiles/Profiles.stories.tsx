@@ -4,12 +4,12 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from '../../Board';
 import { clusterName, PhoneClusterRow } from '../../ClusterRow';
-import { DbContext, useDb } from '../../db';
-import { type Input, MemoryDb } from '../../memory';
+import { DbContext, useDb, type Write } from '../../db';
+import { MemoryDb } from '../../memory';
 import { ProfileChip, ProfileForm, ProfileSheet, ProfileTitle } from '../../Profiles';
 import { PullRequestList } from '../../PullRequestList';
 import { type Profile, type Project } from '../../server';
-import { type Cluster, clusterKey, view } from '../../shapes';
+import { Cluster, clusterKey, shown } from '../../shapes';
 import { Login } from '../../surfaces';
 import { t3 } from '../../t3';
 import { clusterMergeBy, mergeBy, proposalInputs as proposals } from '../fixtures';
@@ -22,7 +22,7 @@ const cluster = (
   name: string,
   updated: number,
   prs: { owner: string; repo: string; number: number; title: string; waiting?: number; approved?: boolean; checksPassing?: boolean; checksFailing?: boolean }[],
-): Input<Cluster> =>
+): Write<typeof Cluster> =>
   ({
     name,
     updatedAt: minutesAgo(updated),
@@ -40,7 +40,7 @@ const cluster = (
 
 // Made-up profiles: the same user's work split by organization, and a second GitHub account,
 // each with the clusters its server would list.
-const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: Input<Cluster>[] })[] = [
+const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: Write<typeof Cluster>[] })[] = [
   {
     id: 'livekit',
     name: 'LiveKit',
@@ -120,7 +120,7 @@ function Desktop() {
 }
 
 function DesktopBoard({ profile, switchTo }: { profile: Profile; switchTo: (id: string) => void }) {
-  const { clusters } = useDb(view);
+  const { clusters } = useDb(shown);
   const [selectedUrl, setSelectedUrl] = useState<string>();
   const selected = clusters.find((c) => clusterKey(c) === selectedUrl);
   return (
@@ -142,7 +142,7 @@ function DesktopBoard({ profile, switchTo }: { profile: Profile; switchTo: (id: 
           {selected && (
             <View style={styles.column}>
               <Text style={styles.title}>{clusterName(selected)}</Text>
-              <PullRequestList pullRequests={selected.list('pullRequests')} agents={[]} />
+              <PullRequestList pullRequests={selected.pullRequests} agents={[]} />
             </View>
           )}
         </Board>
@@ -162,7 +162,7 @@ function Phone() {
 }
 
 function PhoneList({ profile, switchTo }: { profile: Profile; switchTo: (id: string) => void }) {
-  const { clusters } = useDb(view);
+  const { clusters } = useDb(shown);
   return (
     <Login value={profile.login!}>
       <View style={styles.phoneFrame}>

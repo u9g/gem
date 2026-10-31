@@ -13,7 +13,7 @@ export const Digest: StoryObj = {
   render: () => (
     <View style={{ minHeight: '100%', padding: 24, gap: 28, backgroundColor: t3.background }}>
       {bySubject(proposals).map((group) => (
-        <ProposalGroup key={group[0].str('id')} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
+        <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
       ))}
     </View>
   ),
@@ -25,7 +25,7 @@ export const Checks: StoryObj = {
     <View style={{ minHeight: '100%', padding: 24, gap: 28, backgroundColor: t3.background }}>
       {bySubject(checkProposals).map((group) => (
         <ProposalGroup
-          key={group[0].str('id')}
+          key={group[0].id}
           proposals={group}
           onApprove={() => {}}
           onDismiss={() => {}}
@@ -40,11 +40,11 @@ export const OneApproving: StoryObj = {
   name: 'One approving',
   render: () => {
     const groups = bySubject(proposals);
-    const busy = new Set([groups[0][0].str('id')]);
+    const busy = new Set([groups[0][0].id]);
     return (
       <View style={{ minHeight: '100%', padding: 24, gap: 28, backgroundColor: t3.background }}>
         {groups.map((group) => (
-          <ProposalGroup key={group[0].str('id')} proposals={group} busy={busy} onApprove={() => {}} onDismiss={() => {}} />
+          <ProposalGroup key={group[0].id} proposals={group} busy={busy} onApprove={() => {}} onDismiss={() => {}} />
         ))}
       </View>
     );

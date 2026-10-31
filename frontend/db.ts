@@ -1,6 +1,18 @@
 import { sha1 } from '@noble/hashes/legacy.js';
 import { createContext, useContext, useRef, useSyncExternalStore } from 'react';
-import { Hasher, ReadArrayList, type ReadCursor, ReadHashMap } from 'xitdb';
+import {
+  Bytes,
+  Float,
+  Hasher,
+  Int,
+  ReadArrayList,
+  type ReadCursor,
+  ReadHashMap,
+  Uint,
+  WriteArrayList,
+  type WriteCursor,
+  WriteHashMap,
+} from 'xitdb';
 
 import type { Moment } from './shapes';
 
@@ -11,154 +23,194 @@ import type { Moment } from './shapes';
 // camelCase name to its value, with fields at their default left out; a list for a repeated
 // field; and bytes for strings, for enums (by name), for 64-bit integers (as decimal strings) and
 // for Timestamps (as RFC 3339), numbers for 32-bit integers, and the text `true` or `false`,
-// tagged `bl`, for bools. A `Node` is one stored message, read a field at a time with the getter
-// for its shape, which gives the field's default when it's missing. Shapes are plain types in
-// shapes.ts, not protobuf messages.
+// tagged `bl`, for bools. That form is ambiguous on its own (a decimal string, a time and a
+// string all look alike, and a missing key could be any type's default), so each message is
+// described once, at runtime, by a `shape` of field kinds (shapes.ts), from which come both its
+// TypeScript type and how each field is read and written.
+//
+// A message is read as a view: a read-only object of its type whose properties are getters, each
+// reading its field from the replica the first time it's used and keeping it. Nothing is read up
+// front, so a component reads only the fields it renders.
 //
 // What changed: committed data never changes in place, so a stored value whose slot (its tag and
-// its position in the file) is the same is the same value. Nodes are kept by slot, so an unchanged
-// message is the identical `Node` across changes, and `same` compares what a read returns: nodes
-// and everything else by identity, dates by time, and arrays and plain objects by their items.
+// its position in the file) is the same is the same value. Views and lists are kept by slot, so
+// what a change didn't touch is the identical object after it, and `same` compares what a read
+// returns: views, lists and everything else by identity, dates by time, and arrays and plain
+// objects by their items.
 
-// A Timestamp, as RFC 3339, and a 64-bit integer, as a decimal string, as stored.
-declare const rfc3339: unique symbol;
-export type Time = string & { readonly [rfc3339]: true };
-declare const decimal: unique symbol;
-export type Int64 = string & { readonly [decimal]: true };
-// A map keyed by data rather than by field names, like the clusters by key.
-declare const keyed: unique symbol;
-export type Keyed<V> = { readonly [keyed]: V };
+// How a field is read from the replica, as a `T`, and written, from an `I`. `cursor` is undefined
+// for a field left out, which reads as its default.
+export type Kind<T, I = T> = {
+  readonly read: (cursor: ReadCursor | undefined, views: Views) => T;
+  readonly write: (cursor: WriteCursor, value: I) => void;
+};
 
-type Of<S, K extends keyof S> = NonNullable<S[K]>;
-// The fields of `S` holding a `V`.
-type Fields<S, V> = { [K in keyof S]-?: Of<S, K> extends V ? K : never }[keyof S] & string;
-// The fields of `S` holding a message, or a keyed map.
-type Messages<S> = {
-  [K in keyof S]-?: Of<S, K> extends string | number | boolean | readonly unknown[] ? never : K;
-}[keyof S] &
-  string;
-// The fields of `S` holding a list of messages.
-type Lists<S> = {
-  [K in keyof S]-?: Of<S, K> extends readonly (infer U)[] ? (U extends string ? never : K) : never;
-}[keyof S] &
-  string;
-type Item<T> = T extends readonly (infer U)[] ? U : never;
+type Fields = { readonly [field: string]: Kind<unknown, never> };
+type Value<K> = K extends Kind<infer T, never> ? T : never;
+type Written<K> = K extends Kind<unknown, infer I> ? I : never;
 
-// The server's view database hashes keys with SHA-1. xitdb's own `Hasher` hashes with node's
-// crypto, which Metro resolves to an empty module on the web, so its `digest` is replaced with a
-// synchronous one in plain JavaScript. Everything in xitdb that hashes calls `db.hasher.digest`.
-export class BrowserSha1 extends Hasher {
-  constructor() {
-    super('SHA-1');
-  }
+// A message: its fields' kinds by their camelCase names.
+export type Shape<F extends Fields = Fields> = Kind<Message<F>, Partial<Input<F>>> & { readonly fields: F };
+type Message<F> = { readonly [K in keyof F]: Value<F[K]> };
+type Input<F> = { readonly [K in keyof F]?: Written<F[K]> };
 
-  override digest(data: Uint8Array): Uint8Array {
-    return sha1(data);
-  }
+// The type of a message of shape `S`, as it's read.
+export type Infer<S> = S extends Shape<infer F> ? Message<F> : never;
+// A message of shape `S` to write, for fixtures: any field can be left out.
+export type Write<S> = S extends Shape<infer F> ? Input<F> : never;
+
+// A scalar: `zero` when left out.
+function scalar<T, I>(zero: T, from: (stored: string | number | boolean) => T, to: (value: I) => Bytes | Uint | Int | Float): Kind<T, I> {
+  return {
+    read: (cursor) => (cursor ? from(stored(cursor)) : zero),
+    write: (cursor, value) => cursor.write(to(value)),
+  };
 }
 
-// One stored message, of shape `S`.
-export class Node<S = unknown> {
-  private map?: ReadHashMap;
+export const str = scalar('', String, (value: string) => new Bytes(value));
+// A 32-bit integer or a double.
+export const num = scalar(0, Number, (value: number) => {
+  if (!Number.isInteger(value)) return new Float(value);
+  return value < 0 ? new Int(value) : new Uint(value);
+});
+export const bool = scalar(false, isTrue, (value: boolean) => new Bytes(value ? 'true' : 'false', 'bl'));
+// A 64-bit integer, stored as a decimal string.
+export const int64 = scalar(0n, (value) => BigInt(value as string | number), (value: bigint) => new Bytes(value.toString()));
+// A Timestamp, stored as RFC 3339, or undefined when it isn't set.
+export const time = scalar<Date | undefined, Date | string>(
+  undefined,
+  (value) => new Date(String(value)),
+  (value) => new Bytes(typeof value === 'string' ? value : value.toISOString()),
+);
+// An enum, by its values' names, and `zero`, its first value, when left out.
+export const enumOf = <E extends string>(zero: E) => scalar<E, E>(zero, (value) => String(value) as E, (value) => new Bytes(value));
+
+// A message of fields `fields`, read as a view. As a list's items it's always there; as a field,
+// wrap it in `optional`, as a proto3 message field can be unset.
+export function shape<F extends Fields>(fields: F): Shape<F> {
+  const self: Shape<F> = {
+    fields,
+    read: (cursor, views) => {
+      if (!cursor) throw new Error('a message that is not stored');
+      return views.view(self, cursor) as Message<F>;
+    },
+    write: (cursor, value) => {
+      const map = new WriteHashMap(cursor);
+      for (const [name, field] of Object.entries(value)) {
+        if (field !== undefined && field !== null) (fields[name] as Kind<unknown, unknown>).write(map.putCursor(name), field);
+      }
+    },
+  };
+  return self;
+}
+
+// A message field, undefined when it isn't set.
+export function optional<S extends Shape>(message: S): Kind<Infer<S> | undefined, Write<S>> {
+  return {
+    read: (cursor, views) => (cursor ? (message.read(cursor, views) as Infer<S>) : undefined),
+    write: (cursor, value) => message.write(cursor, value),
+  };
+}
+
+const none: readonly never[] = Object.freeze([]);
+
+// A repeated field, of messages or scalars, empty when left out.
+export function list<T, I>(item: Kind<T, I>): Kind<readonly T[], readonly I[]> {
+  return {
+    read: (cursor, views) => (cursor ? views.list(cursor, item) : none),
+    write: (cursor, values) => {
+      const list = new WriteArrayList(cursor);
+      for (const value of values) item.write(list.appendCursor(), value);
+    },
+  };
+}
+
+// Messages keyed by data rather than by field names, like the clusters by key.
+export class Keyed<T> {
+  private kept = new Map<string, T | undefined>();
 
   constructor(
-    private readonly nodes: Nodes,
-    readonly cursor: ReadCursor,
-    // Its slot, in the file it was read from.
-    readonly id: string,
+    private readonly map: ReadHashMap | undefined,
+    private readonly item: Kind<T, never>,
+    private readonly views: Views,
   ) {}
 
-  private get fields(): ReadHashMap {
-    return (this.map ??= new ReadHashMap(this.cursor));
+  get(key: string): T | undefined {
+    if (!this.map) return undefined;
+    if (!this.kept.has(key)) {
+      const cursor = present(this.map.getCursor(key));
+      this.kept.set(key, cursor && this.item.read(cursor, this.views));
+    }
+    return this.kept.get(key);
   }
 
-  // The value of `field`, unless it's missing or empty.
-  private value(field: string): ReadCursor | undefined {
-    const cursor = this.fields.getCursor(field);
-    return cursor && cursor.slot().tag !== NONE ? cursor : undefined;
+  keys(): string[] {
+    if (!this.map) return [];
+    return [...this.map].map((pair) => decoder.decode(pair.readKeyValuePair().keyCursor.readBytes()));
   }
 
-  has(field: keyof S & string): boolean {
-    return this.value(field) !== undefined;
-  }
-
-  str(field: Fields<S, string>): string {
-    const value = this.value(field);
-    return value ? String(scalar(value)) : '';
-  }
-
-  // An enum, by its name, or `zero` when it holds its first value, which is left out.
-  enum<K extends Fields<S, string>>(field: K, zero: Of<S, K>): Of<S, K> {
-    const value = this.value(field);
-    return value ? (String(scalar(value)) as Of<S, K>) : zero;
-  }
-
-  num(field: Fields<S, number>): number {
-    const value = this.value(field);
-    return value ? Number(scalar(value)) : 0;
-  }
-
-  bool(field: Fields<S, boolean>): boolean {
-    const value = this.value(field);
-    return value ? isTrue(scalar(value)) : false;
-  }
-
-  int64(field: Fields<S, Int64>): bigint {
-    const value = this.value(field);
-    return value ? BigInt(scalar(value) as string | number) : 0n;
-  }
-
-  time(field: Fields<S, Time>): Date | undefined {
-    const value = this.value(field);
-    return value ? new Date(String(scalar(value))) : undefined;
-  }
-
-  node<K extends Messages<S>>(field: K): Node<Of<S, K>> | undefined {
-    const value = this.value(field);
-    return value && this.nodes.node(value);
-  }
-
-  list<K extends Lists<S>>(field: K): Node<Item<Of<S, K>>>[] {
-    const value = this.value(field);
-    return value ? this.nodes.list(value, (item) => this.nodes.node(item)) : [];
-  }
-
-  strings(field: Fields<S, readonly string[]>): string[] {
-    const value = this.value(field);
-    return value ? this.nodes.list(value, (item) => String(scalar(item))) : [];
-  }
-
-  // The message at `key` of a keyed map.
-  at<V = S extends Keyed<infer T> ? T : never>(key: string): Node<V> | undefined {
-    const value = this.value(key);
-    return value && this.nodes.node<V>(value);
+  entries(): [string, T][] {
+    return this.keys().map((key) => [key, this.get(key)!]);
   }
 }
 
-// The nodes and lists read from one file, by slot. A replica replaced by another file starts
-// another `Nodes`, so a node of the old file is never mistaken for one of the new.
-export class Nodes {
-  private static files = 0;
-  private readonly file = ++Nodes.files;
+export function keyed<S extends Shape>(message: S): Kind<Keyed<Infer<S>>, Readonly<Record<string, Write<S>>>> {
+  return {
+    read: (cursor, views) => {
+      const item = message as unknown as Kind<Infer<S>, never>;
+      return cursor ? views.keyed(cursor, item) : new Keyed(undefined, item, views);
+    },
+    write: (cursor, values) => {
+      const map = new WriteHashMap(cursor);
+      for (const [key, value] of Object.entries(values)) message.write(map.putCursor(key), value);
+    },
+  };
+}
+
+// The class of every view, so `same` compares them by identity rather than field by field.
+export class View {}
+
+// The views and lists read from one file, by slot. A replica replaced by another file starts
+// another `Views`, so a view of the old file is never mistaken for one of the new.
+export class Views {
   private known = new Map<string, unknown>();
+  private kinds = new Map<unknown, number>();
 
-  node<S>(cursor: ReadCursor): Node<S> {
-    const id = this.id(cursor);
-    let node = this.known.get(id) as Node<S> | undefined;
-    if (!node) this.known.set(id, (node = new Node<S>(this, cursor, id)));
-    return node;
+  // The view of the message of `shape` at `cursor`.
+  view(shape: Shape, cursor: ReadCursor): View {
+    return this.kept(shape, cursor, () => {
+      const map = new ReadHashMap(cursor);
+      const view = new View();
+      for (const [name, kind] of Object.entries(shape.fields)) {
+        Object.defineProperty(view, name, {
+          enumerable: true,
+          configurable: true,
+          get: () => {
+            const value = kind.read(present(map.getCursor(name)), this);
+            Object.defineProperty(view, name, { value, enumerable: true, writable: false, configurable: false });
+            return value;
+          },
+        });
+      }
+      return Object.preventExtensions(view);
+    });
   }
 
-  list<T>(cursor: ReadCursor, item: (cursor: ReadCursor) => T): T[] {
-    const id = `[${this.id(cursor)}]`;
-    let list = this.known.get(id) as T[] | undefined;
-    if (!list) this.known.set(id, (list = [...new ReadArrayList(cursor)].map(item)));
-    return list;
+  list<T>(cursor: ReadCursor, item: Kind<T, never>): readonly T[] {
+    return this.kept(item, cursor, () => Object.freeze([...new ReadArrayList(cursor)].map((value) => item.read(value, this))));
   }
 
-  private id(cursor: ReadCursor): string {
+  keyed<T>(cursor: ReadCursor, item: Kind<T, never>): Keyed<T> {
+    return this.kept(this, cursor, () => new Keyed(new ReadHashMap(cursor), item, this));
+  }
+
+  // What `make` made of the value at `cursor` as `kind`, kept by the value's slot.
+  private kept<T>(kind: unknown, cursor: ReadCursor, make: () => T): T {
+    if (!this.kinds.has(kind)) this.kinds.set(kind, this.kinds.size);
     const slot = cursor.slot();
-    return `${this.file}:${slot.tag}:${slot.value}`;
+    const at = `${this.kinds.get(kind)}:${slot.tag}:${slot.value}`;
+    if (!this.known.has(at)) this.known.set(at, make());
+    return this.known.get(at) as T;
   }
 }
 
@@ -183,7 +235,7 @@ function plain(value: unknown): value is Record<string, unknown> {
 export interface Db {
   subscribe: (listener: () => void) => () => void;
   version: () => number;
-  moment: () => Node<Moment> | undefined;
+  moment: () => Moment | undefined;
 }
 
 // Before a connection: nothing to read.
@@ -196,7 +248,7 @@ export type Kept<T> = { db: Db; version: number; read: unknown; value: T };
 
 // What `read` returns from `db` now, or what it returned before when that's the same, so that
 // React, which re-renders when this changes, re-renders only when what was read changed.
-export function select<T>(db: Db, read: (moment: Node<Moment> | undefined) => T, kept?: Kept<T>): Kept<T> {
+export function select<T>(db: Db, read: (moment: Moment | undefined) => T, kept?: Kept<T>): Kept<T> {
   const version = db.version();
   if (kept && kept.db === db && kept.version === version && kept.read === read) return kept;
   const value = read(db.moment());
@@ -207,17 +259,35 @@ export function select<T>(db: Db, read: (moment: Node<Moment> | undefined) => T,
 // What `read` returns from the latest moment of the database in context, read again after each
 // change, re-rendering the component only when it returns something else. `read` gets undefined
 // before the first sync.
-export function useDb<T>(read: (moment: Node<Moment> | undefined) => T): T {
+export function useDb<T>(read: (moment: Moment | undefined) => T): T {
   const db = useContext(DbContext);
   const kept = useRef<Kept<T>>(undefined);
   return useSyncExternalStore(db.subscribe, () => (kept.current = select(db, read, kept.current)).value);
 }
 
+// The server's view database hashes keys with SHA-1. xitdb's own `Hasher` hashes with node's
+// crypto, which Metro resolves to an empty module on the web, so its `digest` is replaced with a
+// synchronous one in plain JavaScript. Everything in xitdb that hashes calls `db.hasher.digest`.
+export class BrowserSha1 extends Hasher {
+  constructor() {
+    super('SHA-1');
+  }
+
+  override digest(data: Uint8Array): Uint8Array {
+    return sha1(data);
+  }
+}
+
 const decoder = new TextDecoder();
+
+// The value at `cursor`, unless it's missing or empty, as a field left out is.
+function present(cursor: ReadCursor | null): ReadCursor | undefined {
+  return cursor && cursor.slot().tag !== NONE ? cursor : undefined;
+}
 
 // A stored scalar: bytes as a string, or a bool when tagged `bl`, and integers as numbers, or
 // decimal strings past 2^53.
-function scalar(cursor: ReadCursor): string | number | boolean {
+function stored(cursor: ReadCursor): string | number | boolean {
   const slot = cursor.slot();
   switch (slot.tag) {
     case BYTES:

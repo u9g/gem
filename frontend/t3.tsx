@@ -12,7 +12,6 @@ import {
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-import type { Node } from './db';
 import type { Proposal } from './shapes';
 
 // T3 Code's dark-theme roles, over this app's background and text colors.
@@ -44,25 +43,25 @@ export function diffFiles(diff: string): DiffFile[] {
 }
 
 // T3 Code's work-log grouping: one sentence for what approving does.
-export function stepSentence(proposal: Node<Proposal>): string {
-  const patch = proposal.node('patch');
-  const others = proposal.list('otherPatches').length;
+export function stepSentence(proposal: Proposal): string {
+  const patch = proposal.patch;
+  const others = proposal.otherPatches.length;
   const phrases: string[] = [];
-  if (proposal.str('followUp')) phrases.push('start a follow-up agent');
+  if (proposal.followUp) phrases.push('start a follow-up agent');
   if (patch) {
-    const n = diffFiles(patch.str('diff')).length;
+    const n = diffFiles(patch.diff).length;
     phrases.push(`change ${n} ${n === 1 ? 'file' : 'files'}`);
   }
   if (others) {
     const n = others;
     phrases.push(`change ${n} other ${n === 1 ? 'pull request' : 'pull requests'}`);
   }
-  if (proposal.has('openPullRequest')) phrases.push('open a pull request');
-  if (proposal.str('reply')) phrases.push(proposal.str('threadId') ? 'reply in thread' : 'quote reply');
-  if (proposal.bool('resolveThread')) phrases.push('resolve');
-  if (proposal.bool('rerun')) phrases.push('rerun failed jobs');
-  if (proposal.bool('closePullRequest')) phrases.push('close the pull request');
-  if (proposal.str('requestedTool')) phrases.push('needs a new tool');
+  if (proposal.openPullRequest) phrases.push('open a pull request');
+  if (proposal.reply) phrases.push(proposal.threadId ? 'reply in thread' : 'quote reply');
+  if (proposal.resolveThread) phrases.push('resolve');
+  if (proposal.rerun) phrases.push('rerun failed jobs');
+  if (proposal.closePullRequest) phrases.push('close the pull request');
+  if (proposal.requestedTool) phrases.push('needs a new tool');
   const sentence =
     phrases.length > 1 ? `${phrases.slice(0, -1).join(', ')} and ${phrases[phrases.length - 1]}` : phrases[0] ?? '';
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
@@ -190,13 +189,13 @@ export function Sidebar({ title, children }: { title: string; children: ReactNod
   );
 }
 
-export function proposalIcon(proposal: Node<Proposal>) {
-  if (proposal.str('error')) return CircleAlert;
-  if (proposal.str('requestedTool')) return Hammer;
-  if (proposal.has('patch') || proposal.list('otherPatches').length) return SquarePen;
-  if (proposal.has('openPullRequest')) return GitPullRequestCreate;
-  if (proposal.str('followUp')) return Bot;
-  if (proposal.bool('rerun')) return RotateCcw;
+export function proposalIcon(proposal: Proposal) {
+  if (proposal.error) return CircleAlert;
+  if (proposal.requestedTool) return Hammer;
+  if (proposal.patch || proposal.otherPatches.length) return SquarePen;
+  if (proposal.openPullRequest) return GitPullRequestCreate;
+  if (proposal.followUp) return Bot;
+  if (proposal.rerun) return RotateCcw;
   return MessageCircle;
 }
 

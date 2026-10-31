@@ -5,9 +5,9 @@ import { View } from 'react-native';
 import { Board } from '../../Board';
 import { ClusterReview } from '../../ClusterFiles';
 import { AgentView } from '../../AgentView';
-import { DbContext, useDb } from '../../db';
-import { type Input, MemoryDb } from '../../memory';
-import { type Agent, type Cluster, clusterKey, type Proposal, type PullRequest, view } from '../../shapes';
+import { DbContext, useDb, type Write } from '../../db';
+import { MemoryDb } from '../../memory';
+import { Agent, Cluster, clusterKey, Proposal, PullRequest, shown } from '../../shapes';
 import { agentInputs as followed, clusterMergeBy, mergeBy, prFiles, proposalInputs as proposals } from '../fixtures';
 
 // Made-up clusters, at least one in each column. Stories render at the window's width, so view
@@ -21,12 +21,12 @@ type Fields = {
   checksFailing?: boolean;
   behind?: boolean;
   checks?: { total: number; done: number; failed: number };
-  proposals?: Input<Proposal>[];
+  proposals?: Write<typeof Proposal>[];
   merging?: boolean;
   files?: { path: string; patch: string }[];
 };
 
-const pullRequest = (name: string, number: number, title: string, fields: Fields): Input<PullRequest> => ({
+const pullRequest = (name: string, number: number, title: string, fields: Fields): Write<typeof PullRequest> => ({
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -37,14 +37,14 @@ const pullRequest = (name: string, number: number, title: string, fields: Fields
     ...fields,
   });
 
-const cluster = (name: string, minutes: number, pullRequests: Input<PullRequest>[]): Input<Cluster> => ({
+const cluster = (name: string, minutes: number, pullRequests: Write<typeof PullRequest>[]): Write<typeof Cluster> => ({
   name,
   updatedAt: minutesAgo(minutes),
   pullRequests,
   mergeBy: clusterMergeBy(pullRequests),
 });
 
-const urlOf = (c: Input<Cluster>) => c.pullRequests?.[0]?.url ?? '';
+const urlOf = (c: Write<typeof Cluster>) => c.pullRequests?.[0]?.url ?? '';
 
 const passing = { approved: true, checksPassing: true };
 
@@ -84,13 +84,13 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
 const clusters = [needsYou, behind, ready1, merging, working, running, reviewing];
 
 // The agents merging and answering a comment, which their clusters list.
-const clusterAgents: Input<Agent>[] = [
+const clusterAgents: Write<typeof Agent>[] = [
   { id: 'merge:m', title: 'Merge Drop the legacy room service client', pullRequestUrls: [urlOf(merging)] },
   { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [urlOf(working)] },
 ];
 
 // An investigation whose pull request merged, so it acts on no open pull request.
-const orphan: Input<Agent> = {
+const orphan: Write<typeof Agent> = {
   id: 'investigation-merged',
   title: 'Investigate e2e on agents#4790',
   pullRequestUrls: ['https://github.com/livekit/agents/pull/4790'],
@@ -102,14 +102,14 @@ const orphan: Input<Agent> = {
 const noop = () => {};
 
 // Each cluster holding the agents acting on its pull requests, as the server writes it.
-const holding = (agents: readonly Input<Agent>[]): Input<Cluster>[] =>
+const holding = (agents: readonly Write<typeof Agent>[]): Write<typeof Cluster>[] =>
   clusters.map((c) => ({
     ...c,
     agents: agents.filter((a) => c.pullRequests?.some((pr) => a.pullRequestUrls?.includes(pr.url ?? ''))),
   }));
 
 // The board as the app shows it, read from a database holding the clusters and agents.
-function Desktop({ initial, agents = false }: { initial?: Input<Cluster>; agents?: boolean }) {
+function Desktop({ initial, agents = false }: { initial?: Write<typeof Cluster>; agents?: boolean }) {
   const db = useMemo(() => {
     const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
     return new MemoryDb({ clusters: holding(all), agents: agents ? [orphan] : [] });
@@ -122,11 +122,11 @@ function Desktop({ initial, agents = false }: { initial?: Input<Cluster>; agents
 }
 
 function Shown({ initial }: { initial?: string }) {
-  const { clusters, agents } = useDb(view);
+  const { clusters, agents } = useDb(shown);
   const [openUrl, setOpenUrl] = useState(initial);
   const [openAgent, setOpenAgent] = useState<string>();
   const opened = clusters.find((c) => clusterKey(c) === openUrl);
-  const agent = [...agents, ...clusters.flatMap((c) => c.list('agents'))].find((a) => a.str('id') === openAgent);
+  const agent = [...agents, ...clusters.flatMap((c) => c.agents)].find((a) => a.id === openAgent);
   return (
     <View style={{ height: '100vh' as unknown as number }}>
       <Board

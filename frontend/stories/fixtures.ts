@@ -1,6 +1,6 @@
-import type { Node } from '../db';
-import { type Input, MemoryDb } from '../memory';
-import type { Agent, MergeBy, Proposal, PullRequest } from '../shapes';
+import type { Infer, Shape, Write } from '../db';
+import { MemoryDb } from '../memory';
+import { Agent, MergeBy, Proposal, PullRequest } from '../shapes';
 
 // What the server would write as a made-up PR's `mergeBy`, and its cluster's.
 export function mergeBy(pr: { approved?: boolean; checksPassing?: boolean; admin?: boolean }): MergeBy {
@@ -18,11 +18,12 @@ export function clusterMergeBy(prs: readonly { mergeBy?: MergeBy }[]): MergeBy {
 const alone = new MemoryDb();
 const kept = new WeakMap<object, unknown>();
 
-// `value`, stored as the server stores it, the same node each time it's asked for.
-export function stored<S>(value: Input<S>): Node<S> {
-  let node = kept.get(value as object) as Node<S> | undefined;
-  if (!node) kept.set(value as object, (node = alone.put<S>(value)));
-  return node;
+// `value`, of shape `shape`, stored as the server stores it: the same view each time it's asked
+// for.
+export function stored<S extends Shape>(shape: S, value: Write<S>): Infer<S> {
+  let view = kept.get(value as object) as Infer<S> | undefined;
+  if (!view) kept.set(value as object, (view = alone.put(shape, value)));
+  return view;
 }
 
 // A time `seconds` before now.
@@ -35,7 +36,7 @@ export const pr = {
   number: 4821,
   title: 'feat(voice): retry TTS once on a dropped stream',
   url: 'https://github.com/livekit/agents/pull/4821',
-} satisfies Input<PullRequest>;
+} satisfies Write<typeof PullRequest>;
 
 const diff = `diff --git a/livekit-agents/livekit/agents/voice/tts_retry.py b/livekit-agents/livekit/agents/voice/tts_retry.py
 index 3d723da..c883a61 100644
@@ -118,7 +119,7 @@ const reviewQuestion = comment(
 );
 
 // As the server writes them, and as the components read them.
-export const proposalInputs: Input<Proposal>[] = [
+export const proposalInputs: Write<typeof Proposal>[] = [
   {
     id: 'patch-reply-resolve',
     summary: 'Use conn_options for the retry count and interval, reply, and resolve',
@@ -252,7 +253,7 @@ export const proposalInputs: Input<Proposal>[] = [
 ];
 
 // A reply quoting code by permalink, which GitHub renders as the lines it points at.
-const permalinkInputs: Input<Proposal>[] = [
+const permalinkInputs: Write<typeof Proposal>[] = [
   {
     ...proposalInputs[0],
     id: 'permalink-reply',
@@ -261,8 +262,8 @@ const permalinkInputs: Input<Proposal>[] = [
   },
 ];
 
-export const proposals = proposalInputs.map((proposal) => stored<Proposal>(proposal));
-export const permalinkProposals = permalinkInputs.map((proposal) => stored<Proposal>(proposal));
+export const proposals = proposalInputs.map((proposal) => stored(Proposal, proposal));
+export const permalinkProposals = permalinkInputs.map((proposal) => stored(Proposal, proposal));
 
 const failure = {
   id: 'c883a61,check-ruff,check-tests',
@@ -314,7 +315,7 @@ index 5a1c2e0..9b7d4f3 100644
 
 // Answers to checks that failed on the head commit, rather than to a comment. Each answers only
 // some of the failed checks: the lint failure gets a fix, the timed-out tests get two alternatives.
-export const checkProposalInputs: Input<Proposal>[] = [
+export const checkProposalInputs: Write<typeof Proposal>[] = [
   {
     id: 'checks-patch',
     summary: 'Drop the unused import ruff flags',
@@ -344,7 +345,7 @@ export const checkProposalInputs: Input<Proposal>[] = [
 
 // An investigation still on its first prompt, one that found the root cause and proposes a pull
 // request on the base branch, a follow-up working, and a rebase asking the user something.
-export const agentInputs: Input<Agent>[] = [
+export const agentInputs: Write<typeof Agent>[] = [
   {
     id: 'investigation-working',
     title: 'Investigate tests (3.12) on agents#4821',
@@ -412,5 +413,5 @@ export const agentInputs: Input<Agent>[] = [
   },
 ];
 
-export const checkProposals = checkProposalInputs.map((proposal) => stored<Proposal>(proposal));
-export const agents = agentInputs.map((agent) => stored<Agent>(agent));
+export const checkProposals = checkProposalInputs.map((proposal) => stored(Proposal, proposal));
+export const agents = agentInputs.map((agent) => stored(Agent, agent));

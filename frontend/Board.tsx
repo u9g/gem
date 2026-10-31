@@ -3,7 +3,6 @@ import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
-import type { Node } from './db';
 import { type Agent, type Cluster, clusterKey } from './shapes';
 import { Icon, t3 } from './t3';
 
@@ -26,9 +25,9 @@ export function Board({
   children,
 }: {
   // The clusters shown, after filters.
-  clusters: Node<Cluster>[];
+  clusters: readonly Cluster[];
   // The agents acting on no open pull request.
-  agents: Node<Agent>[];
+  agents: readonly Agent[];
   // The key, the oldest PR's URL, of the open cluster.
   openUrl?: string;
   openAgent?: string;
@@ -53,9 +52,9 @@ export function Board({
           <Column name="Agents" count={agents.length}>
             {agents.map((agent) => (
               <AgentRow
-                key={agent.str('id')}
+                key={agent.id}
                 agent={agent}
-                selected={agent.str('id') === openAgent}
+                selected={agent.id === openAgent}
                 onPress={onOpenAgent}
               />
             ))}

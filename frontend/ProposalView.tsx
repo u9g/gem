@@ -4,7 +4,6 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import './ProposalView.css';
 
-import type { Node } from './db';
 import type { Proposal } from './shapes';
 import {
   Clamp,
@@ -26,11 +25,11 @@ import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, useP
 
 // Proposals answering the same conversation, or the same failed checks, are alternatives: approving
 // one clears the rest.
-export function bySubject(list: Node<Proposal>[]): Node<Proposal>[][] {
-  const groups = new Map<string, Node<Proposal>[]>();
+export function bySubject(list: readonly Proposal[]): (readonly Proposal[])[] {
+  const groups = new Map<string, readonly Proposal[]>();
   for (const proposal of list) {
-    const checks = proposal.node('checkFailure')?.list('checks').map((c) => c.str('id')).sort().join(',');
-    const id = proposal.node('comment')?.str('id') ?? checks ?? proposal.str('id');
+    const checks = proposal.checkFailure?.checks.map((c) => c.id).sort().join(',');
+    const id = proposal.comment?.id ?? checks ?? proposal.id;
     groups.set(id, [...(groups.get(id) ?? []), proposal]);
   }
   return [...groups.values()];
@@ -66,7 +65,7 @@ export function ProposalGroup({
   onDismiss,
   onInvestigate,
 }: {
-  proposals: Node<Proposal>[];
+  proposals: readonly Proposal[];
   anchored?: boolean;
   inline?: boolean;
   // Proposals being approved or dismissed.
@@ -82,7 +81,7 @@ export function ProposalGroup({
   // Approving or dismissing an alternative removes it from the list.
   const index = Math.min(picked, proposals.length - 1);
   const proposal = proposals[index];
-  const id = proposal.str('id');
+  const id = proposal.id;
   return (
     <ProposalView
       key={id}
@@ -109,7 +108,7 @@ export function ProposalGroup({
       }
       busy={busy?.has(id) === true}
       // Approving one alternative clears the others.
-      disabled={proposals.some((p) => busy?.has(p.str('id')))}
+      disabled={proposals.some((p) => busy?.has(p.id))}
       onApprove={(reply, followUp, diff) => onApprove(id, reply, followUp, diff)}
       onDismiss={() => onDismiss(id)}
       onInvestigate={onInvestigate && (() => onInvestigate(id))}
@@ -143,7 +142,7 @@ function ProposalView({
   onDismiss,
   onInvestigate,
 }: {
-  proposal: Node<Proposal>;
+  proposal: Proposal;
   anchored: boolean;
   inline: boolean;
   stepper: ReactNode;
@@ -155,29 +154,29 @@ function ProposalView({
 }) {
   const login = useContext(Login);
   const phone = usePhone();
-  const id = proposal.str('id');
-  const reply = proposal.str('reply');
-  const suggestedFollowUp = proposal.str('followUp');
-  const patch = proposal.node('patch');
-  const otherPatches = proposal.list('otherPatches');
-  const openPullRequest = proposal.node('openPullRequest');
-  const checkFailure = proposal.node('checkFailure');
-  const error = proposal.str('error');
-  const requestedTool = proposal.str('requestedTool');
-  const pullRequestUrl = proposal.str('pullRequestUrl');
+  const id = proposal.id;
+  const reply = proposal.reply;
+  const suggestedFollowUp = proposal.followUp;
+  const patch = proposal.patch;
+  const otherPatches = proposal.otherPatches;
+  const openPullRequest = proposal.openPullRequest;
+  const checkFailure = proposal.checkFailure;
+  const error = proposal.error;
+  const requestedTool = proposal.requestedTool;
+  const pullRequestUrl = proposal.pullRequestUrl;
   const [draft, setDraft] = useDraft<ReplyDraft>(`${id} reply`, { yours: reply, showing: 'suggested' });
   const [followUp, setFollowUp] = useDraft<ReplyDraft>(`${id} follow-up`, {
     yours: suggestedFollowUp,
     showing: 'suggested',
   });
-  const [diff, setDiff] = useDraft(`${id} diff`, patch?.str('diff') ?? '');
+  const [diff, setDiff] = useDraft(`${id} diff`, patch?.diff ?? '');
   const files = diffFiles(diff);
   const [repository, number] = pullRequestName(pullRequestUrl);
-  const comment = proposal.node('comment');
+  const comment = proposal.comment;
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
   const investigate = onInvestigate &&
-    proposal.bool('rerun') &&
+    proposal.rerun &&
     !patch &&
     !otherPatches.length &&
     !openPullRequest &&
@@ -198,7 +197,7 @@ function ProposalView({
             onApprove(
               draft.showing === 'yours' ? draft.yours : '',
               followUp.showing === 'yours' ? followUp.yours : '',
-              diff === patch?.str('diff') ? '' : diff,
+              diff === patch?.diff ? '' : diff,
             )
           }
         />
@@ -210,7 +209,7 @@ function ProposalView({
       <View style={styles.header}>
         <Icon icon={proposalIcon(proposal)} color={error ? t3.deletion : t3.muted} />
         <View style={styles.summary}>
-          <Html html={proposal.str('summaryHtml')} className={phone ? undefined : 'one-line'} style={summaryHtml} />
+          <Html html={proposal.summaryHtml} className={phone ? undefined : 'one-line'} style={summaryHtml} />
         </View>
         {stepper}
         {!phone && actions}
@@ -226,28 +225,28 @@ function ProposalView({
           <Text style={styles.where}>
             {repository}#{number} ·{' '}
             {comment
-              ? proposal.str('threadId')
+              ? proposal.threadId
                 ? 'review thread'
                 : 'conversation'
               : checkFailure
                 ? 'checks'
                 : 'investigation'}
           </Text>
-          {anchored && !inline && comment?.str('diffHunk') && (
+          {anchored && !inline && comment?.diffHunk && (
             <DiffSurface
-              diff={anchorDiff(comment.str('path'), comment.str('diffHunk'))}
-              header={<Text style={styles.meta}>{comment.num('line') ? `line ${comment.num('line')}` : 'outdated'}</Text>}
+              diff={anchorDiff(comment.path, comment.diffHunk)}
+              header={<Text style={styles.meta}>{comment.line ? `line ${comment.line}` : 'outdated'}</Text>}
             />
           )}
-          {proposal.list('earlierComments').map((earlier) => (
-            <Theirs key={earlier.str('id')} comment={earlier} max={anchored ? undefined : 110} />
+          {proposal.earlierComments.map((earlier) => (
+            <Theirs key={earlier.id} comment={earlier} max={anchored ? undefined : 110} />
           ))}
           {comment && (
             <Theirs
               comment={comment}
               max={anchored ? undefined : 110}
               trailing={
-                <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.str('url'))}>
+                <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
                   <Icon icon={ExternalLink} size={12} />
                 </Pressable>
               }
@@ -263,7 +262,7 @@ function ProposalView({
                 <EditableReply
                   pr={pullRequestUrl}
                   suggested={reply}
-                  html={proposal.str('replyHtml')}
+                  html={proposal.replyHtml}
                   draft={draft}
                   onChange={setDraft}
                   max={anchored ? undefined : 110}
@@ -272,10 +271,10 @@ function ProposalView({
             ) : (
               <Text style={styles.meta}>No reply</Text>
             )}
-            {(proposal.bool('resolveThread') || proposal.bool('closePullRequest')) && (
+            {(proposal.resolveThread || proposal.closePullRequest) && (
               <View style={styles.rightRow}>
-                {proposal.bool('resolveThread') && <ResolvesTag />}
-                {proposal.bool('closePullRequest') && <ClosesTag />}
+                {proposal.resolveThread && <ResolvesTag />}
+                {proposal.closePullRequest && <ClosesTag />}
               </View>
             )}
           </View>
@@ -285,7 +284,7 @@ function ProposalView({
             <FollowUpCard
               pr={pullRequestUrl}
               suggested={suggestedFollowUp}
-              html={proposal.str('followUpHtml')}
+              html={proposal.followUpHtml}
               draft={followUp}
               onChange={setFollowUp}
             />
@@ -293,18 +292,18 @@ function ProposalView({
           {patch ? (
             <>
               <Text style={styles.meta}>
-                {patch.str('commitMessage')}
+                {patch.commitMessage}
                 {'  '}
                 <DiffStat
                   added={files.reduce((n, f) => n + f.added, 0)}
                   removed={files.reduce((n, f) => n + f.removed, 0)}
                 />
               </Text>
-              {clamp(130, <DiffSurface diff={diff} suggested={patch.str('diff')} onChange={setDiff} />)}
+              {clamp(130, <DiffSurface diff={diff} suggested={patch.diff} onChange={setDiff} />)}
             </>
           ) : requestedTool ? (
             <ToolRequestBanner proposal={proposal} />
-          ) : proposal.bool('rerun') && checkFailure ? (
+          ) : proposal.rerun && checkFailure ? (
             <RerunCard failure={checkFailure} />
           ) : (
             !suggestedFollowUp &&
@@ -314,22 +313,22 @@ function ProposalView({
             )
           )}
           {otherPatches.map((other) => {
-            const [repository, number] = pullRequestName(other.str('pullRequestUrl'));
-            const files = diffFiles(other.str('diff'));
+            const [repository, number] = pullRequestName(other.pullRequestUrl);
+            const files = diffFiles(other.diff);
             return (
-              <View key={other.str('pullRequestUrl')} style={styles.column}>
+              <View key={other.pullRequestUrl} style={styles.column}>
                 <Text style={styles.where}>
                   {repository}#{number}
                 </Text>
                 <Text style={styles.meta}>
-                  {other.str('commitMessage')}
+                  {other.commitMessage}
                   {'  '}
                   <DiffStat
                     added={files.reduce((n, f) => n + f.added, 0)}
                     removed={files.reduce((n, f) => n + f.removed, 0)}
                   />
                 </Text>
-                {clamp(130, <DiffSurface diff={other.str('diff')} />)}
+                {clamp(130, <DiffSurface diff={other.diff} />)}
               </View>
             );
           })}

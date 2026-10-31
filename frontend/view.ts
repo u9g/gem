@@ -1,7 +1,7 @@
 import { CoreMemory, Database, ReadArrayList } from 'xitdb';
 
-import { BrowserSha1, type Db, type Node, Nodes } from './db';
-import type { Moment } from './shapes';
+import { BrowserSha1, type Db, Views } from './db';
+import { Moment } from './shapes';
 
 // A replica of the server's view database (server/src/view.rs), the clusters as gem shows them,
 // which components read through `useDb`. The server's file only grows, so the replica is sent the
@@ -23,7 +23,7 @@ export type Applied = 'applied' | 'had' | 'gap';
 export class Replica implements Db {
   private db?: Database;
   // The messages read from the replica's file.
-  private nodes = new Nodes();
+  private views = new Views();
   private changes = 0;
   private listeners = new Set<() => void>();
 
@@ -35,10 +35,10 @@ export class Replica implements Db {
   version = () => this.changes;
 
   // The latest moment, what the server last wrote, or undefined before the first sync.
-  moment = (): Node<Moment> | undefined => {
+  moment = (): Moment | undefined => {
     if (!this.db) return undefined;
     const cursor = new ReadArrayList(this.db.rootCursor()).getCursor(-1);
-    return cursor ? this.nodes.node<Moment>(cursor) : undefined;
+    return cursor ? Moment.read(cursor, this.views) : undefined;
   };
 
   private changed() {
@@ -91,7 +91,7 @@ export class Replica implements Db {
       return 'gap';
     }
     this.db = db;
-    this.nodes = new Nodes();
+    this.views = new Views();
     this.changed();
     return 'applied';
   }

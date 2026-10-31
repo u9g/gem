@@ -4,9 +4,9 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
-import { DbContext, useDb } from '../../db';
-import { type Input, MemoryDb } from '../../memory';
-import { type Agent, type Cluster as ClusterShape, clusterKey, type Proposal, type PullRequest, view } from '../../shapes';
+import { DbContext, useDb, type Write } from '../../db';
+import { MemoryDb } from '../../memory';
+import { Agent, Cluster as ClusterShape, clusterKey, Proposal, PullRequest, shown } from '../../shapes';
 import { clusterMergeBy, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // Made-up clusters, one in each place a phone lists them. Stories render at the window's width,
@@ -21,11 +21,11 @@ type Fields = {
   checksPassing?: boolean;
   checksFailing?: boolean;
   checks?: { total: number; done: number; failed: number };
-  proposals?: Input<Proposal>[];
+  proposals?: Write<typeof Proposal>[];
   merging?: boolean;
 };
 
-const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields): Input<PullRequest> => ({
+const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields): Write<typeof PullRequest> => ({
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -38,9 +38,9 @@ const pullRequest = (name: string, number: number, title: string, { admin, ...fi
 const cluster = (
   name: string,
   minutes: number,
-  pullRequests: Input<PullRequest>[],
-  agents: Input<Agent>[] = [],
-): Input<ClusterShape> => ({
+  pullRequests: Write<typeof PullRequest>[],
+  agents: Write<typeof Agent>[] = [],
+): Write<typeof ClusterShape> => ({
   name,
   updatedAt: minutesAgo(minutes),
   pullRequests,
@@ -102,7 +102,7 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
 ]);
 
 // The list as the app shows it, read from a database holding `clusters`.
-function Home({ clusters }: { clusters: Input<ClusterShape>[] }) {
+function Home({ clusters }: { clusters: Write<typeof ClusterShape>[] }) {
   const db = useMemo(() => new MemoryDb({ clusters }), [clusters]);
   return (
     <DbContext value={db}>
@@ -112,7 +112,7 @@ function Home({ clusters }: { clusters: Input<ClusterShape>[] }) {
 }
 
 function List() {
-  const { clusters } = useDb(view);
+  const { clusters } = useDb(shown);
   const listed = sections
     .map((name) => ({ name, clusters: clusters.filter((c) => section(c) === name) }))
     .filter((s) => s.clusters.length > 0);
@@ -129,11 +129,11 @@ function List() {
   );
 }
 
-function Cluster({ cluster }: { cluster: Input<ClusterShape> }) {
+function Cluster({ cluster }: { cluster: Write<typeof ClusterShape> }) {
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <ClusterView
-        cluster={stored<ClusterShape>(cluster)}
+        cluster={stored(ClusterShape, cluster)}
         onOpenAgent={() => {}}
         onApprove={() => {}}
         onDismiss={() => {}}
