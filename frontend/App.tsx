@@ -21,7 +21,6 @@ import {
   CloseAgentRequestSchema,
   DismissProposalRequestSchema,
   InvestigateRequestSchema,
-  ListOpenPullRequestsRequestSchema,
   ListOpenPullRequestsResponseSchema,
   MergeClusterRequestSchema,
   MessageClusterRequestSchema,
@@ -93,7 +92,7 @@ function placeSearch(place: Place): string {
 }
 
 export default function App() {
-  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot } =
+  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, sync, view } =
     useServer();
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
@@ -130,16 +129,13 @@ export default function App() {
     [reported],
   );
 
-  const load = useCallback(
-    () => post('/prs', toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))).then(show),
-    [post, show],
-  );
+  // Brings the replica of the server's view up to date, after an action has changed it.
+  const load = sync;
 
-
-  // The server sends a snapshot whenever this frontend or the server joins, and on every change.
+  // The replica is synced whenever this frontend or the server joins, and sent every change.
   useEffect(() => {
-    if (snapshot) show(snapshot);
-  }, [snapshot, show]);
+    if (view) show(view.response);
+  }, [view, show]);
 
   // A pushed entry's state is the query of the entry it was pushed from, so going to that place goes
   // back to it instead of stacking a copy. `replace` overwrites the current entry otherwise, for a

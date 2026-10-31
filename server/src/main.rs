@@ -23,7 +23,7 @@ use names::Names;
 use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest,
     CloseAgentResponse, DismissProposalRequest, DismissProposalResponse, InvestigateRequest,
-    InvestigateResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, MergeBy,
+    InvestigateResponse, ListOpenPullRequestsResponse, MergeBy,
     MergeClusterRequest, MergeClusterResponse, MessageAgentRequest, MessageAgentResponse,
     MessageClusterRequest, MessageClusterResponse, PullRequest, PullRequestCluster,
     RebaseClusterRequest,
@@ -45,6 +45,7 @@ mod rebases;
 mod sandbox;
 mod search;
 mod tokens;
+mod view;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
 use gem_github::{gh, gh_json, gh_partial_json, login, render};
@@ -377,23 +378,19 @@ async fn run_server() {
     rebases::init(db.clone(), prs.clone()).unwrap_or_else(|error| panic!("{error}"));
     merges::init(db).unwrap_or_else(|error| panic!("{error}"));
 
-    // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
-    // change. Proposals and investigations change in the database, so the snapshot is compared rather than
-    // announced. The agents gem starts propose through `gem-agent`.
+    // Agents read the clusters through `server mcp`, and frontends' replicas of the view are sent
+    // them, as soon as they change. Proposals and investigations change in the database, so the
+    // snapshot is compared rather than announced. The agents gem starts propose through
+    // `gem-agent`.
     tokio::task::spawn_blocking(mcp::register);
     tokio::spawn(mcp::listen());
-    let (snapshots, snapshot) = tokio::sync::watch::channel(String::new());
+    let live = view::Live::new();
     {
         let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+        let live = live.clone();
         tokio::spawn(async move {
             loop {
-                if let Some(response) = filled(&prs, &names, &conversations).await {
-                    let json = serde_json::to_string(&response).unwrap();
-                    if *snapshots.borrow() != json {
-                        mcp::save(&response).await;
-                        snapshots.send_replace(json);
-                    }
-                }
+                publish(&prs, &names, &conversations, &live).await;
                 tokio::time::sleep(SNAPSHOT_INTERVAL).await;
             }
         });
@@ -453,12 +450,6 @@ async fn run_server() {
                     .await
                     .map(|()| Json(RebaseClusterResponse {}))
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
-            })
-        })
-        .route("/prs", {
-            let (prs, conversations) = (prs.clone(), conversations.clone());
-            post(move |Json(_): Json<ListOpenPullRequestsRequest>| {
-                serve_prs(prs, names, conversations)
             })
         })
         .route(
@@ -564,12 +555,39 @@ async fn run_server() {
         );
 
     investigations::watch();
-    agents::watch(conversations);
+    agents::watch(conversations.clone());
+    let changes = live.changes();
+    // A frontend syncs after each action too, so the view is written first, to show the action's
+    // effect without waiting for the next snapshot.
+    let sync = move |payload: String| {
+        let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+        let live = live.clone();
+        async move {
+            publish(&prs, &names, &conversations, &live).await;
+            live.sync(&payload)
+        }
+    };
     gem_room::serve(
         move |request| gem_http::respond(app.clone(), request),
-        snapshot,
+        sync,
+        changes,
     )
     .await;
+}
+
+// Writes the clusters as gem shows them to the view, which sends every frontend what changed, and
+// saves them for agents when they changed.
+async fn publish(
+    prs: &Cache<ListOpenPullRequestsResponse>,
+    names: &Names,
+    conversations: &Conversations,
+    live: &view::Live,
+) {
+    if let Some(response) = filled(prs, names, conversations).await
+        && live.publish(&response)
+    {
+        mcp::save(&response).await;
+    }
 }
 
 // One line of JSON per event on stderr, which the launcher appends to server.log. RUST_LOG
@@ -620,18 +638,6 @@ async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusC
         .read()
         .await
         .clone()
-        .map(Json)
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
-}
-
-// Names and proposals arrive after the refresh that asked for them, so they are filled in per
-// request.
-async fn serve_prs(
-    cache: Cache<ListOpenPullRequestsResponse>,
-    names: Names,
-    conversations: Conversations,
-) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
-    (filled(&cache, &names, &conversations).await)
         .map(Json)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }

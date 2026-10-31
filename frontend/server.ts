@@ -1,7 +1,10 @@
 import type { JsonValue } from '@bufbuild/protobuf';
-import { ConnectionState, Room, RoomEvent } from 'livekit-client';
+import { ConnectionState, type Participant, Room, RoomEvent } from 'livekit-client';
 import { SignJWT } from 'jose';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReadHashMap } from 'xitdb';
+
+import { concat, Replica, type ViewBytes, viewBytes } from './view';
 
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
@@ -11,8 +14,13 @@ const PROJECT_KEY = 'gem.project';
 const SERVER = 'server';
 // Approving pushes a commit and posts to GitHub before it answers.
 const RESPONSE_TIMEOUT_MS = 5 * 60_000;
-// The server sends what `/prs` answers on this topic whenever it changes.
-const SNAPSHOT_TOPIC = 'prs';
+// The frontend asks for the bytes its replica of the server's view lacks with an RPC call to this
+// method. The server sends them, and every later change to the view, as a byte stream on
+// VIEW_TOPIC, and answers which bytes it sent.
+const SYNC_METHOD = 'view-sync';
+const VIEW_TOPIC = 'view';
+// How long a sync waits for the server's answer, and then for the bytes it sent.
+const SYNC_TIMEOUT_MS = 60_000;
 
 // The user's own LiveKit project, the one their gem server is configured with. It never leaves
 // this browser: tokens are minted here.
@@ -22,6 +30,10 @@ export type Project = { url: string; apiKey: string; apiSecret: string };
 // one GitHub user's PRs narrowed by its GEM_SEARCH; login and search are what it last reported, to
 // label it while another profile is connected.
 export type Profile = Project & { id: string; name: string; room: string; login?: string; search?: string };
+
+// The server's view as this frontend's replica last had it: its latest moment, and the
+// ListOpenPullRequestsResponse JSON rebuilt from it.
+export type View = { moment: ReadHashMap; response: JsonValue };
 
 // Unreachable when the project refuses to connect, e.g. for a wrong URL, API key or secret;
 // offline when the room is reached but the server is not in it.
@@ -58,8 +70,10 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
-  // The latest snapshot the server sent since connecting, as JSON.
-  const [snapshot, setSnapshot] = useState<JsonValue>();
+  // The view, since connecting.
+  const [view, setView] = useState<View>();
+  // Asks the server for the bytes the replica lacks, while connected.
+  const syncView = useRef<() => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -92,25 +106,110 @@ export function useServer() {
             ? 'online'
             : 'offline',
       );
+    // Another connection, to this profile or another, starts from an empty replica.
+    const replica = new Replica();
+    let closed = false;
+    // Syncs waiting for the replica to have the bytes the server answered it sent.
+    let waiting: { sent: ViewBytes; done: () => void }[] = [];
+    const has = (sent: ViewBytes) => replica.fileId === sent.fileId && replica.committedSize >= sent.end;
+    const settle = () => {
+      waiting.filter((wait) => has(wait.sent)).forEach((wait) => wait.done());
+      waiting = waiting.filter((wait) => !has(wait.sent));
+    };
+    let syncing: Promise<void> | undefined;
+    // Whether to sync again once the sync in flight is done, for bytes that arrived during it and
+    // didn't follow on from the replica.
+    let again = false;
+    const sync = (): Promise<void> => {
+      if (closed) return Promise.resolve();
+      // A sync asked for after an action has to see it, so it waits for one that starts later.
+      if (syncing) {
+        again = true;
+        return syncing.then(() => syncing);
+      }
+      const asked = room.localParticipant
+        .performRpc({
+          destinationIdentity: SERVER,
+          method: SYNC_METHOD,
+          payload: JSON.stringify(replica.state()),
+          responseTimeout: SYNC_TIMEOUT_MS,
+        })
+        .then((reply) => {
+          const sent = viewBytes(JSON.parse(reply));
+          if (!sent || has(sent)) return;
+          return new Promise<void>((done) => {
+            waiting.push({ sent, done });
+            // Bytes lost on the way are asked for again when the next change doesn't follow on.
+            setTimeout(done, SYNC_TIMEOUT_MS);
+          });
+        })
+        .catch(() => {})
+        .finally(() => {
+          syncing = undefined;
+          if (again) {
+            again = false;
+            void sync();
+          }
+        });
+      syncing = asked;
+      return asked;
+    };
+    syncView.current = sync;
+    // Streams are applied in the order they start, one at a time.
+    let applying = Promise.resolve();
+    room.registerByteStreamHandler(VIEW_TOPIC, (reader) => {
+      applying = applying
+        .then(async () => {
+          const bytes = concat(await reader.readAll());
+          const sent = viewBytes(reader.info.attributes);
+          if (closed || !sent) return;
+          const applied = replica.apply(sent, bytes);
+          if (applied === 'applied') {
+            const moment = replica.latest();
+            const response = replica.response();
+            if (moment && response) setView({ moment, response });
+          } else if (applied === 'gap') {
+            if (syncing) again = true;
+            else void sync();
+          }
+          settle();
+        })
+        .catch(() => {});
+    });
+    // The server sends a participant data only once it is active.
+    const syncWhenActive = (server: Participant) =>
+      server.waitUntilActive().then(() => void sync());
+    const joined = (participant: Participant) => {
+      update();
+      if (participant.identity === SERVER) void syncWhenActive(participant);
+    };
     room
       .on(RoomEvent.ConnectionStateChanged, update)
-      .on(RoomEvent.ParticipantConnected, update)
+      .on(RoomEvent.ParticipantConnected, joined)
       .on(RoomEvent.ParticipantDisconnected, update);
-    room.registerTextStreamHandler(SNAPSHOT_TOPIC, (reader) =>
-      reader.readAll().then((text) => setSnapshot(JSON.parse(text))),
-    );
     mintToken(connection)
       .then((jwt) => room.connect(connection.url, jwt))
+      .then(() => {
+        const server = room.remoteParticipants.get(SERVER);
+        if (server) void syncWhenActive(server);
+      })
       // A project that refuses the token can still be edited or switched away from.
       .catch(() => setStatus('unreachable'));
     return () => {
+      closed = true;
+      waiting.forEach((wait) => wait.done());
+      syncView.current = () => Promise.resolve();
       room.removeAllListeners();
-      room.unregisterTextStreamHandler(SNAPSHOT_TOPIC);
+      room.unregisterByteStreamHandler(VIEW_TOPIC);
       room.disconnect();
       setStatus('connecting');
-      setSnapshot(undefined);
+      setView(undefined);
     };
   }, [room, connection, visible]);
+
+  // Resolves once the replica has the view as the server has it now, or the server could not be
+  // asked.
+  const sync = useCallback(() => syncView.current(), []);
 
   const selectProfile = useCallback((id: string) => {
     localStorage.setItem(SELECTED_KEY, id);
@@ -155,5 +254,5 @@ export function useServer() {
     [room],
   );
 
-  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot };
+  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, sync, view };
 }

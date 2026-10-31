@@ -4,11 +4,8 @@ package gem.v1;
 
 import "google/protobuf/timestamp.proto";
 
-// Sent by the frontend to ask the server for all open pull requests.
-message ListOpenPullRequestsRequest {}
-
-// Also sent by the server to every frontend in the room, as a text stream on the topic `prs`,
-// whenever it changes.
+// All open pull requests, as gem shows them. Frontends rebuild it from their replica of the
+// server's view database (server/src/view.rs), which holds each cluster as this JSON.
 message ListOpenPullRequestsResponse {
   // Most recently updated first, by the latest update to any PR in the cluster.
   repeated PullRequestCluster clusters = 1;
