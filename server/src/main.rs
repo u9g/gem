@@ -287,20 +287,56 @@ fn load_op_item() -> Result<(), String> {
         value,
     } in item.fields
     {
-        let name = match purpose.as_deref() {
-            Some("USERNAME") => "LIVEKIT_API_KEY",
-            Some("PASSWORD") => "LIVEKIT_API_SECRET",
-            _ => label.as_str(),
-        };
         let Some(value) = value.filter(|value| !value.is_empty()) else {
             continue;
         };
-        if OP_FIELDS.contains(&name) && std::env::var_os(name).is_none() {
-            // SAFETY: main calls this before starting any other thread.
-            unsafe { std::env::set_var(name, value) };
+        let pairs = match purpose.as_deref() {
+            Some("USERNAME") => vec![("LIVEKIT_API_KEY", value.as_str())],
+            Some("PASSWORD") => match bundled_fields(&value) {
+                pairs if pairs.is_empty() => vec![("LIVEKIT_API_SECRET", value.as_str())],
+                pairs => pairs,
+            },
+            _ => vec![(label.as_str(), value.as_str())],
+        };
+        for (name, value) in pairs {
+            if OP_FIELDS.contains(&name) && std::env::var_os(name).is_none() {
+                // SAFETY: main calls this before starting any other thread.
+                unsafe { std::env::set_var(name, value) };
+            }
         }
     }
     Ok(())
+}
+
+// The OP_FIELDS a login's password holds as NAME=value pairs, e.g. `LIVEKIT_URL=wss://…
+// LIVEKIT_API_SECRET=… GEM_ROOM=…`, in any order and with anything between them. iOS AutoFill fills
+// only a login's username and password, so the frontend fills its other fields from these too.
+// Empty for a password that is only the secret.
+fn bundled_fields(password: &str) -> Vec<(&'static str, &str)> {
+    let mut starts: Vec<(usize, &'static str)> = OP_FIELDS
+        .iter()
+        .flat_map(|name| {
+            password
+                .match_indices(&format!("{name}="))
+                .map(|(at, _)| (at, *name))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    starts.sort();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &(at, name))| {
+            let end = starts.get(i + 1).map_or(password.len(), |&(next, _)| next);
+            (
+                name,
+                password[at + name.len() + 1..end]
+                    .trim()
+                    .trim_matches(['"', '\'']),
+            )
+        })
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
 }
 
 // Sets TYPESAFE_API_KEY, which search decides with, from the credential of the 1Password API
@@ -850,6 +886,29 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bundled_fields_split_a_password_holding_the_whole_profile() {
+        assert_eq!(
+            bundled_fields(
+                "GEM_ROOM=jason LIVEKIT_URL=wss://p.livekit.cloud LIVEKIT_API_SECRET=\"s3cr=t\""
+            ),
+            [
+                ("GEM_ROOM", "jason"),
+                ("LIVEKIT_URL", "wss://p.livekit.cloud"),
+                ("LIVEKIT_API_SECRET", "s3cr=t")
+            ]
+        );
+        // A pasted .env loses its newlines in a single-line field.
+        assert_eq!(
+            bundled_fields("LIVEKIT_URL=wss://p.livekit.cloudGEM_ROOM=jason"),
+            [
+                ("LIVEKIT_URL", "wss://p.livekit.cloud"),
+                ("GEM_ROOM", "jason")
+            ]
+        );
+        assert!(bundled_fields("just-the-secret").is_empty());
+    }
 
     #[test]
     fn an_action_reaches_only_the_cluster_the_user_saw() {
