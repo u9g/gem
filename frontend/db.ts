@@ -59,59 +59,42 @@ export type Infer<S> = S extends Shape<infer F> ? Message<F> : never;
 // A message of shape `S` to write, for fixtures: any field can be left out.
 export type Write<S> = S extends Shape<infer F> ? Input<F> : never;
 
-// A scalar: `zero` when left out. `from` is given it as stored: bytes as a string, or a bool when
-// tagged `bl`, and integers as numbers, or decimal strings past 2^53.
-function scalar<T, I>(zero: T, from: (stored: string | number | boolean) => T, to: (value: I) => Bytes | Uint | Int | Float): Kind<T, I> {
+// A scalar: `zero` when left out, and otherwise `read` from the one form the view stores it in.
+function scalar<T, I>(zero: T, read: (cursor: ReadCursor) => T, to: (value: I) => Bytes | Uint | Int | Float): Kind<T, I> {
   return {
-    read: (cursor) => {
-      if (!cursor) return zero;
-      const slot = cursor.slot();
-      switch (slot.tag) {
-        case BYTES:
-        case SHORT_BYTES: {
-          const bytes = cursor.readBytesObject();
-          const text = decoder.decode(bytes.value);
-          const tag = bytes.formatTag;
-          return from(tag?.length === 2 && tag[0] === BOOL[0] && tag[1] === BOOL[1] ? text === 'true' : text);
-        }
-        case UINT:
-        case INT: {
-          const value = slot.tag === UINT ? BigInt.asUintN(64, slot.value) : BigInt.asIntN(64, slot.value);
-          const safe = value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= BigInt(Number.MIN_SAFE_INTEGER);
-          return from(safe ? Number(value) : value.toString());
-        }
-        case FLOAT:
-          return from(cursor.readFloat());
-        default:
-          throw new Error(`a value tagged ${slot.tag} where a scalar was expected`);
-      }
-    },
+    read: (cursor) => (cursor ? read(cursor) : zero),
     write: (cursor, value) => cursor.write(to(value)),
   };
 }
 
-export const str = scalar('', String, (value: string) => new Bytes(value));
+// Bytes, as the text they hold.
+const text = (cursor: ReadCursor) => decoder.decode(cursor.readBytes());
+
+export const str = scalar('', text, (value: string) => new Bytes(value));
 // A 32-bit integer or a double.
-export const num = scalar(0, Number, (value: number) => {
-  if (!Number.isInteger(value)) return new Float(value);
-  return value < 0 ? new Int(value) : new Uint(value);
-});
-// Also as xitdb's own bool codec writes it, a 0 or 1.
-export const bool = scalar(
-  false,
-  (value) => value === true || value === 1 || value === 'true',
-  (value: boolean) => new Bytes(value ? 'true' : 'false', 'bl'),
+export const num = scalar(
+  0,
+  (cursor) => {
+    const tag = cursor.slot().tag;
+    return tag === FLOAT ? cursor.readFloat() : tag === INT ? cursor.readInt() : cursor.readUint();
+  },
+  (value: number) => {
+    if (!Number.isInteger(value)) return new Float(value);
+    return value < 0 ? new Int(value) : new Uint(value);
+  },
 );
+// The text `true` or `false`, tagged `bl`.
+export const bool = scalar(false, (cursor) => text(cursor) === 'true', (value: boolean) => new Bytes(value ? 'true' : 'false', 'bl'));
 // A 64-bit integer, stored as a decimal string.
-export const int64 = scalar(0n, (value) => BigInt(value as string | number), (value: bigint) => new Bytes(value.toString()));
+export const int64 = scalar(0n, (cursor) => BigInt(text(cursor)), (value: bigint) => new Bytes(value.toString()));
 // A Timestamp, stored as RFC 3339, or undefined when it isn't set.
 export const time = scalar<Date | undefined, Date | string>(
   undefined,
-  (value) => new Date(String(value)),
+  (cursor) => new Date(text(cursor)),
   (value) => new Bytes(typeof value === 'string' ? value : value.toISOString()),
 );
 // An enum, by its values' names, and `zero`, its first value, when left out.
-export const enumOf = <E extends string>(zero: E) => scalar<E, E>(zero, (value) => String(value) as E, (value) => new Bytes(value));
+export const enumOf = <E extends string>(zero: E) => scalar<E, E>(zero, (cursor) => text(cursor) as E, (value) => new Bytes(value));
 
 // A message of fields `fields`, read as a view. As a list's items it's always there; as a field,
 // wrap it in `optional`, as a proto3 message field can be unset.
@@ -319,10 +302,5 @@ const decoder = new TextDecoder();
 // xitdb's tags, as numbers: its `Tag` is a const enum, which a bundler that compiles a file at a
 // time can't inline.
 const NONE = 0;
-const BYTES = 6;
-const SHORT_BYTES = 7;
-const UINT = 8;
 const INT = 9;
 const FLOAT = 10;
-// The format tag of a bool, `bl`.
-const BOOL = [0x62, 0x6c];
