@@ -4,7 +4,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::rusqlite::params;
+use gem_db::{
+    MapMut,
+    xitdb::{Map, Set},
+};
 use pbjson_types::Timestamp;
 use serde::Deserialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
@@ -200,35 +203,33 @@ struct Answering {
     queued_at: i64,
 }
 
-// Runs `sql` once per set of `params`. The memory it mirrors stays right when it fails.
-fn save<P: gem_db::rusqlite::Params>(sql: &str, params: impl IntoIterator<Item = P>) {
-    let saved = crate::db().with(|db| {
-        let mut statement = db.prepare(sql)?;
-        for params in params {
-            statement.execute(params)?;
-        }
-        Ok(())
-    });
-    if let Err(error) = saved {
+// In the database's moment: the IDs of the conversations an agent was started for,
+const STARTED: Set<str> = Set::new("started-conversations");
+// why each agent answering failed checks proposed nothing, by the checks' ID,
+const NO_PROPOSAL: Map<str, String> = Map::new("no-proposal-reasons");
+// and the thread of the agent answering the comments on each cluster, by the URL of the cluster's
+// oldest pull request when it started.
+const THREADS: Map<str, String> = Map::new("cluster-agents");
+
+// Makes the changes `write` makes. The memory it mirrors stays right when it fails.
+fn save<T>(write: impl FnOnce(&mut MapMut) -> gem_db::Result<T>) {
+    if let Err(error) = crate::db().write(write) {
         tracing::warn!(%error, "cannot save conversations");
     }
 }
 
+fn strs<'k>(keys: impl IntoIterator<Item = &'k String>) -> impl Iterator<Item = &'k str> {
+    keys.into_iter().map(String::as_str)
+}
+
 impl Conversations {
     pub fn load() -> Result<Self, String> {
-        let (handled, no_proposal, threads) = crate::db().with(|db| {
-            let handled: HashSet<String> = db
-                .prepare("SELECT id FROM started_conversations")?
-                .query_map([], |row| row.get(0))?
-                .collect::<Result<_, _>>()?;
-            let no_proposal: HashMap<String, String> = db
-                .prepare("SELECT id, reason FROM no_proposal_reasons")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<_, _>>()?;
-            let threads: HashMap<String, String> = db
-                .prepare("SELECT pr, thread_id FROM cluster_agents")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<_, _>>()?;
+        let (handled, no_proposal, threads) = crate::db().read(|moment| {
+            let handled: HashSet<String> = STARTED.iter(moment)?.collect::<gem_db::Result<_>>()?;
+            let no_proposal: HashMap<String, String> =
+                NO_PROPOSAL.iter(moment)?.collect::<gem_db::Result<_>>()?;
+            let threads: HashMap<String, String> =
+                THREADS.iter(moment)?.collect::<gem_db::Result<_>>()?;
             Ok((handled, no_proposal, threads))
         })?;
         Ok(Self(Arc::new(Inner {
@@ -297,7 +298,7 @@ impl Conversations {
                 .collect()
         };
         self.0.threads.lock().await.retain(|pr, _| !keys.contains(pr));
-        save("DELETE FROM cluster_agents WHERE pr = ?1", keys.iter().map(|pr| [pr]));
+        save(|moment| THREADS.remove_all(moment, strs(&keys)));
         let ids: HashSet<String> = {
             let prs = self.0.prs.read().await;
             urls.iter()
@@ -308,13 +309,13 @@ impl Conversations {
         {
             let mut started = self.0.started.lock().await;
             started.retain(|id| !ids.contains(id));
-            save("DELETE FROM started_conversations WHERE id = ?1", ids.iter().map(|id| [id]));
+            save(|moment| STARTED.remove_all(moment, strs(&ids)));
         }
         self.0.handled.lock().await.retain(|id| !ids.contains(id));
         {
             let mut no_proposal = self.0.no_proposal.lock().await;
             no_proposal.retain(|id, _| !ids.contains(id));
-            save("DELETE FROM no_proposal_reasons WHERE id = ?1", ids.iter().map(|id| [id]));
+            save(|moment| NO_PROPOSAL.remove_all(moment, strs(&ids)));
         }
         self.answer_waiting().await;
     }
@@ -380,7 +381,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                 .cloned()
                 .collect();
             threads.retain(|pr, _| !closed.contains(pr));
-            save("DELETE FROM cluster_agents WHERE pr = ?1", closed.iter().map(|pr| [pr]));
+            save(|moment| THREADS.remove_all(moment, strs(&closed)));
         }
         {
             let by_url: HashMap<&str, &SearchedPullRequest> =
@@ -461,7 +462,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
         if !stale.is_empty() {
             let mut started = self.0.started.lock().await;
             started.retain(|id| !stale.contains(id));
-            save("DELETE FROM started_conversations WHERE id = ?1", stale.iter().map(|id| [id]));
+            save(|moment| STARTED.remove_all(moment, strs(&stale)));
         }
 
         self.0.handled.lock().await.retain(|id| !stale.contains(id));
@@ -565,10 +566,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                 };
                 if let Ok(thread_id) = &sent {
                     (this.0.threads.lock().await).insert(key.url.clone(), thread_id.clone());
-                    save(
-                        "INSERT OR REPLACE INTO cluster_agents (pr, thread_id) VALUES (?1, ?2)",
-                        [params![key.url, thread_id]],
-                    );
+                    save(|moment| THREADS.put(moment, &key.url, thread_id));
                 }
             }
             match sent {
@@ -576,10 +574,12 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                     {
                         let mut started = this.0.started.lock().await;
                         started.extend(asked.iter().cloned());
-                        save(
-                            "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                            asked.iter().map(|id| [id]),
-                        );
+                        save(|moment| {
+                            for id in &asked {
+                                STARTED.insert(moment, id)?;
+                            }
+                            Ok(())
+                        });
                     }
                     (this.0.answering.lock().await)
                         .entry(key.url.clone())
@@ -608,7 +608,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
     // Forgets the thread answering the comments on the cluster whose oldest pull request is `pr`.
     async fn forget_thread(&self, pr: &str) {
         self.0.threads.lock().await.remove(pr);
-        save("DELETE FROM cluster_agents WHERE pr = ?1", [[pr]]);
+        save(|moment| THREADS.remove(moment, pr));
     }
 
     // Queues an agent answering `failure` on `pr`.
@@ -628,10 +628,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
             {
                 let mut started = this.0.started.lock().await;
                 started.insert(id.to_string());
-                save(
-                    "INSERT OR IGNORE INTO started_conversations (id) VALUES (?1)",
-                    [[id]],
-                );
+                save(|moment| STARTED.insert(moment, id));
             }
             let subject = Subject::CheckFailure {
                 pr: pr.url.clone(),
@@ -651,11 +648,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                     investigations::archive(&title, &pr.url, &failure, reply).await;
                     if !proposals::exist_for(id).await {
                         let mut no_proposal = this.0.no_proposal.lock().await;
-                        save(
-                            "INSERT OR REPLACE INTO no_proposal_reasons (id, reason) \
-                             VALUES (?1, ?2)",
-                            [params![id, reply]],
-                        );
+                        save(|moment| NO_PROPOSAL.put(moment, id, reply));
                         no_proposal.insert(id.to_string(), reply.to_string());
                     }
                 }

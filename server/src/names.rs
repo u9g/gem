@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use gem_db::rusqlite::params;
+use gem_db::xitdb::Map;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
@@ -31,13 +31,12 @@ struct Inner {
     threads: Semaphore,
 }
 
+// In the database's moment, each cluster's name by its `key`.
+const NAMES: Map<str, String> = Map::new("cluster-names");
+
 impl Names {
     pub fn load() -> Result<Self, String> {
-        let known = crate::db().with(|db| {
-            db.prepare("SELECT key, name FROM cluster_names")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect()
-        })?;
+        let known = crate::db().read(|moment| NAMES.iter(moment)?.collect())?;
         Ok(Self(Arc::new(Inner {
             known: RwLock::new(known),
             requested: Mutex::default(),
@@ -67,12 +66,8 @@ impl Names {
             tokio::spawn(async move {
                 let _permit = names.0.threads.acquire().await.unwrap();
                 if let Some(name) = ask_t3(&prs).await {
-                    let saved = crate::db().with(|db| {
-                        db.execute(
-                            "INSERT OR REPLACE INTO cluster_names (key, name) VALUES (?1, ?2)",
-                            params![key, name],
-                        )
-                    });
+                    let saved =
+                        crate::db().write(|moment| NAMES.put(moment, &key, &name));
                     if let Err(error) = saved {
                         tracing::warn!(%error, "cannot save a cluster's name");
                     }

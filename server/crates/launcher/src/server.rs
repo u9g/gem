@@ -22,6 +22,13 @@ use crate::{
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn start(exe: &Path, dotenv: &[OsString]) -> Child {
+    // The server's state moves from gem.sqlite to gem.xitdb before a server opens either. The
+    // server tries too, and refuses to start if it fails.
+    match gem_sqlite_import::import_here() {
+        Ok(Some(message)) => log(&message),
+        Ok(None) => {}
+        Err(error) => log(&format!("cannot import {}: {error}", gem_sqlite_import::SQLITE)),
+    }
     match git(&["-C", WORKTREE, "rev-parse", "--short", "HEAD"]) {
         Some(head) => log(&format!("starting the server at {head}")),
         None => log("starting the server"),

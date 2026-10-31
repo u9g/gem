@@ -1,182 +1,313 @@
-// The server's own SQLite database. Its schema is the SQL files in migrations/, each named by the
-// UTC time it was written, `YYYYMMDDHHMMSS_<what it does>.sql`, so migrations written on different
-// branches never take the same name. A file never changes once it has shipped; a change to the
-// schema is a new file.
+// The server's own database, an xitdb file whose root is a `History` of moments: each write
+// appends a copy of the last moment with its changes, so a reader, even in another process, sees
+// each write whole or not at all. A moment is a hash map; each part of the server keeps its state
+// under its own key there, in typed collections of xitdb's data structures.
+//
+// The layout of a moment has a version, which the server brings up to date with its `Migrations`
+// when it opens the file, and which readers in other processes check before they read.
+//
+// The file only grows, so it is compacted to its last moment when it opens and whenever it has
+// grown well past its size then. Compacting replaces the file, so one process writes it: the server
+// holds a lock on a file beside it for as long as it has it open.
 
 use std::{
-    path::Path,
-    sync::{Arc, Mutex},
+    ffi::OsString,
+    fs::File,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-pub use rusqlite;
-use rusqlite::{Connection, OptionalExtension, params};
+pub use xitdb;
+use xitdb::{
+    CoreBufferedFile, Database, DynCore, History, MemoryOffsetMap, ReadHashMap, WriteHashMap,
+};
+pub use xitdb::{Migrated, Migration};
+pub use xitdb::{Error, Result};
 
-include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+// The server's database, in its working directory, with its state.
+pub const FILE: &str = "gem.xitdb";
 
-// Each feature numbered its own migrations in `migrations (feature, version)` before they had
-// names: the name of each feature's numbered one.
-const NUMBERED: &[(&str, i64, &str)] = &[
-    ("rebases", 1, "20261025101253_create_rebases"),
-    ("merges", 1, "20261025161634_create_merges"),
-    ("rebases", 2, "20261027073443_add_rebase_titles"),
-    ("merges", 2, "20261027073443_add_merge_titles"),
-];
+// How much the file grows past twice its compacted size before it is compacted again.
+const GROWTH: i64 = 16 << 20;
+
+pub type Map<'a> = ReadHashMap<'a, DynCore>;
+pub type MapMut<'a> = WriteHashMap<'a, DynCore>;
+pub type Migrations = xitdb::Migrations<DynCore>;
 
 #[derive(Clone)]
-pub struct Db(Arc<Mutex<Connection>>);
+pub struct Db(Arc<Mutex<Inner>>);
+
+enum Inner {
+    // This process writes it: in the file at `path`, or in memory when None.
+    Writer {
+        path: Option<PathBuf>,
+        db: Database<DynCore>,
+        // The file's size when it was last compacted, or last failed to be.
+        compacted: i64,
+        // Held for as long as the file is open: the lock on `<path>.lock`.
+        _lock: Option<File>,
+    },
+    // Another process writes the file at the path. It is opened again for each read, so a read
+    // sees the file even after the writer replaced it with a compacted one, and it checks the
+    // layout is the one `migrations` bring it to.
+    Reader { path: PathBuf, migrations: Migrations },
+}
 
 impl Db {
-    pub fn open(path: impl AsRef<Path>) -> Result<Db, String> {
-        Self::new(Connection::open(path), MIGRATIONS)
+    // Opens the file at `path`, or makes it, and brings its layout up to date with `migrations`.
+    pub fn open(path: impl AsRef<Path>, migrations: &Migrations) -> Result<(Db, Migrated), String> {
+        let path = path.as_ref().to_path_buf();
+        let mut lock_path = OsString::from(&path);
+        lock_path.push(".lock");
+        let lock = File::create(&lock_path).map_err(|error| format!("{lock_path:?}: {error}"))?;
+        if lock.try_lock().is_err() {
+            return Err(format!("{}: another server has it open", path.display()));
+        }
+        let start = || -> Result<(Database<DynCore>, Migrated)> {
+            let db = Database::open(&path)?.into_dyn();
+            let migrated = History::new(&db)?.migrate(migrations)?;
+            Ok((db, migrated))
+        };
+        let (mut db, migrated) = start().map_err(|error| describe(&path, error))?;
+        // The file is whole either way, so a server starts on it even when it can't compact it.
+        compact_or_log(&path, &mut db);
+        let compacted = db.committed_size().map_err(|error| describe(&path, error))?;
+        let (path, _lock) = (Some(path), Some(lock));
+        let inner = Inner::Writer { path, db, compacted, _lock };
+        Ok((Db(Arc::new(Mutex::new(inner))), migrated))
     }
 
     pub fn open_in_memory() -> Result<Db, String> {
-        Self::new(Connection::open_in_memory(), MIGRATIONS)
+        let db = Database::in_memory().map(Database::into_dyn);
+        let db = db.map_err(|error| format!("gem's database: {error}"))?;
+        let inner = Inner::Writer { path: None, db, compacted: 0, _lock: None };
+        Ok(Db(Arc::new(Mutex::new(inner))))
     }
 
-    fn new(db: rusqlite::Result<Connection>, migrations: &[(&str, &str)]) -> Result<Db, String> {
-        let db = Db(Arc::new(Mutex::new(db.map_err(error)?)));
-        db.with(|db| {
-            let tx = db.unchecked_transaction()?;
-            tx.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY)")?;
-            let numbered: bool = tx.query_row(
-                "SELECT count(*) > 0 FROM sqlite_master WHERE name = 'migrations'",
-                [],
-                |row| row.get(0),
-            )?;
-            if numbered {
-                for (feature, version, name) in NUMBERED {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO schema_migrations (name)
-                         SELECT ?3 FROM migrations WHERE feature = ?1 AND version >= ?2",
-                        params![feature, version, name],
-                    )?;
-                }
-                tx.execute_batch("DROP TABLE migrations")?;
+    // A panic in a read or a write leaves the file whole, since xitdb discards the transaction it
+    // was in, so the database stays usable.
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    // The file another process writes at `path`, to read once its layout is the one `migrations`
+    // bring it to.
+    pub fn open_reader(path: impl AsRef<Path>, migrations: Migrations) -> Db {
+        let path = path.as_ref().to_path_buf();
+        Db(Arc::new(Mutex::new(Inner::Reader { path, migrations })))
+    }
+
+    // Reads the last moment. Reads touch a few keys of a local file, so they run on the async
+    // runtime's threads.
+    pub fn read<T>(&self, read: impl FnOnce(&Map) -> Result<T>) -> Result<T, String> {
+        let inner = self.lock();
+        match &*inner {
+            Inner::Writer { path, db, .. } => {
+                let read = || read(&History::new(db)?.latest()?);
+                read().map_err(|error| describe_at(path.as_deref(), error))
             }
-            tx.commit()
-        })?;
-        db.migrate(migrations)?;
-        Ok(db)
-    }
-
-    // Runs each migration not run yet, oldest first, each in its own transaction.
-    fn migrate(&self, migrations: &[(&str, &str)]) -> Result<(), String> {
-        self.with(|db| {
-            for (name, sql) in migrations {
-                let ran = db
-                    .query_row("SELECT 1 FROM schema_migrations WHERE name = ?1", [name], |_| {
-                        Ok(())
-                    })
-                    .optional()?
-                    .is_some();
-                if ran {
-                    continue;
-                }
-                let tx = db.unchecked_transaction()?;
-                tx.execute_batch(sql)?;
-                tx.execute("INSERT INTO schema_migrations (name) VALUES (?1)", [name])?;
-                tx.commit()?;
+            Inner::Reader { path, migrations } => {
+                let read = || -> Result<T> {
+                    let db = Database::open_read_only(path)?.into_dyn();
+                    let history = History::new(&db)?;
+                    history.check_version(migrations)?;
+                    read(&history.latest()?)
+                };
+                read().map_err(|error| describe(path, error))
             }
-            Ok(())
-        })
+        }
     }
 
-    // Queries touch a few rows of a local file, so they run on the async runtime's threads.
-    pub fn with<T>(
-        &self,
-        query: impl FnOnce(&Connection) -> rusqlite::Result<T>,
-    ) -> Result<T, String> {
-        query(&self.0.lock().unwrap()).map_err(error)
+    // Appends a moment with the changes `write` makes to the last one, or none when it fails or
+    // changes nothing.
+    pub fn write<T>(&self, write: impl FnOnce(&mut MapMut) -> Result<T>) -> Result<T, String> {
+        let mut inner = self.lock();
+        let Inner::Writer { path, db, compacted, .. } = &mut *inner else {
+            return Err("gem's database: only the server writes it".into());
+        };
+        let written = History::new(db).and_then(|history| history.transact(write));
+        let written = written.map_err(|error| describe_at(path.as_deref(), error))?;
+        if let Some(path) = path
+            && let Ok(size) = db.committed_size()
+            && size > 2 * *compacted + GROWTH
+        {
+            compact_or_log(path, db);
+            // After a failure too, so the next try waits for the file to grow again.
+            *compacted = db.committed_size().unwrap_or(size);
+        }
+        Ok(written)
     }
 }
 
-fn error(error: rusqlite::Error) -> String {
-    format!("gem.sqlite: {error}")
+// Replaces the file at `path`, which `db` writes, with one holding only its last moment, or logs
+// why it could not. When it failed after `db` moved to the compacted copy, the server stops: its
+// writes would go to that copy, which neither readers nor its next start see. The file at `path`
+// still has every write until then.
+fn compact_or_log(path: &Path, db: &mut Database<DynCore>) {
+    let open = |file| Box::new(CoreBufferedFile::new(file)) as DynCore;
+    match db.compact_file(path, &mut MemoryOffsetMap::new(), open) {
+        Ok(()) => {}
+        Err(error @ Error::CompactFileReopenFailed { .. }) => panic!("{}", describe(path, error)),
+        Err(error) => eprintln!("cannot compact {}", describe(path, error)),
+    }
+}
+
+fn describe(path: &Path, error: Error) -> String {
+    format!("{}: {error}", path.display())
+}
+
+fn describe_at(path: Option<&Path>, error: Error) -> String {
+    match path {
+        Some(path) => describe(path, error),
+        None => format!("gem's database: {error}"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use xitdb::{Map as Typed, Set};
+
     use super::*;
 
-    const MIGRATIONS: &[(&str, &str)] = &[
-        ("20260101000000_create_things", "CREATE TABLE things (name TEXT PRIMARY KEY)"),
-        (
-            "20260102000000_add_sizes",
-            "ALTER TABLE things ADD COLUMN size INTEGER NOT NULL DEFAULT 0",
-        ),
-    ];
+    const NAMES: Typed<str, String> = Typed::new("names");
+    const SEEN: Set<str> = Set::new("seen");
 
-    fn count(db: &Db, sql: &str) -> i64 {
-        db.with(|db| db.query_row(sql, [], |row| row.get(0))).unwrap()
-    }
-
-    #[test]
-    fn runs_each_migration_once() {
-        let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
-        db.with(|db| db.execute("INSERT INTO things (name) VALUES ('a')", []))
-            .unwrap();
-        // A later build adds a migration; the first is not run again.
-        db.migrate(MIGRATIONS).unwrap();
-        db.migrate(MIGRATIONS).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM things WHERE size = 0"), 1);
-        assert_eq!(count(&db, "SELECT count(*) FROM schema_migrations"), 2);
-    }
-
-    #[test]
-    fn runs_a_migration_older_than_the_last_one_run() {
-        let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
-        // Merged after a newer one from another branch had already run.
-        let older = ("20251231000000_create_others", "CREATE TABLE others (id INTEGER)");
-        db.migrate(&[older, MIGRATIONS[0]]).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM others"), 0);
-    }
-
-    #[test]
-    fn a_failed_migration_is_run_again_next_time() {
-        let db = Db::new(Connection::open_in_memory(), &MIGRATIONS[..1]).unwrap();
-        assert!(db.migrate(&[MIGRATIONS[0], ("20260102000000_bad", "NOT SQL")]).is_err());
-        assert_eq!(count(&db, "SELECT count(*) FROM schema_migrations"), 1);
-    }
-
-    #[test]
-    fn names_the_migrations_features_numbered() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE migrations (feature TEXT PRIMARY KEY, version INTEGER NOT NULL);
-                 INSERT INTO migrations VALUES ('rebases', 2), ('merges', 1);
-                 CREATE TABLE rebases (url TEXT PRIMARY KEY, head TEXT NOT NULL, thread_id TEXT,
-                     question INTEGER NOT NULL DEFAULT 0, pushed INTEGER NOT NULL DEFAULT 0,
-                     title TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL DEFAULT 0);
-                 CREATE TABLE merges (url TEXT PRIMARY KEY, thread_id TEXT,
-                     question INTEGER NOT NULL DEFAULT 0);",
-            )
-            .unwrap();
-        let db = Db::new(Ok(connection), super::MIGRATIONS).unwrap();
-        // Only merges' second migration had not run.
-        assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 0);
-        db.with(|db| db.execute("INSERT INTO merges (url) VALUES ('a')", []))
-            .unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM merges WHERE title = ''"), 1);
-        assert_eq!(
-            count(&db, "SELECT count(*) FROM sqlite_master WHERE name = 'migrations'"),
-            0
-        );
-    }
-
-    #[test]
-    fn survives_reopening() {
-        let path = std::env::temp_dir().join(format!("gem-db-test-{}.sqlite", std::process::id()));
+    fn path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("gem-db-{name}-{}.xitdb", std::process::id()));
         let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    // Layout 1 has a name, layout 2 also says so, and layout 3 is the same as 2.
+    fn migrations(latest: u64) -> Migrations {
+        let migrations = [
+            Migration::new(1, "name", |moment: &mut MapMut| NAMES.put(moment, "a", "A")),
+            Migration::new(2, "say so", |moment: &mut MapMut| moment.put("said", "yes")),
+            Migration::new(3, "nothing", |_: &mut MapMut| Ok(())),
+        ];
+        Migrations::new(migrations.into_iter().filter(|m| m.version <= latest)).unwrap()
+    }
+
+    fn get(db: &Db, key: &str) -> Option<String> {
+        db.read(|moment| moment.get_string(key, None)).unwrap()
+    }
+
+    #[test]
+    fn reads_what_it_wrote() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(get(&db, "name"), None);
+        db.write(|moment| {
+            moment.put("name", "a")?;
+            NAMES.put(moment, "k", "K")?;
+            SEEN.insert(moment, "x")?;
+            // A write reads its own changes.
+            assert_eq!(moment.get_string("name", None)?.as_deref(), Some("a"));
+            Ok(())
+        })
+        .unwrap();
+        db.read(|moment| {
+            assert_eq!(moment.get_string("name", None)?.as_deref(), Some("a"));
+            assert_eq!(NAMES.get(moment, "k")?.as_deref(), Some("K"));
+            assert!(SEEN.contains(moment, "x")?);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_failed_write_changes_nothing() {
+        let db = Db::open_in_memory().unwrap();
+        let failed = db.write(|moment| {
+            moment.put("name", "a")?;
+            Err::<(), _>(Error::KeyNotFound)
+        });
+        assert!(failed.is_err());
+        assert_eq!(get(&db, "name"), None);
+    }
+
+    #[test]
+    fn migrates_once_and_compacts_when_reopened() {
+        let path = path("reopen");
         {
-            let db = Db::open(&path).unwrap();
-            db.with(|db| db.execute("INSERT INTO proposals (id, proposal) VALUES ('a', '{}')", []))
-                .unwrap();
+            let (db, migrated) = Db::open(&path, &migrations(1)).unwrap();
+            assert_eq!(migrated.ran, ["name"]);
+            for i in 0..100 {
+                db.write(|moment| moment.put("n", &*i.to_string())).unwrap();
+            }
         }
-        let db = Db::open(&path).unwrap();
-        assert_eq!(count(&db, "SELECT count(*) FROM proposals"), 1);
+        let before = std::fs::metadata(&path).unwrap().len();
+        let (db, migrated) = Db::open(&path, &migrations(2)).unwrap();
+        // Only the migration it hadn't run yet.
+        assert_eq!(migrated.ran, ["say so"]);
+        assert!(std::fs::metadata(&path).unwrap().len() < before);
+        assert_eq!(get(&db, "n").as_deref(), Some("99"));
+        assert_eq!(get(&db, "said").as_deref(), Some("yes"));
         drop(db);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn another_process_reads_each_write_and_compaction() {
+        let path = path("reader");
+        let (db, _) = Db::open(&path, &migrations(2)).unwrap();
+        let reader = Db::open_reader(&path, migrations(2));
+        db.write(|moment| moment.put("snapshot", "1")).unwrap();
+        assert_eq!(get(&reader, "snapshot").as_deref(), Some("1"));
+        {
+            let mut inner = db.0.lock().unwrap();
+            let Inner::Writer { db: inner, .. } = &mut *inner else { unreachable!() };
+            compact_or_log(&path, inner);
+        }
+        db.write(|moment| moment.put("snapshot", "2")).unwrap();
+        assert_eq!(get(&reader, "snapshot").as_deref(), Some("2"));
+        assert!(reader.write(|moment| moment.put("snapshot", "3")).is_err());
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_reader_refuses_another_layout() {
+        let path = path("layout");
+        let (db, _) = Db::open(&path, &migrations(2)).unwrap();
+        // A build from before layout 2 doesn't read it, nor does one from after it before the
+        // server migrated.
+        let older = Db::open_reader(&path, migrations(1));
+        assert!(older.read(|moment| moment.get_string("said", None)).is_err());
+        let newer = Db::open_reader(&path, migrations(3));
+        assert!(newer.read(|moment| moment.get_string("said", None)).is_err());
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn one_server_writes_the_file_at_once() {
+        let path = path("lock");
+        let (db, _) = Db::open(&path, &migrations(1)).unwrap();
+        let error = Db::open(&path, &migrations(1)).err().unwrap();
+        assert!(error.contains("another server has it open"), "{error}");
+        drop(db);
+        Db::open(&path, &migrations(1)).unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_panic_in_a_write_leaves_the_database_usable() {
+        let db = Db::open_in_memory().unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.write(|moment| -> Result<()> {
+                moment.put("name", "a")?;
+                panic!("in the write");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(get(&db, "name"), None);
+        db.write(|moment| moment.put("name", "b")).unwrap();
+        assert_eq!(get(&db, "name").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn a_reader_of_no_file_fails() {
+        let reader = Db::open_reader(path("missing"), migrations(2));
+        assert!(reader.read(|moment| moment.get_string("snapshot", None)).is_err());
     }
 }

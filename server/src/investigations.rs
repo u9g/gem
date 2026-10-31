@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gem_db::{
     Db,
-    rusqlite::{OptionalExtension, params},
+    xitdb::{Json, Map},
 };
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -470,15 +470,27 @@ async fn load() -> Vec<Investigation> {
     load_from(crate::db(), false)
 }
 
+// In the database's moment, the open investigations and the closed ones, by ID. A closed
+// investigation stays, so later agents can search what it found.
+const OPEN: Map<str, Json<Investigation>> = Map::new("investigations");
+const CLOSED: Map<str, Json<Investigation>> = Map::new("closed-investigations");
+
+fn map_of(closed: bool) -> Map<str, Json<Investigation>> {
+    if closed { CLOSED } else { OPEN }
+}
+
+// One that doesn't decode is left out, so the others still show.
 fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
-    let investigations = db.with(|db| {
-        db.prepare("SELECT investigation FROM investigations WHERE closed = ?1")?
-            .query_map([closed], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()
-    });
+    let investigations = db.read(|moment| Ok(map_of(closed).iter(moment)?.collect::<Vec<_>>()));
     match investigations {
-        Ok(investigations) => (investigations.iter())
-            .filter_map(|json| serde_json::from_str(json).ok())
+        Ok(investigations) => (investigations.into_iter())
+            .filter_map(|investigation| match investigation {
+                Ok((_, investigation)) => Some(investigation),
+                Err(error) => {
+                    tracing::warn!(%error, "cannot read an investigation");
+                    None
+                }
+            })
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "cannot read investigations");
@@ -488,12 +500,8 @@ fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
 }
 
 fn insert(investigation: &Investigation, closed: bool) {
-    let saved = crate::db().with(|db| {
-        db.execute(
-            "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
-            params![investigation.id, serde_json::to_string(investigation).unwrap(), closed],
-        )
-    });
+    let saved =
+        crate::db().write(|moment| map_of(closed).put(moment, &investigation.id, investigation));
     if let Err(error) = saved {
         tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
     }
@@ -503,25 +511,15 @@ fn insert(investigation: &Investigation, closed: bool) {
 // once, so a refresh never brings back a closed investigation or undoes a message's `working`.
 // Returns whether it closed it.
 fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
-    let updated = crate::db().with(|db| {
-        let tx = db.unchecked_transaction()?;
-        let json: Option<String> = tx
-            .query_row(
-                "SELECT investigation FROM investigations WHERE id = ?1 AND closed = 0",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
-        else {
+    let updated = crate::db().write(|moment| {
+        let Some(mut investigation) = OPEN.get(moment, id)? else {
             return Ok(false);
         };
         let close = change(&mut investigation);
-        tx.execute(
-            "UPDATE investigations SET investigation = ?2, closed = ?3 WHERE id = ?1",
-            params![id, serde_json::to_string(&investigation).unwrap(), close],
-        )?;
-        tx.commit()?;
+        if close {
+            OPEN.remove(moment, id)?;
+        }
+        map_of(close).put(moment, id, &investigation)?;
         Ok(close)
     });
     updated.unwrap_or_else(|error| {
@@ -566,14 +564,7 @@ mod tests {
                 reply: reply.into(),
                 ..Default::default()
             };
-            let json = serde_json::to_string(&investigation).unwrap();
-            db.with(|db| {
-                db.execute(
-                    "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
-                    params![id, json, closed],
-                )
-            })
-            .unwrap();
+            db.write(|moment| map_of(closed).put(moment, id, &investigation)).unwrap();
         };
         write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.", true);
         write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);

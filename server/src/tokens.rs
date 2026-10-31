@@ -10,7 +10,7 @@ use std::{
 
 use gem_db::{
     Db,
-    rusqlite::{OptionalExtension, params},
+    xitdb::{Json, Map},
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 // relative to the server's working directory: T3 Code reads it from a file, again for as long as
 // the token lasts.
 pub const DIR: &str = "agent-tokens";
+
+// In the database's moment, the subject of each token.
+const TOKENS: Map<str, Json<Subject>> = Map::new("agent-tokens");
 
 // What an agent answers, and so what it may propose on.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -106,18 +109,7 @@ impl Tokens {
 
     // The subject of `token`, or None when it is not one gem issued or it was revoked.
     pub async fn subject(&self, token: &str) -> Option<Subject> {
-        let json: Option<String> = self
-            .db
-            .with(|db| {
-                db.query_row(
-                    "SELECT subject FROM agent_tokens WHERE token = ?1",
-                    [token],
-                    |row| row.get(0),
-                )
-                .optional()
-            })
-            .ok()?;
-        serde_json::from_str(&json?).ok()
+        self.db.read(|moment| TOKENS.get(moment, token)).ok()?
     }
 
     // Revokes the tokens whose subjects `keep` returns false for.
@@ -140,28 +132,22 @@ impl Tokens {
         revoked: impl Fn(&Subject) -> bool,
         issued: Option<(&str, &Subject)>,
     ) -> Result<Vec<String>, String> {
-        self.db.with(|db| {
-            let tx = db.unchecked_transaction()?;
-            let tokens: Vec<(String, String)> = tx
-                .prepare("SELECT token, subject FROM agent_tokens")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<_, _>>()?;
-            let revoked: Vec<String> = (tokens.into_iter())
-                .filter(|(_, subject)| {
-                    serde_json::from_str::<Subject>(subject).is_ok_and(|subject| revoked(&subject))
-                })
-                .map(|(token, _)| token)
-                .collect();
-            for token in &revoked {
-                tx.execute("DELETE FROM agent_tokens WHERE token = ?1", [token])?;
+        self.db.write(|moment| {
+            // A subject that doesn't decode, e.g. one an older build issued, is left alone, so it
+            // can't keep any other token from being issued or revoked.
+            let mut revoke = Vec::new();
+            for token in TOKENS.iter(moment)? {
+                match token {
+                    Ok((token, subject)) if revoked(&subject) => revoke.push(token),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "cannot read a token"),
+                }
             }
+            TOKENS.remove_all(moment, revoke.iter().map(String::as_str))?;
+            let revoked = revoke;
             if let Some((token, subject)) = issued {
-                tx.execute(
-                    "INSERT INTO agent_tokens (token, subject) VALUES (?1, ?2)",
-                    params![token, serde_json::to_string(subject).unwrap()],
-                )?;
+                TOKENS.put(moment, token, subject)?;
             }
-            tx.commit()?;
             Ok(revoked)
         })
     }
@@ -200,7 +186,7 @@ pub mod tests {
         dir
     }
 
-    // A database with every table the server's state needs, and nothing in them.
+    // An empty database.
     pub fn db() -> Db {
         Db::open_in_memory().unwrap()
     }
@@ -228,6 +214,21 @@ pub mod tests {
             pr: "https://github.com/o/r/pull/1".into(),
             id: id.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_subject_does_not_decode_blocks_no_other() {
+        let tokens = tokens("undecodable");
+        // As a build issued it to an agent that no longer exists.
+        let old = |moment: &mut gem_db::MapMut| {
+            moment.put_map("agent-tokens")?.put("old", r#"{"comment":{"id":"c"}}"#)
+        };
+        tokens.db.write(old).unwrap();
+        let config = tokens.issue(&failure("IC_1"), "http://127.0.0.1:1/mcp").await.unwrap();
+        let token = token(&config);
+        assert_eq!(tokens.subject(&token).await, Some(failure("IC_1")));
+        tokens.revoke("IC_1").await;
+        assert_eq!(tokens.subject(&token).await, None);
     }
 
     #[tokio::test]

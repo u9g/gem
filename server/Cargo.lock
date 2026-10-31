@@ -721,7 +721,7 @@ version = "0.1.0"
 name = "gem-db"
 version = "0.1.0"
 dependencies = [
- "rusqlite",
+ "xitdb",
 ]
 
 [[package]]
@@ -749,6 +749,7 @@ dependencies = [
 name = "gem-launcher"
 version = "0.1.0"
 dependencies = [
+ "gem-sqlite-import",
  "serde_json",
 ]
 
@@ -788,6 +789,14 @@ dependencies = [
  "livekit-api",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "gem-sqlite-import"
+version = "0.1.0"
+dependencies = [
+ "gem-db",
+ "rusqlite",
 ]
 
 [[package]]
@@ -2632,11 +2641,13 @@ dependencies = [
  "gem-proto",
  "gem-rebases",
  "gem-room",
+ "gem-sqlite-import",
  "gem-t3",
  "getrandom 0.3.4",
  "pbjson-types",
  "reqwest 0.13.5",
  "rquickjs",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",
@@ -3630,6 +3641,28 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "xitdb"
+version = "0.1.0"
+source = "git+https://github.com/u9g/xitdb-rs?rev=a2780a59e8eb535496934dfde810491daf30641d#a2780a59e8eb535496934dfde810491daf30641d"
+dependencies = [
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha1",
+ "xitdb-derive",
+]
+
+[[package]]
+name = "xitdb-derive"
+version = "0.1.0"
+source = "git+https://github.com/u9g/xitdb-rs?rev=a2780a59e8eb535496934dfde810491daf30641d#a2780a59e8eb535496934dfde810491daf30641d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "yoke"

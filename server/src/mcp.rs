@@ -24,10 +24,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use gem_db::{
-    Db,
-    rusqlite::{OptionalExtension, params},
-};
+use gem_db::Db;
 use serde_json::{Value, json};
 
 use crate::investigations;
@@ -43,26 +40,21 @@ pub async fn save(response: &ListOpenPullRequestsResponse) {
     save_to(crate::db(), response);
 }
 
+// In the database's moment, the clusters as gem last showed them, with their names and proposals:
+// the ListOpenPullRequestsResponse, as JSON.
+const SNAPSHOT: &str = "snapshot";
+
 fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
-    let saved = db.with(|db| {
-        db.execute(
-            "INSERT OR REPLACE INTO snapshot (id, response) VALUES (0, ?1)",
-            params![serde_json::to_string(response).unwrap()],
-        )
-    });
+    let saved = db.write(|moment| moment.put(SNAPSHOT, serde_json::to_string(response).unwrap()));
     if let Err(error) = saved {
         tracing::warn!(%error, "cannot save the snapshot");
     }
 }
 
-// The snapshot's JSON, once the server saved one.
-fn snapshot(db: &Db) -> Option<String> {
-    db.with(|db| {
-        db.query_row("SELECT response FROM snapshot", [], |row| row.get(0))
-            .optional()
-    })
-    .ok()
-    .flatten()
+// The snapshot's JSON, once the server saved one. An error says why it can't be read, e.g. a
+// layout of another build of gem.
+fn snapshot(db: &Db) -> Result<Option<String>, String> {
+    db.read(|moment| moment.get_string(SNAPSHOT, None))
 }
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
@@ -106,13 +98,14 @@ pub fn register() {
 // Answers MCP requests on stdin until it closes.
 pub fn serve(args: &[String]) {
     let db = match args {
-        [flag, dir] if flag == "--state" => Db::open(Path::new(dir).join(crate::DB_FILE)),
+        [flag, dir] if flag == "--state" => {
+            Db::open_reader(Path::new(dir).join(crate::DB_FILE), crate::layout::migrations())
+        }
         _ => {
             eprintln!("usage: server mcp --state <the server's working directory>");
             std::process::exit(2);
         }
-    }
-    .unwrap_or_else(|error| panic!("{error}"));
+    };
     let mut stdout = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -292,6 +285,7 @@ const READS: &[&str] = &["clusters", "cluster"];
 // Answers `gem.<op>(...args)` from the snapshot.
 fn read(db: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
     let snapshot = snapshot(db)
+        .map_err(|error| format!("cannot read gem's clusters: {error}"))?
         .ok_or("gem has not listed any clusters yet; is its server running?".to_string())?;
     let mut snapshot: Value = serde_json::from_str(&snapshot).map_err(|e| e.to_string())?;
     // Rendered HTML repeats the markdown next to it.
@@ -318,7 +312,7 @@ fn read(db: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
 // The URLs of the pull requests in the snapshot's cluster holding `pr`, or none when it holds none.
 fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
     let pr = pr.trim().trim_end_matches('/');
-    let snapshot: ListOpenPullRequestsResponse = snapshot(db)
+    let snapshot: ListOpenPullRequestsResponse = (snapshot(db).ok().flatten())
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
     (snapshot.clusters.into_iter())
@@ -1153,14 +1147,8 @@ mod tests {
             "name": "Renames",
             "pullRequests": [{ "url": PR, "title": "Rename", "titleHtml": "<p>Rename</p>" }],
         }] });
-        server
-            .db()
-            .with(|db| {
-                db.execute(
-                    "INSERT INTO snapshot (id, response) VALUES (0, ?1)",
-                    [snapshot.to_string()],
-                )
-            })
+        (server.db())
+            .write(|moment| moment.put(SNAPSHOT, snapshot.to_string()))
             .unwrap();
         let token = server.token(&in_thread()).await;
         let result = server
@@ -1200,13 +1188,11 @@ mod tests {
             "pullRequestUrl": PR,
             "reply": "test_join times out when the room closes first.",
         });
-        server
-            .db()
-            .with(|db| {
-                db.execute(
-                    "INSERT INTO investigations (id, investigation, closed) VALUES ('18f', ?1, 1)",
-                    [investigation.to_string()],
-                )
+        // As untagged JSON, as a server from before typed collections wrote it.
+        (server.db())
+            .write(|moment| {
+                let mut closed = moment.put_map("closed-investigations")?;
+                closed.put("18f", investigation.to_string())
             })
             .unwrap();
         let token = server.token(&in_thread()).await;

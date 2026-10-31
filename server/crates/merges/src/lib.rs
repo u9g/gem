@@ -1,4 +1,4 @@
-// A T3 Code agent merging a cluster's pull requests. Merges are rows in the server's database, one
+// A T3 Code agent merging a cluster's pull requests. Merges are kept in the server's database, one
 // per pull request and sharing the agent's thread, until the thread settles or stops, so a cluster
 // keeps its one merge across presses, frontends and server restarts. T3 Code is reached through
 // `Host`.
@@ -11,10 +11,22 @@ use std::{
 };
 
 use gem_db::{
-    Db,
-    rusqlite::{self, OptionalExtension, params},
+    Db, MapMut,
+    xitdb::{Index, IndexedMap, Map, Record},
 };
 use tokio::sync::Mutex;
+
+// In the database's moment, each merge by the URL of its pull request,
+const MAP: Map<str, Merge> = Map::new("merges");
+// and the URLs of the merges by the thread of their agent.
+const BY_THREAD: Index<str, Merge, str> =
+    Index::new(MAP, "merges-by-thread", |merge| merge.thread_id.clone());
+const MERGES: IndexedMap<str, Merge> = IndexedMap::new(MAP, &[&BY_THREAD]);
+
+// Builds the index of merges by thread from the merges, for the migration that adds it.
+pub fn rebuild_index(moment: &mut MapMut) -> gem_db::Result<bool> {
+    MERGES.rebuild(moment)
+}
 
 // Reading a thread is a local CLI call.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -41,13 +53,18 @@ pub struct Progress {
     pub question: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+// Stored as a hash map of its fields.
+#[derive(Clone, Debug, PartialEq, Record)]
+#[xitdb(crate = "gem_db::xitdb")]
 pub struct Merge {
     // The agent's thread, None while it starts.
+    #[xitdb(rename = "thread")]
     pub thread_id: Option<String>,
     pub title: String,
     // Seconds since the epoch.
+    #[xitdb(rename = "started-at")]
     pub started_at: i64,
+    // The agent waits on the user to answer a question.
     pub question: bool,
 }
 
@@ -65,7 +82,7 @@ pub trait Host: Send + Sync + 'static {
 pub struct Merges<H> {
     db: Db,
     host: Arc<H>,
-    // Held for the whole of a start, so two presses of Merge start one agent, and the rows whose
+    // Held for the whole of a start, so two presses of Merge start one agent, and the merges whose
     // thread is starting are that start's.
     starting: Arc<Mutex<()>>,
 }
@@ -95,10 +112,9 @@ impl<H: Host> Merges<H> {
     // T3 Code does not settle threads when they finish.
     pub async fn start(&self, urls: &[String], admin: &[String], name: &str) -> Result<(), String> {
         let _starting = self.starting.lock().await;
-        let running = self.db.with(|db| {
-            let mut rows = db.prepare("SELECT 1 FROM merges WHERE url = ?1")?;
+        let running = self.db.read(|moment| {
             for url in urls {
-                if rows.query_row([url], |_| Ok(())).optional()?.is_some() {
+                if MERGES.contains(moment, url)? {
                     return Ok(true);
                 }
             }
@@ -131,11 +147,15 @@ When you are done, call the t3_thread_organize tool with action \"settle\" and n
 settle this thread."
         );
         let title = format!("Merge {name}");
-        self.db.with(|db| {
-            let mut insert =
-                db.prepare("INSERT INTO merges (url, title, started_at) VALUES (?1, ?2, ?3)")?;
+        let merge = Merge {
+            thread_id: None,
+            title: title.clone(),
+            started_at: now(),
+            question: false,
+        };
+        self.db.write(|moment| {
             for url in urls {
-                insert.execute(params![url, title, now()])?;
+                MERGES.put(moment, url, &merge)?;
             }
             Ok(())
         })?;
@@ -143,16 +163,14 @@ settle this thread."
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
-                self.db
-                    .with(|db| db.execute("DELETE FROM merges WHERE thread_id IS NULL", []))?;
+                self.db.write(remove_starting)?;
                 return Err(error);
             }
         };
-        self.db.with(|db| {
-            db.execute(
-                "UPDATE merges SET thread_id = ?1 WHERE thread_id IS NULL",
-                [&thread_id],
-            )
+        self.db.write(|moment| {
+            let starting = |_: &String, merge: &Merge| merge.thread_id.is_none();
+            let start = |merge: &mut Merge| merge.thread_id = Some(thread_id.clone());
+            MERGES.update_where(moment, starting, start)
         })?;
         tokio::spawn(self.clone().watch(thread_id));
         Ok(())
@@ -161,11 +179,9 @@ settle this thread."
     // Watches the merges a previous run of the server left. One whose thread never started is
     // dropped: its server stopped while starting it.
     pub fn resume(&self) -> Result<(), String> {
-        let threads = self.db.with(|db| {
-            db.execute("DELETE FROM merges WHERE thread_id IS NULL", [])?;
-            let mut rows = db.prepare("SELECT DISTINCT thread_id FROM merges")?;
-            rows.query_map([], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()
+        let threads = self.db.write(|moment| {
+            remove_starting(moment)?;
+            BY_THREAD.keys(moment)
         })?;
         for thread_id in threads {
             tokio::spawn(self.clone().watch(thread_id));
@@ -175,28 +191,16 @@ settle this thread."
 
     // By pull request URL.
     pub fn all(&self) -> Result<BTreeMap<String, Merge>, String> {
-        self.db.with(|db| {
-            let mut rows =
-                db.prepare("SELECT url, thread_id, question, title, started_at FROM merges")?;
-            rows.query_map([], |row| {
-                let merge = Merge {
-                    thread_id: row.get(1)?,
-                    question: row.get(2)?,
-                    title: row.get(3)?,
-                    started_at: row.get(4)?,
-                };
-                Ok((row.get(0)?, merge))
-            })?
-            .collect()
-        })
+        self.db.read(|moment| MERGES.iter(moment)?.collect())
     }
 
     // Stops showing the merge whose agent runs in `thread_id`, as the user asked. Its cluster can be
     // merged again; the agent keeps running in T3 Code.
     pub fn forget(&self, thread_id: &str) -> Result<(), String> {
-        self.db
-            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [thread_id]))
-            .map(drop)
+        self.db.write(|moment| {
+            let urls = BY_THREAD.get(moment, thread_id)?;
+            MERGES.remove_all(moment, urls).map(drop)
+        })
     }
 
     async fn watch(self, thread_id: String) {
@@ -215,19 +219,22 @@ settle this thread."
             if progress.done {
                 break;
             }
-            let _ = self.db.with(|db| {
-                db.execute(
-                    "UPDATE merges SET question = ?2 WHERE thread_id = ?1",
-                    params![thread_id, progress.question],
-                )
+            // Writes nothing, so the history doesn't grow, unless the question changed.
+            let _ = self.db.write(|moment| {
+                let ours =
+                    |_: &String, merge: &Merge| merge.thread_id.as_deref() == Some(&*thread_id);
+                MERGES.update_where(moment, ours, |merge| merge.question = progress.question)
             });
         }
-        let removed = (self.db)
-            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [&thread_id]));
-        if let Err(error) = removed {
+        if let Err(error) = self.forget(&thread_id) {
             eprintln!("{error}");
         }
     }
+}
+
+// Drops the merges whose thread never started: their server stopped, or failed, while starting it.
+fn remove_starting(moment: &mut MapMut) -> gem_db::Result<()> {
+    MERGES.retain(moment, |_, merge| merge.thread_id.is_some()).map(drop)
 }
 
 #[cfg(test)]
@@ -391,12 +398,14 @@ mod tests {
         let host = FakeHost::new();
         let db = Db::open_in_memory().unwrap();
         Merges::new(db.clone(), host.clone()).unwrap();
-        db.with(|db| {
-            db.execute_batch(
-                "INSERT INTO merges (url, thread_id) VALUES ('https://github.com/o/r/pull/1', 't');
-                 INSERT INTO merges (url, thread_id) VALUES ('https://github.com/o/s/pull/2', 't');
-                 INSERT INTO merges (url) VALUES ('https://github.com/o/t/pull/3');",
-            )
+        // As a server from before the index wrote them, and then the migration indexed them.
+        db.write(|moment| {
+            let mut merges = moment.put_map("merges")?;
+            for url in ["https://github.com/o/r/pull/1", "https://github.com/o/s/pull/2"] {
+                merges.put_map(url)?.put("thread", "t")?;
+            }
+            merges.put_map("https://github.com/o/t/pull/3")?;
+            rebuild_index(moment).map(drop)
         })
         .unwrap();
 
