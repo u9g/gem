@@ -5,8 +5,8 @@ use std::{
 };
 
 use gem_db::{
-    MapMut, Store, entries, map_mut, texts,
-    xitdb::WriteHashSet,
+    MapMut, texts,
+    xitdb::{DynCore, WriteHashSet},
 };
 use pbjson_types::Timestamp;
 use serde::Deserialize;
@@ -218,8 +218,8 @@ fn save(write: impl FnOnce(&mut MapMut) -> gem_db::Result<()>) {
     }
 }
 
-fn started_set<'a>(moment: &mut MapMut<'a>) -> gem_db::Result<WriteHashSet<'a, Store>> {
-    WriteHashSet::new(&mut moment.put_cursor(STARTED)?)
+fn started_set<'a>(moment: &mut MapMut<'a>) -> gem_db::Result<WriteHashSet<'a, DynCore>> {
+    moment.put_set(STARTED)
 }
 
 // Removes `keys` from the hash map at `name`.
@@ -228,7 +228,7 @@ fn remove<'k>(
     name: &str,
     keys: impl IntoIterator<Item = &'k String>,
 ) -> gem_db::Result<()> {
-    let mut map = map_mut(moment, name)?;
+    let mut map = moment.put_map(name)?;
     for key in keys {
         map.remove(key)?;
     }
@@ -246,10 +246,12 @@ fn unstart<'k>(moment: &mut MapMut, ids: impl IntoIterator<Item = &'k String>) -
 impl Conversations {
     pub fn load() -> Result<Self, String> {
         let (handled, no_proposal, threads) = crate::db().read(|moment| {
-            let handled: HashSet<String> = match moment.get_cursor(STARTED)? {
-                Some(started) => entries(&started)?.into_iter().map(|(id, _)| id).collect(),
-                None => HashSet::new(),
-            };
+            let mut handled = HashSet::new();
+            if let Some(started) = moment.get_set(STARTED)? {
+                for id in started.keys()? {
+                    handled.insert(id?.read_string(None)?);
+                }
+            }
             let no_proposal: HashMap<String, String> =
                 texts(moment, NO_PROPOSAL)?.into_iter().collect();
             let threads: HashMap<String, String> = texts(moment, THREADS)?.into_iter().collect();
@@ -589,7 +591,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                 };
                 if let Ok(thread_id) = &sent {
                     (this.0.threads.lock().await).insert(key.url.clone(), thread_id.clone());
-                    save(|moment| map_mut(moment, THREADS)?.put(&key.url, &**thread_id));
+                    save(|moment| moment.put_map(THREADS)?.put(&key.url, &**thread_id));
                 }
             }
             match sent {
@@ -632,7 +634,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
     // Forgets the thread answering the comments on the cluster whose oldest pull request is `pr`.
     async fn forget_thread(&self, pr: &str) {
         self.0.threads.lock().await.remove(pr);
-        save(|moment| map_mut(moment, THREADS)?.remove(pr).map(drop));
+        save(|moment| moment.put_map(THREADS)?.remove(pr).map(drop));
     }
 
     // Queues an agent answering `failure` on `pr`.
@@ -672,7 +674,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                     investigations::archive(&title, &pr.url, &failure, reply).await;
                     if !proposals::exist_for(id).await {
                         let mut no_proposal = this.0.no_proposal.lock().await;
-                        save(|moment| map_mut(moment, NO_PROPOSAL)?.put(id, reply));
+                        save(|moment| moment.put_map(NO_PROPOSAL)?.put(id, reply));
                         no_proposal.insert(id.to_string(), reply.to_string());
                     }
                 }

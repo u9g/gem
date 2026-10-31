@@ -10,10 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{
-    Cursor, Db, Map, MapMut, entries, get_map, get_text, map_mut,
-    xitdb::ReadHashMap,
-};
+use gem_db::{Db, Map, MapMut, xitdb::ReadHashMap};
 use tokio::sync::Mutex;
 
 // In the database's moment, the hash map from the URL of each pull request being rebased to a hash
@@ -114,11 +111,11 @@ impl<H: Host> Rebases<H> {
     pub async fn start(&self, urls: &[String], name: &str) -> Result<(), String> {
         let _starting = self.starting.lock().await;
         let running = self.db.read(|moment| {
-            let Some(rebases) = get_map(moment, REBASES)? else {
+            let Some(rebases) = moment.get_map(REBASES)? else {
                 return Ok(false);
             };
             for url in urls {
-                if rebases.get_cursor(url)?.is_some() {
+                if rebases.get_map(url)?.is_some() {
                     return Ok(true);
                 }
             }
@@ -144,10 +141,10 @@ settle this thread.",
         );
         let title = format!("Rebase {name}");
         self.db.write(|moment| {
-            let mut rebases = map_mut(moment, REBASES)?;
+            let mut rebases = moment.put_map(REBASES)?;
             for (url, head) in urls.iter().zip(&heads) {
                 rebases.remove(url)?;
-                let mut rebase = map_mut(&mut rebases, url)?;
+                let mut rebase = rebases.put_map(url)?;
                 rebase.put("head", &**head)?;
                 rebase.put("title", &*title)?;
                 rebase.put("started-at", now())?;
@@ -164,7 +161,7 @@ settle this thread.",
         };
         self.db.write(|moment| {
             for url in urls_where(moment, |rebase| rebase.thread_id.is_none())? {
-                map_mut(&mut map_mut(moment, REBASES)?, &url)?.put("thread", &*thread_id)?;
+                moment.put_map(REBASES)?.put_map(&url)?.put("thread", &*thread_id)?;
             }
             Ok(())
         })?;
@@ -211,9 +208,13 @@ settle this thread.",
                 break;
             }
             let _ = self.db.write(|moment| {
-                let ours = |rebase: &Rebase| rebase.thread_id.as_deref() == Some(&*thread_id);
-                for url in urls_where(moment, ours)? {
-                    let mut rebase = map_mut(&mut map_mut(moment, REBASES)?, &url)?;
+                // Unchanged rebases are left alone, so the history only grows when one changes.
+                let changed = |rebase: &Rebase| {
+                    rebase.thread_id.as_deref() == Some(&*thread_id)
+                        && rebase.question != progress.question
+                };
+                for url in urls_where(moment, changed)? {
+                    let mut rebase = moment.put_map(REBASES)?.put_map(&url)?;
                     rebase.put("question", u64::from(progress.question))?;
                 }
                 Ok(())
@@ -233,7 +234,7 @@ settle this thread.",
         for (url, head) in rebases {
             if self.host.refs(&url).await.is_some_and(|refs| refs.head != head) {
                 let _ = self.db.write(|moment| {
-                    let mut rebase = map_mut(&mut map_mut(moment, REBASES)?, &url)?;
+                    let mut rebase = moment.put_map(REBASES)?.put_map(&url)?;
                     rebase.put("question", 0u64)?;
                     rebase.put("pushed", 1u64)
                 });
@@ -260,35 +261,36 @@ settle this thread.",
     }
 
     fn remove(&self, url: &str) -> Result<(), String> {
-        self.db.write(|moment| map_mut(moment, REBASES)?.remove(url)).map(drop)
+        self.db.write(|moment| moment.put_map(REBASES)?.remove(url)).map(drop)
     }
 }
 
 // Each rebase in `moment`, with the head it started at, by pull request URL.
 fn rebases(moment: &Map) -> gem_db::Result<BTreeMap<String, (Rebase, String)>> {
-    let Some(rebases) = moment.get_cursor(REBASES)? else {
+    let Some(rebases) = moment.get_map(REBASES)? else {
         return Ok(BTreeMap::new());
     };
-    (entries(&rebases)?.into_iter()).map(|(url, rebase)| Ok((url, rebase_at(rebase)?))).collect()
+    let rebases = rebases.entries()?.map(|pair| {
+        let pair = pair?;
+        let rebase = ReadHashMap::new(pair.value_cursor)?;
+        Ok((pair.key_cursor.read_string(None)?, rebase_at(&rebase)?))
+    });
+    rebases.collect()
 }
 
-fn rebase_at(cursor: Cursor) -> gem_db::Result<(Rebase, String)> {
-    let rebase = ReadHashMap::new(cursor)?;
+fn rebase_at(rebase: &Map) -> gem_db::Result<(Rebase, String)> {
     let flag = |name: &str| -> gem_db::Result<bool> {
-        let flag = rebase.get_cursor(name)?.map(|flag| flag.read_uint()).transpose()?;
-        Ok(flag.is_some_and(|flag| flag != 0))
+        Ok(rebase.get_uint(name)?.is_some_and(|flag| flag != 0))
     };
-    let started_at = rebase.get_cursor("started-at")?.map(|at| at.read_int()).transpose()?;
-    let head = get_text(&rebase, "head")?.unwrap_or_default();
     Ok((
         Rebase {
-            thread_id: get_text(&rebase, "thread")?,
-            title: get_text(&rebase, "title")?.unwrap_or_default(),
-            started_at: started_at.unwrap_or_default(),
+            thread_id: rebase.get_string("thread", None)?,
+            title: rebase.get_string("title", None)?.unwrap_or_default(),
+            started_at: rebase.get_int("started-at")?.unwrap_or_default(),
             question: flag("question")?,
             pushed: flag("pushed")?,
         },
-        head,
+        rebase.get_string("head", None)?.unwrap_or_default(),
     ))
 }
 
@@ -300,7 +302,7 @@ fn urls_where(moment: &Map, matches: impl Fn(&Rebase) -> bool) -> gem_db::Result
 
 fn remove(moment: &mut MapMut, matches: impl Fn(&Rebase) -> bool) -> gem_db::Result<()> {
     for url in urls_where(moment, matches)? {
-        map_mut(moment, REBASES)?.remove(&url)?;
+        moment.put_map(REBASES)?.remove(&url)?;
     }
     Ok(())
 }
@@ -507,11 +509,11 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         Rebases::new(db.clone(), host.clone()).unwrap();
         db.write(|moment| {
-            let mut rebases = map_mut(moment, REBASES)?;
-            let mut started = map_mut(&mut rebases, "https://github.com/o/r/pull/1")?;
+            let mut rebases = moment.put_map(REBASES)?;
+            let mut started = rebases.put_map("https://github.com/o/r/pull/1")?;
             started.put("head", "old")?;
             started.put("thread", "t")?;
-            map_mut(&mut rebases, "https://github.com/o/r/pull/2")?.put("head", "old")
+            rebases.put_map("https://github.com/o/r/pull/2")?.put("head", "old")
         })
         .unwrap();
 

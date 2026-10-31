@@ -10,10 +10,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{
-    Cursor, Db, Map, MapMut, entries, get_map, get_text, map_mut,
-    xitdb::ReadHashMap,
-};
+use gem_db::{Db, Map, MapMut, xitdb::ReadHashMap};
 use tokio::sync::Mutex;
 
 // In the database's moment, the hash map from the URL of each pull request being merged to a hash
@@ -101,11 +98,11 @@ impl<H: Host> Merges<H> {
     pub async fn start(&self, urls: &[String], admin: &[String], name: &str) -> Result<(), String> {
         let _starting = self.starting.lock().await;
         let running = self.db.read(|moment| {
-            let Some(merges) = get_map(moment, MERGES)? else {
+            let Some(merges) = moment.get_map(MERGES)? else {
                 return Ok(false);
             };
             for url in urls {
-                if merges.get_cursor(url)?.is_some() {
+                if merges.get_map(url)?.is_some() {
                     return Ok(true);
                 }
             }
@@ -139,10 +136,10 @@ settle this thread."
         );
         let title = format!("Merge {name}");
         self.db.write(|moment| {
-            let mut merges = map_mut(moment, MERGES)?;
+            let mut merges = moment.put_map(MERGES)?;
             for url in urls {
                 merges.remove(url)?;
-                let mut merge = map_mut(&mut merges, url)?;
+                let mut merge = merges.put_map(url)?;
                 merge.put("title", &*title)?;
                 merge.put("started-at", now())?;
             }
@@ -158,7 +155,7 @@ settle this thread."
         };
         self.db.write(|moment| {
             for url in urls_where(moment, |merge| merge.thread_id.is_none())? {
-                map_mut(&mut map_mut(moment, MERGES)?, &url)?.put("thread", &*thread_id)?;
+                moment.put_map(MERGES)?.put_map(&url)?.put("thread", &*thread_id)?;
             }
             Ok(())
         })?;
@@ -209,9 +206,13 @@ settle this thread."
                 break;
             }
             let _ = self.db.write(|moment| {
-                let ours = |merge: &Merge| merge.thread_id.as_deref() == Some(&*thread_id);
-                for url in urls_where(moment, ours)? {
-                    let mut merge = map_mut(&mut map_mut(moment, MERGES)?, &url)?;
+                // Unchanged merges are left alone, so the history only grows when one changes.
+                let changed = |merge: &Merge| {
+                    merge.thread_id.as_deref() == Some(&*thread_id)
+                        && merge.question != progress.question
+                };
+                for url in urls_where(moment, changed)? {
+                    let mut merge = moment.put_map(MERGES)?.put_map(&url)?;
                     merge.put("question", u64::from(progress.question))?;
                 }
                 Ok(())
@@ -225,21 +226,23 @@ settle this thread."
 
 // Each merge in `moment`, by pull request URL.
 fn merges(moment: &Map) -> gem_db::Result<BTreeMap<String, Merge>> {
-    let Some(merges) = moment.get_cursor(MERGES)? else {
+    let Some(merges) = moment.get_map(MERGES)? else {
         return Ok(BTreeMap::new());
     };
-    (entries(&merges)?.into_iter()).map(|(url, merge)| Ok((url, merge_at(merge)?))).collect()
+    let merges = merges.entries()?.map(|pair| {
+        let pair = pair?;
+        let merge = ReadHashMap::new(pair.value_cursor)?;
+        Ok((pair.key_cursor.read_string(None)?, merge_at(&merge)?))
+    });
+    merges.collect()
 }
 
-fn merge_at(cursor: Cursor) -> gem_db::Result<Merge> {
-    let merge = ReadHashMap::new(cursor)?;
-    let started_at = merge.get_cursor("started-at")?.map(|at| at.read_int()).transpose()?;
-    let question = merge.get_cursor("question")?.map(|q| q.read_uint()).transpose()?;
+fn merge_at(merge: &Map) -> gem_db::Result<Merge> {
     Ok(Merge {
-        thread_id: get_text(&merge, "thread")?,
-        title: get_text(&merge, "title")?.unwrap_or_default(),
-        started_at: started_at.unwrap_or_default(),
-        question: question.is_some_and(|question| question != 0),
+        thread_id: merge.get_string("thread", None)?,
+        title: merge.get_string("title", None)?.unwrap_or_default(),
+        started_at: merge.get_int("started-at")?.unwrap_or_default(),
+        question: merge.get_uint("question")?.is_some_and(|question| question != 0),
     })
 }
 
@@ -251,7 +254,7 @@ fn urls_where(moment: &Map, matches: impl Fn(&Merge) -> bool) -> gem_db::Result<
 
 fn remove(moment: &mut MapMut, matches: impl Fn(&Merge) -> bool) -> gem_db::Result<()> {
     for url in urls_where(moment, matches)? {
-        map_mut(moment, MERGES)?.remove(&url)?;
+        moment.put_map(MERGES)?.remove(&url)?;
     }
     Ok(())
 }
@@ -418,11 +421,11 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         Merges::new(db.clone(), host.clone()).unwrap();
         db.write(|moment| {
-            let mut merges = map_mut(moment, MERGES)?;
+            let mut merges = moment.put_map(MERGES)?;
             for url in ["https://github.com/o/r/pull/1", "https://github.com/o/s/pull/2"] {
-                map_mut(&mut merges, url)?.put("thread", "t")?;
+                merges.put_map(url)?.put("thread", "t")?;
             }
-            map_mut(&mut merges, "https://github.com/o/t/pull/3").map(drop)
+            merges.put_map("https://github.com/o/t/pull/3").map(drop)
         })
         .unwrap();
 

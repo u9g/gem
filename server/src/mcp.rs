@@ -24,7 +24,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use gem_db::{Db, get_text};
+use gem_db::Db;
 use serde_json::{Value, json};
 
 use crate::investigations;
@@ -53,7 +53,7 @@ fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
 
 // The snapshot's JSON, once the server saved one.
 fn snapshot(db: &Db) -> Option<String> {
-    db.read(|moment| get_text(moment, SNAPSHOT)).ok().flatten()
+    db.read(|moment| moment.get_string(SNAPSHOT, None)).ok().flatten()
 }
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
@@ -1186,7 +1186,7 @@ mod tests {
         });
         (server.db())
             .write(|moment| {
-                let mut closed = gem_db::map_mut(moment, "closed-investigations")?;
+                let mut closed = moment.put_map("closed-investigations")?;
                 closed.put("18f", investigation.to_string())
             })
             .unwrap();

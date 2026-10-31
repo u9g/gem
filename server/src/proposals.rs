@@ -4,7 +4,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, map_mut, texts};
+use gem_db::{Db, texts};
 use serde::Deserialize;
 use tracing::Instrument;
 
@@ -801,7 +801,7 @@ pub async fn propose(
     };
     // The proposal it replaces may have been approved or dismissed meanwhile.
     let recorded = db.write(|moment| {
-        let mut proposals = map_mut(moment, PROPOSALS)?;
+        let mut proposals = moment.put_map(PROPOSALS)?;
         if let Some(replaced) = &replaced
             && !proposals.remove(replaced)?
         {
@@ -955,7 +955,7 @@ pub fn load(db: &Db) -> Vec<Proposal> {
 
 fn save(db: &Db, proposal: &Proposal) {
     let saved = db.write(|moment| {
-        map_mut(moment, PROPOSALS)?.put(&proposal.id, serde_json::to_string(proposal).unwrap())
+        moment.put_map(PROPOSALS)?.put(&proposal.id, serde_json::to_string(proposal).unwrap())
     });
     if let Err(error) = saved {
         tracing::warn!(proposal = %proposal.id, %error, "cannot save proposal");
@@ -963,7 +963,7 @@ fn save(db: &Db, proposal: &Proposal) {
 }
 
 fn delete(id: &str) {
-    let deleted = crate::db().write(|moment| map_mut(moment, PROPOSALS)?.remove(id));
+    let deleted = crate::db().write(|moment| moment.put_map(PROPOSALS)?.remove(id));
     if let Err(error) = deleted {
         tracing::warn!(proposal = id, %error, "cannot delete proposal");
     }

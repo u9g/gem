@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use gem_db::{map_mut, texts};
+use gem_db::texts;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
@@ -67,7 +67,7 @@ impl Names {
                 let _permit = names.0.threads.acquire().await.unwrap();
                 if let Some(name) = ask_t3(&prs).await {
                     let saved =
-                        crate::db().write(|moment| map_mut(moment, NAMES)?.put(&key, &*name));
+                        crate::db().write(|moment| moment.put_map(NAMES)?.put(&key, &*name));
                     if let Err(error) = saved {
                         tracing::warn!(%error, "cannot save a cluster's name");
                     }

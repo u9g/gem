@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gem_db::{Db, get_map, get_text, map_mut, texts};
+use gem_db::{Db, texts};
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -493,7 +493,7 @@ fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
 fn insert(investigation: &Investigation, closed: bool) {
     let saved = crate::db().write(|moment| {
         let json = serde_json::to_string(investigation).unwrap();
-        map_mut(moment, map_of(closed))?.put(&investigation.id, json)
+        moment.put_map(map_of(closed))?.put(&investigation.id, json)
     });
     if let Err(error) = saved {
         tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
@@ -505,8 +505,8 @@ fn insert(investigation: &Investigation, closed: bool) {
 // Returns whether it closed it.
 fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
     let updated = crate::db().write(|moment| {
-        let json = match get_map(moment, OPEN)? {
-            Some(open) => get_text(&open, id)?,
+        let json = match moment.get_map(OPEN)? {
+            Some(open) => open.get_string(id, None)?,
             None => None,
         };
         let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
@@ -516,9 +516,9 @@ fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
         let close = change(&mut investigation);
         let json = serde_json::to_string(&investigation).unwrap();
         if close {
-            map_mut(moment, OPEN)?.remove(id)?;
+            moment.put_map(OPEN)?.remove(id)?;
         }
-        map_mut(moment, map_of(close))?.put(id, json)?;
+        moment.put_map(map_of(close))?.put(id, json)?;
         Ok(close)
     });
     updated.unwrap_or_else(|error| {
@@ -564,7 +564,7 @@ mod tests {
                 ..Default::default()
             };
             let json = serde_json::to_string(&investigation).unwrap();
-            db.write(|moment| map_mut(moment, map_of(closed))?.put(id, &*json)).unwrap();
+            db.write(|moment| moment.put_map(map_of(closed))?.put(id, &*json)).unwrap();
         };
         write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.", true);
         write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);

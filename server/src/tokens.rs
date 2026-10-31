@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gem_db::{Db, get_map, get_text, map_mut, texts};
+use gem_db::{Db, texts};
 use serde::{Deserialize, Serialize};
 
 // The --mcp-config each token's agent was started with, as `<token>.mcp.json` in this directory,
@@ -106,8 +106,8 @@ impl Tokens {
 
     // The subject of `token`, or None when it is not one gem issued or it was revoked.
     pub async fn subject(&self, token: &str) -> Option<Subject> {
-        let json = self.db.read(|moment| match get_map(moment, TOKENS)? {
-            Some(tokens) => get_text(&tokens, token),
+        let json = self.db.read(|moment| match moment.get_map(TOKENS)? {
+            Some(tokens) => tokens.get_string(token, None),
             None => Ok(None),
         });
         let json = json.ok()?;
@@ -141,7 +141,7 @@ impl Tokens {
                 })
                 .map(|(token, _)| token)
                 .collect();
-            let mut tokens = map_mut(moment, TOKENS)?;
+            let mut tokens = moment.put_map(TOKENS)?;
             for token in &revoked {
                 tokens.remove(token)?;
             }
