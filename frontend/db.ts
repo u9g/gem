@@ -1,5 +1,5 @@
 import { sha1 } from '@noble/hashes/legacy.js';
-import { createContext, useContext, useRef, useSyncExternalStore } from 'react';
+import { createContext, useContext, useMemo, useRef, useSyncExternalStore } from 'react';
 import {
   Bytes,
   Float,
@@ -125,7 +125,7 @@ export function list<T, I>(item: Kind<T, I>): Kind<readonly T[], readonly I[]> {
   };
 }
 
-// Messages keyed by data rather than by field names, like the clusters by key.
+// Values keyed by data rather than by field names, like the clusters by key.
 export class Keyed<T> {
   private kept = new Map<string, T | undefined>();
 
@@ -134,6 +134,10 @@ export class Keyed<T> {
     private readonly item: Kind<T, never>,
     private readonly views: Views,
   ) {}
+
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
 
   get(key: string): T | undefined {
     if (!this.map) return undefined;
@@ -154,15 +158,12 @@ export class Keyed<T> {
   }
 }
 
-export function keyed<S extends Shape>(message: S): Kind<Keyed<Infer<S>>, Readonly<Record<string, Write<S>>>> {
+export function keyed<T, I>(item: Kind<T, I>): Kind<Keyed<T>, Readonly<Record<string, I>>> {
   return {
-    read: (cursor, views) => {
-      const item = message as unknown as Kind<Infer<S>, never>;
-      return cursor ? views.keyed(cursor, item) : new Keyed(undefined, item, views);
-    },
+    read: (cursor, views) => (cursor ? views.keyed(cursor, item) : new Keyed(undefined, item, views)),
     write: (cursor, values) => {
       const map = new WriteHashMap(cursor);
-      for (const [key, value] of Object.entries(values)) message.write(map.putCursor(key), value);
+      for (const [key, value] of Object.entries(values)) item.write(map.putCursor(key), value);
     },
   };
 }
@@ -263,6 +264,13 @@ export function useDb<T>(read: (moment: Moment | undefined) => T): T {
   const db = useContext(DbContext);
   const kept = useRef<Kept<T>>(undefined);
   return useSyncExternalStore(db.subscribe, () => (kept.current = select(db, read, kept.current)).value);
+}
+
+// The keys of the actions in progress, which every frontend greys out: the same set until they
+// change.
+export function usePending(): ReadonlySet<string> {
+  const keys = useDb((moment) => moment?.pending.keys().sort() ?? []);
+  return useMemo(() => new Set(keys), [keys]);
 }
 
 // The server's view database hashes keys with SHA-1. xitdb's own `Hasher` hashes with node's

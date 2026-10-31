@@ -155,6 +155,10 @@ export const Moment = shape({
   search: str,
   // The agents acting on no open pull request.
   agents: list(Agent),
+  // The actions in progress, each by the key the frontend names it by (a proposal's ID, a
+  // cluster's key, `merge` or `rebase` and a cluster's key, a pull request's URL, or an agent's
+  // ID), with its route.
+  pending: keyed(str),
 });
 export type Moment = Infer<typeof Moment>;
 

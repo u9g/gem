@@ -12,6 +12,8 @@ export type Shown = {
   agents?: readonly Write<typeof Agent>[];
   login?: string;
   search?: string;
+  // The keys of the actions in progress.
+  pending?: readonly string[];
 };
 
 export class MemoryDb implements Db {
@@ -46,6 +48,7 @@ export class MemoryDb implements Db {
       login: shown.login ?? '',
       search: shown.search ?? '',
       agents: shown.agents ?? [],
+      pending: Object.fromEntries((shown.pending ?? []).map((key) => [key, ''])),
     });
   }
 

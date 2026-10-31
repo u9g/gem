@@ -227,6 +227,22 @@ test('a fixture written in TypeScript reads like the server writes', () => {
   assert.equal(new MemoryDb().put(shape({ title: str }), { title: 't' }).title, 't');
 });
 
+test('an action going pending, and done, changes what reads it', () => {
+  const db = new MemoryDb({ clusters: [{ pullRequests: [{ url: 'u' }] }] });
+  const approving = selecting(db, (moment) => moment?.pending.has('p1'));
+  const keys = selecting(db, (moment) => moment?.pending.keys().sort());
+  const cluster = selecting(db, (moment) => moment?.clusters.get('u'));
+  assert.equal(approving(), false);
+  const before = { keys: keys(), cluster: cluster() };
+  db.show({ clusters: [{ pullRequests: [{ url: 'u' }] }], pending: ['p1', 'merge u'] });
+  assert.equal(approving(), true);
+  assert.deepEqual(keys(), ['merge u', 'p1']);
+  assert.notEqual(keys(), before.keys);
+  db.show({ clusters: [{ pullRequests: [{ url: 'u' }] }] });
+  assert.equal(approving(), false);
+  assert.deepEqual(keys(), []);
+});
+
 test('same compares what reads return', () => {
   assert.ok(same([1, 'a', { b: [true] }], [1, 'a', { b: [true] }]));
   assert.ok(same(new Date(5), new Date(5)));

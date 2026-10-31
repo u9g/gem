@@ -21,7 +21,9 @@
 // - `clusters`: each cluster, by `key`. Clusters move up and down the list as they're updated,
 //   and a list is compared by index, so they're kept in a map that doesn't move them;
 // - `order`: the clusters' keys, in the order they show;
-// - `login`, `search` and `agents`, the rest of the `ListOpenPullRequestsResponse`.
+// - `login`, `search` and `agents`, the rest of the `ListOpenPullRequestsResponse`;
+// - `pending`: the actions in progress, by the key the frontend names each by, each with its
+//   route, so every frontend greys out what's in progress, not only the one that started it.
 
 use std::{
     collections::HashSet,
@@ -30,7 +32,7 @@ use std::{
 };
 
 use gem_db::{
-    Db, Delta, Migrations, ReplicaState,
+    Db, Delta, MapMut, Migrations, ReplicaState,
     xitdb::{
         Core, Map, ReadHashMap, Result, Structured, WriteHashMap, get_structured, put_structured,
     },
@@ -47,6 +49,7 @@ const ORDER: &str = "order";
 const LOGIN: &str = "login";
 const SEARCH: &str = "search";
 const AGENTS: &str = "agents";
+const PENDING: Map<str, String> = Map::new("pending");
 
 // How much the file grows past twice its compacted size before it is compacted again. A
 // frontend's first copy is the whole file, so it is at most about twice the view.
@@ -80,9 +83,11 @@ pub struct Live {
 }
 
 impl Live {
-    // Opens the view at `path`, or makes it.
+    // Opens the view at `path`, or makes it. An action a stopped server left pending isn't
+    // running anymore, so nothing is pending when it opens.
     pub fn open(path: impl AsRef<Path>) -> Result<Live, String> {
         let (db, _) = Db::open_growing(path, &migrations(), GROWTH)?;
+        db.write(|moment| moment.remove(PENDING.name()).map(drop))?;
         let (changes, _) = broadcast::channel(BACKLOG);
         Ok(Live { db, changes, publishing: Arc::default() })
     }
@@ -98,19 +103,44 @@ impl Live {
     // Writes `response` and sends every frontend the bytes that appended. Returns whether any
     // did.
     pub fn publish(&self, response: &ListOpenPullRequestsResponse) -> bool {
+        self.commit(|moment| write_view(moment, response)).is_ok_and(|((), sent)| sent)
+    }
+
+    // Marks the action `key` pending, as `route`, and sends every frontend the change, unless
+    // it's pending already, which is None. The key stays pending until the returned `Pending` is
+    // finished or dropped.
+    pub fn begin(&self, key: &str, route: &str) -> Result<Option<Pending>, String> {
+        let started = self.commit(|moment| {
+            if PENDING.contains(moment, key)? {
+                return Ok(false);
+            }
+            PENDING.put(moment, key, route).map(|()| true)
+        })?;
+        // Made only once it started: dropping one takes its key out of `pending`.
+        Ok(started.0.then(|| Pending { live: self.clone(), key: key.to_string(), done: false }))
+    }
+
+    // The keys of the actions in progress.
+    #[cfg(test)]
+    pub fn pending(&self) -> Vec<String> {
+        let keys = self.db.read(|moment| PENDING.iter(moment)?.map(|e| Ok(e?.0)).collect());
+        keys.unwrap_or_default()
+    }
+
+    // Writes what `write` writes and sends every frontend the bytes that appended, returning
+    // what `write` returned and whether any were. The change is sent before the next write
+    // commits, so changes are sent in the order they commit.
+    fn commit<T>(&self, write: impl FnOnce(&mut MapMut) -> Result<T>) -> Result<(T, bool), String> {
         let _publishing = self.publishing.lock().unwrap_or_else(|error| error.into_inner());
-        match self.db.write_replicated(|moment| write_view(moment, response)) {
-            Ok(((), Some(delta))) => {
-                // No receiver while no frontend is in the room.
-                let _ = self.changes.send(Arc::new(delta));
-                true
-            }
-            Ok(((), None)) => false,
-            Err(error) => {
-                tracing::warn!(%error, "cannot write the view");
-                false
-            }
+        let written = self.db.write_replicated(write);
+        let written = written.inspect_err(|error| tracing::warn!(%error, "cannot write the view"));
+        let (value, delta) = written?;
+        let sent = delta.is_some();
+        if let Some(delta) = delta {
+            // No receiver while no frontend is in the room.
+            let _ = self.changes.send(Arc::new(delta));
         }
+        Ok((value, sent))
     }
 
     // Answers a frontend's view-sync request with the bytes its replica lacks. Its payload is
@@ -121,6 +151,37 @@ impl Live {
             .map_err(|error| (400, format!("not a replica's state: {error}")))?;
         let delta = self.db.replicate(replica);
         delta.map_err(|error| (500, format!("cannot read the view: {error}")))
+    }
+}
+
+// An action in progress. Finishing it, or dropping it, as when its handler fails, panics or is
+// cancelled, takes its key out of `pending`.
+pub struct Pending {
+    live: Live,
+    key: String,
+    done: bool,
+}
+
+impl Pending {
+    // Takes the key out of `pending` in the same moment as `response`, the view after the action,
+    // so frontends see the action's change and the end of its spinner together.
+    pub fn finish(mut self, response: Option<&ListOpenPullRequestsResponse>) {
+        self.done = true;
+        let key = std::mem::take(&mut self.key);
+        let _ = self.live.commit(|moment| {
+            if let Some(response) = response {
+                write_view(moment, response)?;
+            }
+            PENDING.remove(moment, &key).map(drop)
+        });
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.live.commit(|moment| PENDING.remove(moment, &self.key).map(drop));
+        }
     }
 }
 
@@ -469,6 +530,23 @@ mod tests {
         // A sync request carries xitdb's serde form of the replica's state.
         assert_eq!(view.live.sync("null").unwrap().end, view.size());
         assert!(view.live.sync("{}").is_err());
+    }
+
+    #[test]
+    fn a_restarted_server_has_nothing_pending() {
+        let mut view = View::new().unwrap();
+        let pending = view.live.begin("p1", "/proposals/approve").unwrap().unwrap();
+        // Two can't be pending under one key.
+        assert!(view.live.begin("p1", "/proposals/approve").unwrap().is_none());
+        assert_eq!(view.live.pending(), ["p1"]);
+        drop(pending);
+        assert!(view.live.pending().is_empty());
+        // As when the server stops while an action runs.
+        (view.live.db.write(|moment| PENDING.put(moment, "p2", "/proposals/approve"))).unwrap();
+        let path = view.dir.join(FILE);
+        view.live = Live::open(view.dir.join("other.xitdb")).unwrap();
+        view.live = Live::open(&path).unwrap();
+        assert!(view.live.pending().is_empty());
     }
 
     #[test]
