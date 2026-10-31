@@ -20,6 +20,7 @@ gem-launcher = { path = "crates/launcher" }
 gem-merges = { path = "crates/merges" }
 gem-proto = { path = "crates/proto" }
 gem-rebases = { path = "crates/rebases" }
+gem-sqlite-import = { path = "crates/sqlite-import" }
 gem-room = { path = "crates/room" }
 gem-t3 = { path = "crates/t3" }
 getrandom = "0.3.4"

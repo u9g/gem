@@ -53,8 +53,7 @@ use gem_t3 as t3;
 
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
-// The server's own database, in its working directory, with its state.
-const DB_FILE: &str = "gem.xitdb";
+use gem_db::FILE as DB_FILE;
 static DB: OnceLock<gem_db::Db> = OnceLock::new();
 
 // Opened when the server starts, before anything reads its state.
@@ -347,6 +346,13 @@ async fn run_server() {
     // Before anything uses it, so a server without gh signed in panics now, not on a request.
     login();
 
+    // A launcher started before the import existed starts servers without it.
+    match gem_sqlite_import::import_here() {
+        Ok(Some(message)) => tracing::info!("{message}"),
+        Ok(None) => {}
+        // Starting would make an empty gem.xitdb, which the import never replaces.
+        Err(error) => panic!("cannot import {}: {error}", gem_sqlite_import::SQLITE),
+    }
     let (db, migrated) =
         gem_db::Db::open(DB_FILE, &layout::migrations()).unwrap_or_else(|error| panic!("{error}"));
     if !migrated.ran.is_empty() {

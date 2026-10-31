@@ -21,6 +21,9 @@ use xitdb::{
 pub use xitdb::{Migrated, Migration};
 pub use xitdb::{Error, Result};
 
+// The server's database, in its working directory, with its state.
+pub const FILE: &str = "gem.xitdb";
+
 // How much the file grows past twice its compacted size before it is compacted again.
 const GROWTH: i64 = 16 << 20;
 

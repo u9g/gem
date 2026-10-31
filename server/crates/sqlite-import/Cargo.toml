@@ -1,0 +1,9 @@
+[package]
+name = "gem-sqlite-import"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gem-db = { path = "../db" }
+# Only to read a gem.sqlite written before the database was xitdb, once.
+rusqlite = { version = "0.37.0", features = ["bundled"] }
