@@ -190,68 +190,72 @@ fn code(arguments: &Value) -> Result<&str, String> {
     }
 }
 
-// The clusters' types, as pbjson writes them: camelCase, with fields that are false, 0 or empty
-// left out.
+// The clusters' types, as the view's structs serialize: camelCase, every field present, an unset
+// time or message null, times in milliseconds since the epoch, enums by their names, and the
+// rendered HTML and file diffs only gem's own view shows left out.
 const TYPES: &str = r#"// A cluster of the user's open pull requests, linked by stacking or mentions.
 interface Cluster {
-  name?: string; // Short name for its shared work.
-  updatedAt: string; // RFC 3339.
-  mergeBy?: MergeBy; // Left out when it cannot merge.
+  name: string; // Short name for its shared work, or "" until one is chosen.
+  updatedAt: number | null; // Milliseconds since the epoch.
+  mergeBy: MergeBy;
   pullRequests: PullRequest[]; // Oldest first.
-  agents?: Agent[]; // The agents gem started on its pull requests, newest first.
+  agents: Agent[]; // The agents gem started on its pull requests, newest first.
 }
-type MergeBy = "MERGE_BY_APPROVAL" | "MERGE_BY_ADMIN";
+type MergeBy = "unspecified" | "approval" | "admin"; // "unspecified": it cannot merge.
 interface PullRequest {
   url: string;
   title: string;
-  repository: { owner: string; name: string };
+  repository: { owner: string; name: string } | null;
   number: number;
   base: string; // The branch it merges into.
   headOid: string;
-  createdAt: string;
-  approved?: boolean;
-  checks?: { total?: number; done?: number; failed?: number };
-  checksPassing?: boolean;
-  checksFailing?: boolean;
-  behind?: boolean; // It must be rebased onto `base` before it can merge.
-  conflicts?: boolean;
-  mergeBy?: MergeBy;
-  rebasing?: boolean;
-  merging?: boolean;
+  createdAt: number | null;
+  approved: boolean;
+  checks: { total: number; done: number; failed: number } | null;
+  checksPassing: boolean;
+  checksFailing: boolean;
+  behind: boolean; // It must be rebased onto `base` before it can merge.
+  conflicts: boolean;
+  mergeBy: MergeBy;
+  rebasing: boolean;
+  rebased: boolean; // A rebase was pushed; GitHub hasn't listed the new commit yet.
+  merging: boolean;
   // What agents propose answering the conversations and failed checks waiting on the user.
-  proposals?: Proposal[];
-  noProposalReason?: string; // Why the agent answering its failed checks proposed nothing.
+  proposals: Proposal[];
+  noProposalReason: string; // Why the agent answering its failed checks proposed nothing.
 }
 interface Agent {
   id: string;
   title: string;
-  state?: "AGENT_STATE_QUEUED" | "AGENT_STATE_WAITING"; // Left out while it works.
+  state: "working" | "queued" | "waiting";
   pullRequestUrls: string[];
-  reply?: string; // Its latest reply, in markdown.
-  proposals?: Proposal[];
-  startedAt: string;
+  reply: string; // Its latest reply, in markdown.
+  proposals: Proposal[];
+  startedAt: number | null;
 }
 interface Proposal {
   id: string;
   summary: string;
   pullRequestUrl: string;
-  comment?: Comment; // The comment it answers.
-  earlierComments?: Comment[]; // The comments before it in its review thread.
-  checkFailure?: { id: string; headOid: string; checks: FailedCheck[] }; // The checks it answers.
-  patch?: Patch;
-  otherPatches?: Patch[];
-  openPullRequest?: { repository: string; base: string; branch: string; title: string; body: string; patch: Patch };
-  reply?: string;
-  resolveThread?: boolean;
-  followUp?: string;
-  rerun?: boolean;
-  closePullRequest?: boolean;
-  requestedTool?: string;
-  error?: string; // Why approving it last failed.
+  comment: Comment | null; // The comment it answers.
+  threadId: string;
+  earlierComments: Comment[]; // The comments before it in its review thread.
+  checkFailure: { id: string; headOid: string; checks: FailedCheck[] } | null; // The checks it answers.
+  patch: Patch | null;
+  otherPatches: Patch[];
+  openPullRequest: { repository: string; base: string; branch: string; title: string; body: string; patch: Patch | null } | null;
+  reply: string;
+  resolveThread: boolean;
+  followUp: string;
+  rerun: boolean;
+  closePullRequest: boolean;
+  requestedTool: string;
+  investigationId: string;
+  error: string; // Why approving it last failed.
 }
-interface Comment { id: string; author: string; body: string; url: string; path?: string; line?: number; diffHunk?: string }
-interface FailedCheck { id: string; name: string; conclusion: string; url: string; workflowRunId?: string; excerpt?: string }
-interface Patch { diff: string; commitMessage: string; headOid: string; pullRequestUrl?: string }"#;
+interface Comment { id: string; author: string; body: string; url: string; path: string; line: number; diffHunk: string }
+interface FailedCheck { id: string; name: string; conclusion: string; url: string; workflowRunId: number; excerpt: string }
+interface Patch { diff: string; commitMessage: string; headOid: string; pullRequestUrl: string }"#;
 
 const USER_API: &str = "declare const gem: {
   // Every cluster gem shows, most recently updated first.
@@ -294,8 +298,8 @@ fn cluster_of(view: &Db, pr: &str) -> Vec<String> {
     prs.into_iter().map(|pr| pr.url).collect()
 }
 
-// A cluster as a script reads it, as pbjson writes it, with only what agents need.
-fn cluster_value(cluster: &PullRequestCluster) -> Value {
+// A cluster as a script reads it, as the view stores it, with only what agents need.
+fn cluster_value(cluster: &view::Cluster) -> Value {
     let mut cluster = serde_json::to_value(cluster).unwrap();
     // Rendered HTML repeats the markdown next to it.
     strip_view(&mut cluster);
@@ -304,7 +308,7 @@ fn cluster_value(cluster: &PullRequestCluster) -> Value {
 
 // A cluster as `gem.cluster` returns it, for prompts of agents that may not reach this server.
 pub fn cluster_json(cluster: &PullRequestCluster) -> String {
-    serde_json::to_string_pretty(&cluster_value(cluster)).unwrap()
+    serde_json::to_string_pretty(&cluster_value(&view::Cluster::from(cluster))).unwrap()
 }
 
 // Drops what only gem's own view shows: rendered HTML, and PRs' file diffs.
@@ -1116,6 +1120,98 @@ mod tests {
         };
         assert_eq!(patch.pull_request_url, OTHER);
         assert_eq!(patch.head_oid, "abc");
+    }
+
+    // Scripts get exactly the fields `TYPES` declares for each type, every one of them present,
+    // with times as numbers and enums by their names.
+    #[tokio::test]
+    async fn scripts_get_the_declared_types() {
+        use crate::proto::{Agent, Checks, NewPullRequest, Patch, PullRequest, Repository};
+        let server = Server::new("types");
+        let comment = Comment { id: "c".into(), author: "a".into(), ..Default::default() };
+        let patch = Patch { diff: "d".into(), ..Default::default() };
+        let proposal = Proposal {
+            id: "p".into(),
+            comment: Some(comment.clone()),
+            earlier_comments: vec![comment],
+            patch: Some(patch.clone()),
+            other_patches: vec![patch.clone()],
+            check_failure: Some(CheckFailure {
+                checks: vec![FailedCheck { workflow_run_id: 7, ..Default::default() }],
+                ..Default::default()
+            }),
+            open_pull_request: Some(NewPullRequest { patch: Some(patch), ..Default::default() }),
+            ..Default::default()
+        };
+        let pr = PullRequest {
+            url: PR.into(),
+            repository: Some(Repository { owner: "o".into(), name: "r".into() }),
+            checks: Some(Checks { total: 2, done: 1, failed: 0 }),
+            created_at: Some(pbjson_types::Timestamp { seconds: 5, nanos: 0 }),
+            merge_by: crate::proto::MergeBy::Approval as i32,
+            proposals: vec![proposal],
+            ..Default::default()
+        };
+        let agent = Agent {
+            id: "a".into(),
+            state: crate::proto::AgentState::Waiting as i32,
+            ..Default::default()
+        };
+        let cluster = PullRequestCluster {
+            pull_requests: vec![pr],
+            agents: vec![agent],
+            ..Default::default()
+        };
+        let clusters = vec![cluster];
+        server.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
+        let token = server.token(&in_thread()).await;
+        let result = server.execute(&token, "async () => gem.clusters()").await;
+        let clusters: Value = serde_json::from_str(text(&result)).unwrap();
+
+        // The members `TYPES` declares for `name`, at the top level of its braces.
+        let declared = |name: &str| -> Vec<String> {
+            // Without the comments.
+            let types: Vec<&str> =
+                TYPES.lines().map(|line| line.split("//").next().unwrap()).collect();
+            let types = types.join("\n");
+            let start = types.find(&format!("interface {name} {{")).unwrap() + name.len() + 12;
+            let (mut depth, mut members, mut word) = (1, Vec::new(), String::new());
+            for c in types[start..].chars() {
+                match c {
+                    '{' => depth += 1,
+                    '}' if depth == 1 => break,
+                    '}' => depth -= 1,
+                    ':' if depth == 1 && !word.is_empty() => {
+                        members.push(std::mem::take(&mut word));
+                    }
+                    c if c.is_alphanumeric() && depth == 1 => word.push(c),
+                    _ => word.clear(),
+                }
+            }
+            members.sort();
+            members
+        };
+        let keys = |value: &Value| -> Vec<String> {
+            let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        let cluster = &clusters[0];
+        let pr = &cluster["pullRequests"][0];
+        let proposal = &pr["proposals"][0];
+        assert_eq!(keys(cluster), declared("Cluster"));
+        assert_eq!(keys(pr), declared("PullRequest"));
+        assert_eq!(keys(&cluster["agents"][0]), declared("Agent"));
+        assert_eq!(keys(proposal), declared("Proposal"));
+        assert_eq!(keys(&proposal["comment"]), declared("Comment"));
+        assert_eq!(keys(&proposal["patch"]), declared("Patch"));
+        assert_eq!(keys(&proposal["checkFailure"]["checks"][0]), declared("FailedCheck"));
+        assert_eq!(pr["createdAt"], 5000);
+        assert_eq!(pr["mergeBy"], "approval");
+        assert_eq!(cluster["mergeBy"], "unspecified");
+        assert_eq!(cluster["updatedAt"], Value::Null);
+        assert_eq!(cluster["agents"][0]["state"], "waiting");
+        assert_eq!(proposal["checkFailure"]["checks"][0]["workflowRunId"], 7);
     }
 
     #[tokio::test]

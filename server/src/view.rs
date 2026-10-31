@@ -9,19 +9,16 @@
 // opens, and whenever it has grown well past its size then, which gives it a new file ID, so
 // every replica, including one from before a restart, is sent a whole copy when it next syncs.
 //
-// Everything in it is stored structurally, by xitdb's `Structured` codec: a message is a hash map
-// from each field's name, as pbjson names it (camelCase), to its value, a repeated field is an
-// array list, and a string, an enum (pbjson writes its name) or a 64-bit integer (pbjson writes it
-// as a decimal string) is bytes. A bool is the text `true` or `false`, tagged `bl`. pbjson leaves
-// out fields that hold their default, so those are missing keys. Writing compares with what's
-// stored and writes only what differs, so a change appends the values that changed and the
-// blocks along the path to them, not the cluster they are in.
+// It holds the plain structs of `types`, stored structurally by xitdb's `Structured` codec,
+// every field written, so a reader needs no schema. Writing compares with what's stored and writes
+// only what differs, so a change appends the values that changed and the blocks along the path to
+// them, not the cluster they are in.
 //
 // A moment holds:
-// - `clusters`: each cluster, by `key`. Clusters move up and down the list as they're updated,
+// - `clusters`: each cluster, by its key. Clusters move up and down the list as they're updated,
 //   and a list is compared by index, so they're kept in a map that doesn't move them;
 // - `order`: the clusters' keys, in the order they show;
-// - `login`, `search` and `agents`, the rest of the `ListOpenPullRequestsResponse`;
+// - `login`, `search` and `agents`, the rest of what the UI shows;
 // - `pending`: the actions in progress, by the key the frontend names each by, each with its
 //   route, so every frontend greys out what's in progress, not only the one that started it.
 
@@ -39,12 +36,15 @@ use gem_db::{
 };
 use tokio::sync::broadcast;
 
-use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
+use crate::proto::ListOpenPullRequestsResponse;
+
+mod types;
+pub use types::*;
 
 // In the server's working directory.
 pub const FILE: &str = "view.xitdb";
 
-const CLUSTERS: Map<str, Structured<PullRequestCluster>> = Map::new("clusters");
+const CLUSTERS: Map<str, Structured<Cluster>> = Map::new("clusters");
 const ORDER: &str = "order";
 const LOGIN: &str = "login";
 const SEARCH: &str = "search";
@@ -62,7 +62,7 @@ pub fn migrations() -> Migrations {
 }
 
 // The clusters in the order they show, as the view last held them.
-pub fn clusters<C: Core>(moment: &ReadHashMap<'_, C>) -> Result<Vec<PullRequestCluster>> {
+pub fn clusters<C: Core>(moment: &ReadHashMap<'_, C>) -> Result<Vec<Cluster>> {
     let order: Vec<String> = get_structured(moment, ORDER)?.unwrap_or_default();
     let clusters = order.iter().map(|key| CLUSTERS.get(moment, key));
     clusters.filter_map(Result::transpose).collect()
@@ -103,7 +103,8 @@ impl Live {
     // Writes `response` and sends every frontend the bytes that appended. Returns whether any
     // did.
     pub fn publish(&self, response: &ListOpenPullRequestsResponse) -> bool {
-        self.commit(|moment| write_view(moment, response)).is_ok_and(|((), sent)| sent)
+        let shown = Shown::from(response);
+        self.commit(|moment| write_view(moment, &shown)).is_ok_and(|((), sent)| sent)
     }
 
     // Marks the action `key` pending, as `route`, and sends every frontend the change, unless
@@ -168,9 +169,10 @@ impl Pending {
     pub fn finish(mut self, response: Option<&ListOpenPullRequestsResponse>) {
         self.done = true;
         let key = std::mem::take(&mut self.key);
+        let shown = response.map(Shown::from);
         let _ = self.live.commit(|moment| {
-            if let Some(response) = response {
-                write_view(moment, response)?;
+            if let Some(shown) = &shown {
+                write_view(moment, shown)?;
             }
             PENDING.remove(moment, &key).map(drop)
         });
@@ -185,29 +187,26 @@ impl Drop for Pending {
     }
 }
 
-fn write_view<C: Core>(
-    moment: &mut WriteHashMap<'_, C>,
-    response: &ListOpenPullRequestsResponse,
-) -> Result<()> {
+fn write_view<C: Core>(moment: &mut WriteHashMap<'_, C>, shown: &Shown) -> Result<()> {
     // A cluster keeps its key while pull requests join it and titles change: it is the URL of its
     // oldest pull request, which `cluster` and `agents::join` put first. (A name's `names::key`
     // changes with every title.) A pull request is in one cluster, so no two share a key.
-    let order: Vec<&str> = (response.clusters.iter())
+    let order: Vec<&str> = (shown.clusters.iter())
         .map(|cluster| cluster.pull_requests.first().map_or("", |pr| pr.url.as_str()))
         .collect();
-    for (key, cluster) in order.iter().zip(&response.clusters) {
+    for (key, cluster) in order.iter().zip(&shown.clusters) {
         // Writes only what changed in the cluster, and nothing when it didn't.
         CLUSTERS.put(moment, key, cluster)?;
     }
     // The clusters that are gone are the ones the last order showed and this one doesn't.
-    let shown: HashSet<&str> = order.iter().copied().collect();
+    let kept: HashSet<&str> = order.iter().copied().collect();
     let before: Vec<String> = get_structured(moment, ORDER)?.unwrap_or_default();
-    let gone = before.iter().map(String::as_str).filter(|key| !shown.contains(key));
+    let gone = before.iter().map(String::as_str).filter(|key| !kept.contains(key));
     CLUSTERS.remove_all(moment, gone)?;
     put_structured(moment, ORDER, &order)?;
-    put_structured(moment, LOGIN, &response.login)?;
-    put_structured(moment, SEARCH, &response.search)?;
-    put_structured(moment, AGENTS, &response.agents)?;
+    put_structured(moment, LOGIN, &shown.login)?;
+    put_structured(moment, SEARCH, &shown.search)?;
+    put_structured(moment, AGENTS, &shown.agents)?;
     Ok(())
 }
 
@@ -221,7 +220,7 @@ mod tests {
     use super::*;
     use crate::proto::{
         Agent, AgentState, CheckFailure, Checks, FailedCheck, MergeBy, Proposal, PullRequest,
-        Repository,
+        PullRequestCluster, Repository,
     };
 
     // A pull request as gem shows one: enums, timestamps, bools both ways, fields left at their
@@ -317,7 +316,8 @@ mod tests {
 
         // What the write appended.
         fn write(&mut self, response: &ListOpenPullRequestsResponse) -> Result<Option<Delta>> {
-            let written = self.live.db.write_replicated(|moment| write_view(moment, response));
+            let shown = Shown::from(response);
+            let written = self.live.db.write_replicated(|moment| write_view(moment, &shown));
             Ok(written.unwrap().1)
         }
     }
@@ -364,16 +364,59 @@ mod tests {
         }
 
         // The response as the frontend rebuilds it.
-        fn shown(&self) -> ListOpenPullRequestsResponse {
+        fn shown(&self) -> Shown {
             let history = History::new(&self.db).unwrap();
             let moment: ReadHashMap<_> = history.latest().unwrap();
-            ListOpenPullRequestsResponse {
+            Shown {
                 clusters: clusters(&moment).unwrap(),
                 login: get_structured(&moment, LOGIN).unwrap().unwrap(),
                 search: get_structured(&moment, SEARCH).unwrap().unwrap(),
                 agents: get_structured(&moment, AGENTS).unwrap().unwrap(),
             }
         }
+    }
+
+    // The structs read back as they were written, every field there, so the stored data describes
+    // itself: only an unset `Option` is left out.
+    #[test]
+    fn the_view_holds_every_field() {
+        let mut view = View::new().unwrap();
+        let mut shown = response(1);
+        // Every field at its default, which pbjson would have left out.
+        shown.clusters[0].pull_requests.push(PullRequest {
+            url: "https://github.com/o/r/pull/9".into(),
+            ..Default::default()
+        });
+        view.write(&shown).unwrap();
+        let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
+        frontend.sync(&view);
+        assert_eq!(frontend.shown(), Shown::from(&shown));
+        let history = History::new(&frontend.db).unwrap();
+        let moment = history.latest().unwrap();
+        let clusters = ReadHashMap::new(moment.get_cursor("clusters").unwrap().unwrap()).unwrap();
+        let pair = clusters.iter().unwrap().next().unwrap().unwrap().read_key_value_pair();
+        let cluster = ReadHashMap::new(pair.unwrap().value_cursor).unwrap();
+        let prs = cluster.get_cursor("pullRequests").unwrap().unwrap();
+        let prs = gem_db::xitdb::ReadArrayList::new(prs).unwrap();
+        let pr = ReadHashMap::new(prs.get_cursor(-1).unwrap().unwrap()).unwrap();
+        let mut keys: Vec<String> = (pr.entries().unwrap())
+            .map(|entry| entry.unwrap().key_cursor.read_bytes(None).unwrap())
+            .map(|key| String::from_utf8(key).unwrap())
+            .collect();
+        keys.sort();
+        let mut fields: Vec<String> = serde_json::to_value(super::PullRequest::default())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .map(|(key, _)| key.clone())
+            .collect();
+        fields.sort();
+        assert_eq!(keys, fields);
+        // The Nones: the repository, checks and creation time, which this one hasn't set.
+        assert_eq!(fields.len() + 3, 20);
+        assert!(keys.contains(&"approved".to_string()) && keys.contains(&"number".to_string()));
     }
 
     #[test]
@@ -394,7 +437,7 @@ mod tests {
         pr.checks = Some(Checks { total: 14, done: 13, failed: 0 });
         pr.checks_failing = false;
         let delta = view.write(&shown).unwrap().unwrap();
-        let cluster = serde_json::to_vec(&shown.clusters[7]).unwrap().len();
+        let cluster = serde_json::to_vec(&Cluster::from(&shown.clusters[7])).unwrap().len();
         eprintln!(
             "whole view {} bytes, one cluster's JSON {cluster} bytes, delta {} bytes",
             whole.bytes.len(),
@@ -411,7 +454,7 @@ mod tests {
         let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         let delta = frontend.sync(&view);
         assert_eq!((delta.start, delta.end), (0, view.live.db.replicate(None).unwrap().end));
-        assert_eq!(frontend.shown(), response(3));
+        assert_eq!(frontend.shown(), Shown::from(&response(3)));
     }
 
     #[test]
@@ -428,7 +471,7 @@ mod tests {
         shown.login = "other".to_string();
         let delta = view.write(&shown).unwrap().unwrap();
         assert!(frontend.receive(&delta));
-        assert_eq!(frontend.shown(), shown);
+        assert_eq!(frontend.shown(), Shown::from(&shown));
         // One it already has, from a sync that raced the change, is not applied twice.
         let synced = view.live.db.replicate(frontend.replica()).unwrap();
         assert_eq!(synced.start, synced.end);
@@ -447,7 +490,7 @@ mod tests {
         assert!(!frontend.receive(&next));
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, before);
-        assert_eq!(frontend.shown(), response(5));
+        assert_eq!(frontend.shown(), Shown::from(&response(5)));
     }
 
     #[test]
@@ -471,11 +514,11 @@ mod tests {
         assert!(view.live.db.replicate(None).unwrap().end < GROWTH);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
-        assert_eq!(frontend.shown(), shown);
+        assert_eq!(frontend.shown(), Shown::from(&shown));
         // Later changes follow on from the compacted copy.
         shown.clusters[1].name = "after".to_string();
         assert!(frontend.receive(&view.write(&shown).unwrap().unwrap()));
-        assert_eq!(frontend.shown(), shown);
+        assert_eq!(frontend.shown(), Shown::from(&shown));
     }
 
     #[test]
@@ -484,6 +527,7 @@ mod tests {
         view.write(&response(3)).unwrap();
         // A cluster the order never showed is never looked at, so it stays.
         let stray = cluster("https://github.com/o/r/pull/stray/", "stray");
+        let stray = Cluster::from(&stray);
         (view.live.db.write(|moment| CLUSTERS.put(moment, "stray", &stray))).unwrap();
         view.write(&response(2)).unwrap().unwrap();
         let (gone, kept) = (view.live.db)
@@ -541,7 +585,7 @@ mod tests {
         assert_ne!(view.live.db.replicate(None).unwrap().file_id, file_id);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
-        assert_eq!(frontend.shown(), response(3));
+        assert_eq!(frontend.shown(), Shown::from(&response(3)));
     }
 
     // With GEM_VIEW_FIXTURE set to a directory, writes the bytes the frontend's view-replica test
@@ -577,11 +621,21 @@ mod tests {
                 "end": delta.end.to_string(),
             })
         };
+        // What the view holds of `response`, as the view's structs serialize.
+        let json = |response: &ListOpenPullRequestsResponse| {
+            let shown = Shown::from(response);
+            serde_json::json!({
+                "clusters": shown.clusters,
+                "login": shown.login,
+                "search": shown.search,
+                "agents": shown.agents,
+            })
+        };
         let fixture = serde_json::json!({
             "full": attributes(&full),
             "delta": attributes(&delta),
-            "first": first,
-            "second": second,
+            "first": json(&first),
+            "second": json(&second),
         });
         std::fs::write(dir.join("fixture.json"), fixture.to_string()).unwrap();
     }
