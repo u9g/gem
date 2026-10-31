@@ -346,6 +346,15 @@ export const checkProposalInputs: Write<typeof Proposal>[] = [
 // An investigation still on its first prompt, one that found the root cause and proposes a pull
 // request on the base branch, a follow-up working, and a rebase asking the user something.
 export const agentInputs: Write<typeof Agent>[] = [
+  // Answering the timed-out tests with two alternatives: a fix, or a rerun.
+  {
+    id: 'answer:checks',
+    title: 'Fix checks on agents#4821',
+    pullRequestUrls: [pr.url],
+    state: 'AGENT_STATE_WAITING',
+    startedAt: ago(600),
+    proposals: [checkProposalInputs[1], checkProposalInputs[2]],
+  },
   {
     id: 'investigation-working',
     title: 'Investigate tests (3.12) on agents#4821',

@@ -26,7 +26,7 @@ export const Answered: StoryObj = {
   render: () => (
     <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
       <AgentView
-        agent={agents[1]}
+        agent={agents[2]}
         ago={ago}
         onApprove={() => {}}
         onDismiss={() => {}}
@@ -41,7 +41,7 @@ export const Working: StoryObj = {
   render: () => (
     <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
       <AgentView
-        agent={agents[0]}
+        agent={agents[1]}
         ago={ago}
         onApprove={() => {}}
         onDismiss={() => {}}
@@ -56,7 +56,7 @@ export const FollowUp: StoryObj = {
   render: () => (
     <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
       <AgentView
-        agent={agents[2]}
+        agent={agents[3]}
         ago={ago}
         onApprove={() => {}}
         onDismiss={() => {}}
@@ -71,7 +71,23 @@ export const Question: StoryObj = {
   render: () => (
     <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
       <AgentView
-        agent={agents[3]}
+        agent={agents[4]}
+        ago={ago}
+        onApprove={() => {}}
+        onDismiss={() => {}}
+        onMessage={() => Promise.resolve()}
+        onClose={() => {}}
+      />
+    </View>
+  ),
+};
+
+// Two proposals answering the same failed checks: one card, with arrows between them.
+export const Alternatives: StoryObj = {
+  render: () => (
+    <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
+      <AgentView
+        agent={agents[0]}
         ago={ago}
         onApprove={() => {}}
         onDismiss={() => {}}
