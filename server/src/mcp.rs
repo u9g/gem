@@ -97,7 +97,9 @@ pub fn register() {
 // Answers MCP requests on stdin until it closes.
 pub fn serve(args: &[String]) {
     let db = match args {
-        [flag, dir] if flag == "--state" => Db::open_reader(Path::new(dir).join(crate::DB_FILE)),
+        [flag, dir] if flag == "--state" => {
+            Db::open_reader(Path::new(dir).join(crate::DB_FILE), crate::layout::migrations())
+        }
         _ => {
             eprintln!("usage: server mcp --state <the server's working directory>");
             std::process::exit(2);
@@ -1184,6 +1186,7 @@ mod tests {
             "pullRequestUrl": PR,
             "reply": "test_join times out when the room closes first.",
         });
+        // As untagged JSON, as a server from before typed collections wrote it.
         (server.db())
             .write(|moment| {
                 let mut closed = moment.put_map("closed-investigations")?;

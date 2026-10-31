@@ -4,19 +4,29 @@
 // `Host`.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, Map, MapMut, xitdb::ReadHashMap};
+use gem_db::{
+    Db, MapMut,
+    xitdb::{Index, IndexedMap, Map, Record},
+};
 use tokio::sync::Mutex;
 
-// In the database's moment, the hash map from the URL of each pull request being merged to a hash
-// map of its merge: its `title`, `started-at` in seconds since the epoch, `question` as 1 while the
-// agent waits on the user, and its `thread` once it started.
-const MERGES: &str = "merges";
+// In the database's moment, each merge by the URL of its pull request,
+const MAP: Map<str, Merge> = Map::new("merges");
+// and the URLs of the merges by the thread of their agent.
+const BY_THREAD: Index<str, Merge, str> =
+    Index::new(MAP, "merges-by-thread", |merge| merge.thread_id.clone());
+const MERGES: IndexedMap<str, Merge> = IndexedMap::new(MAP, &[&BY_THREAD]);
+
+// Builds the index of merges by thread from the merges, for the migration that adds it.
+pub fn rebuild_index(moment: &mut MapMut) -> gem_db::Result<bool> {
+    MERGES.rebuild(moment)
+}
 
 // Reading a thread is a local CLI call.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -43,13 +53,18 @@ pub struct Progress {
     pub question: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+// Stored as a hash map of its fields.
+#[derive(Clone, Debug, PartialEq, Record)]
+#[xitdb(crate = "gem_db::xitdb")]
 pub struct Merge {
     // The agent's thread, None while it starts.
+    #[xitdb(rename = "thread")]
     pub thread_id: Option<String>,
     pub title: String,
     // Seconds since the epoch.
+    #[xitdb(rename = "started-at")]
     pub started_at: i64,
+    // The agent waits on the user to answer a question.
     pub question: bool,
 }
 
@@ -98,11 +113,8 @@ impl<H: Host> Merges<H> {
     pub async fn start(&self, urls: &[String], admin: &[String], name: &str) -> Result<(), String> {
         let _starting = self.starting.lock().await;
         let running = self.db.read(|moment| {
-            let Some(merges) = moment.get_map(MERGES)? else {
-                return Ok(false);
-            };
             for url in urls {
-                if merges.get_map(url)?.is_some() {
+                if MERGES.contains(moment, url)? {
                     return Ok(true);
                 }
             }
@@ -135,13 +147,15 @@ When you are done, call the t3_thread_organize tool with action \"settle\" and n
 settle this thread."
         );
         let title = format!("Merge {name}");
+        let merge = Merge {
+            thread_id: None,
+            title: title.clone(),
+            started_at: now(),
+            question: false,
+        };
         self.db.write(|moment| {
-            let mut merges = moment.put_map(MERGES)?;
             for url in urls {
-                merges.remove(url)?;
-                let mut merge = merges.put_map(url)?;
-                merge.put("title", &*title)?;
-                merge.put("started-at", now())?;
+                MERGES.put(moment, url, &merge)?;
             }
             Ok(())
         })?;
@@ -149,15 +163,14 @@ settle this thread."
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
-                self.db.write(|moment| remove(moment, |merge| merge.thread_id.is_none()))?;
+                self.db.write(remove_starting)?;
                 return Err(error);
             }
         };
         self.db.write(|moment| {
-            for url in urls_where(moment, |merge| merge.thread_id.is_none())? {
-                moment.put_map(MERGES)?.put_map(&url)?.put("thread", &*thread_id)?;
-            }
-            Ok(())
+            let starting = |_: &String, merge: &Merge| merge.thread_id.is_none();
+            let start = |merge: &mut Merge| merge.thread_id = Some(thread_id.clone());
+            MERGES.update_where(moment, starting, start)
         })?;
         tokio::spawn(self.clone().watch(thread_id));
         Ok(())
@@ -167,9 +180,8 @@ settle this thread."
     // dropped: its server stopped while starting it.
     pub fn resume(&self) -> Result<(), String> {
         let threads = self.db.write(|moment| {
-            remove(moment, |merge| merge.thread_id.is_none())?;
-            let merges = merges(moment)?.into_values();
-            Ok(merges.filter_map(|merge| merge.thread_id).collect::<BTreeSet<_>>())
+            remove_starting(moment)?;
+            BY_THREAD.keys(moment)
         })?;
         for thread_id in threads {
             tokio::spawn(self.clone().watch(thread_id));
@@ -179,14 +191,16 @@ settle this thread."
 
     // By pull request URL.
     pub fn all(&self) -> Result<BTreeMap<String, Merge>, String> {
-        self.db.read(merges)
+        self.db.read(|moment| MERGES.iter(moment)?.collect())
     }
 
     // Stops showing the merge whose agent runs in `thread_id`, as the user asked. Its cluster can be
     // merged again; the agent keeps running in T3 Code.
     pub fn forget(&self, thread_id: &str) -> Result<(), String> {
-        let thread_id = Some(thread_id);
-        (self.db).write(|moment| remove(moment, |merge| merge.thread_id.as_deref() == thread_id))
+        self.db.write(|moment| {
+            let urls = BY_THREAD.get(moment, thread_id)?;
+            MERGES.remove_all(moment, urls).map(drop)
+        })
     }
 
     async fn watch(self, thread_id: String) {
@@ -205,17 +219,11 @@ settle this thread."
             if progress.done {
                 break;
             }
+            // Writes nothing, so the history doesn't grow, unless the question changed.
             let _ = self.db.write(|moment| {
-                // Unchanged merges are left alone, so the history only grows when one changes.
-                let changed = |merge: &Merge| {
-                    merge.thread_id.as_deref() == Some(&*thread_id)
-                        && merge.question != progress.question
-                };
-                for url in urls_where(moment, changed)? {
-                    let mut merge = moment.put_map(MERGES)?.put_map(&url)?;
-                    merge.put("question", u64::from(progress.question))?;
-                }
-                Ok(())
+                let ours =
+                    |_: &String, merge: &Merge| merge.thread_id.as_deref() == Some(&*thread_id);
+                MERGES.update_where(moment, ours, |merge| merge.question = progress.question)
             });
         }
         if let Err(error) = self.forget(&thread_id) {
@@ -224,39 +232,9 @@ settle this thread."
     }
 }
 
-// Each merge in `moment`, by pull request URL.
-fn merges(moment: &Map) -> gem_db::Result<BTreeMap<String, Merge>> {
-    let Some(merges) = moment.get_map(MERGES)? else {
-        return Ok(BTreeMap::new());
-    };
-    let merges = merges.entries()?.map(|pair| {
-        let pair = pair?;
-        let merge = ReadHashMap::new(pair.value_cursor)?;
-        Ok((pair.key_cursor.read_string(None)?, merge_at(&merge)?))
-    });
-    merges.collect()
-}
-
-fn merge_at(merge: &Map) -> gem_db::Result<Merge> {
-    Ok(Merge {
-        thread_id: merge.get_string("thread", None)?,
-        title: merge.get_string("title", None)?.unwrap_or_default(),
-        started_at: merge.get_int("started-at")?.unwrap_or_default(),
-        question: merge.get_uint("question")?.is_some_and(|question| question != 0),
-    })
-}
-
-// The URLs of the merges that `matches`.
-fn urls_where(moment: &Map, matches: impl Fn(&Merge) -> bool) -> gem_db::Result<Vec<String>> {
-    let merges = merges(moment)?.into_iter();
-    Ok(merges.filter(|(_, merge)| matches(merge)).map(|(url, _)| url).collect())
-}
-
-fn remove(moment: &mut MapMut, matches: impl Fn(&Merge) -> bool) -> gem_db::Result<()> {
-    for url in urls_where(moment, matches)? {
-        moment.put_map(MERGES)?.remove(&url)?;
-    }
-    Ok(())
+// Drops the merges whose thread never started: their server stopped, or failed, while starting it.
+fn remove_starting(moment: &mut MapMut) -> gem_db::Result<()> {
+    MERGES.retain(moment, |_, merge| merge.thread_id.is_some()).map(drop)
 }
 
 #[cfg(test)]
@@ -420,12 +398,14 @@ mod tests {
         let host = FakeHost::new();
         let db = Db::open_in_memory().unwrap();
         Merges::new(db.clone(), host.clone()).unwrap();
+        // As a server from before the index wrote them, and then the migration indexed them.
         db.write(|moment| {
-            let mut merges = moment.put_map(MERGES)?;
+            let mut merges = moment.put_map("merges")?;
             for url in ["https://github.com/o/r/pull/1", "https://github.com/o/s/pull/2"] {
                 merges.put_map(url)?.put("thread", "t")?;
             }
-            merges.put_map("https://github.com/o/t/pull/3").map(drop)
+            merges.put_map("https://github.com/o/t/pull/3")?;
+            rebuild_index(moment).map(drop)
         })
         .unwrap();
 

@@ -3582,10 +3582,23 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xitdb"
 version = "0.1.0"
-source = "git+https://github.com/u9g/xitdb-rs#066f17d1e58b99039b1e0d3d6f65683575752da7"
+source = "git+https://github.com/u9g/xitdb-rs#a2780a59e8eb535496934dfde810491daf30641d"
 dependencies = [
  "getrandom 0.3.4",
+ "serde",
+ "serde_json",
  "sha1",
+ "xitdb-derive",
+]
+
+[[package]]
+name = "xitdb-derive"
+version = "0.1.0"
+source = "git+https://github.com/u9g/xitdb-rs#a2780a59e8eb535496934dfde810491daf30641d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

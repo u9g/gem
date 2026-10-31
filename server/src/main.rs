@@ -36,6 +36,7 @@ mod agents;
 mod conversations;
 mod files;
 mod investigations;
+mod layout;
 mod mcp;
 mod merges;
 mod names;
@@ -346,7 +347,12 @@ async fn run_server() {
     // Before anything uses it, so a server without gh signed in panics now, not on a request.
     login();
 
-    let db = gem_db::Db::open(DB_FILE).unwrap_or_else(|error| panic!("{error}"));
+    let (db, migrated) =
+        gem_db::Db::open(DB_FILE, &layout::migrations()).unwrap_or_else(|error| panic!("{error}"));
+    if !migrated.ran.is_empty() {
+        let (from, to, ran) = (migrated.from, migrated.to, migrated.ran);
+        tracing::info!(from, to, ?ran, "migrated the database");
+    }
     let _ = DB.set(db.clone());
 
     // Nothing watches the repositories for changes.

@@ -8,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gem_db::{Db, texts};
+use gem_db::{
+    Db,
+    xitdb::{Json, Map},
+};
 use serde::{Deserialize, Serialize};
 
 // The --mcp-config each token's agent was started with, as `<token>.mcp.json` in this directory,
@@ -16,8 +19,8 @@ use serde::{Deserialize, Serialize};
 // the token lasts.
 pub const DIR: &str = "agent-tokens";
 
-// In the database's moment, the hash map from each token to its Subject, as JSON.
-pub const TOKENS: &str = "agent-tokens";
+// In the database's moment, the subject of each token.
+const TOKENS: Map<str, Json<Subject>> = Map::new("agent-tokens");
 
 // What an agent answers, and so what it may propose on.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -106,12 +109,7 @@ impl Tokens {
 
     // The subject of `token`, or None when it is not one gem issued or it was revoked.
     pub async fn subject(&self, token: &str) -> Option<Subject> {
-        let json = self.db.read(|moment| match moment.get_map(TOKENS)? {
-            Some(tokens) => tokens.get_string(token, None),
-            None => Ok(None),
-        });
-        let json = json.ok()?;
-        serde_json::from_str(&json?).ok()
+        self.db.read(|moment| TOKENS.get(moment, token)).ok()?
     }
 
     // Revokes the tokens whose subjects `keep` returns false for.
@@ -135,18 +133,10 @@ impl Tokens {
         issued: Option<(&str, &Subject)>,
     ) -> Result<Vec<String>, String> {
         self.db.write(|moment| {
-            let revoked: Vec<String> = (texts(moment, TOKENS)?.into_iter())
-                .filter(|(_, subject)| {
-                    serde_json::from_str::<Subject>(subject).is_ok_and(|subject| revoked(&subject))
-                })
-                .map(|(token, _)| token)
-                .collect();
-            let mut tokens = moment.put_map(TOKENS)?;
-            for token in &revoked {
-                tokens.remove(token)?;
-            }
+            let revoked = TOKENS.keys_where(moment, |_, subject| revoked(subject))?;
+            TOKENS.remove_all(moment, revoked.iter().map(String::as_str))?;
             if let Some((token, subject)) = issued {
-                tokens.put(token, serde_json::to_string(subject).unwrap())?;
+                TOKENS.put(moment, token, subject)?;
             }
             Ok(revoked)
         })

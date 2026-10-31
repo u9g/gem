@@ -1,7 +1,10 @@
 // The server's own database, an xitdb file whose root is a `History` of moments: each write
 // appends a copy of the last moment with its changes, so a reader, even in another process, sees
 // each write whole or not at all. A moment is a hash map; each part of the server keeps its state
-// under its own key there, in whatever xitdb data structures fit it.
+// under its own key there, in typed collections of xitdb's data structures.
+//
+// The layout of a moment has a version, which the server brings up to date with its `Migrations`
+// when it opens the file, and which readers in other processes check before they read.
 //
 // The file only grows, so it is compacted to its last moment when it opens and whenever it has
 // grown well past its size then.
@@ -15,6 +18,7 @@ pub use xitdb;
 use xitdb::{
     CoreBufferedFile, Database, DynCore, History, MemoryOffsetMap, ReadHashMap, WriteHashMap,
 };
+pub use xitdb::{Migrated, Migration};
 pub use xitdb::{Error, Result};
 
 // How much the file grows past twice its compacted size before it is compacted again.
@@ -22,6 +26,7 @@ const GROWTH: i64 = 16 << 20;
 
 pub type Map<'a> = ReadHashMap<'a, DynCore>;
 pub type MapMut<'a> = WriteHashMap<'a, DynCore>;
+pub type Migrations = xitdb::Migrations<DynCore>;
 
 #[derive(Clone)]
 pub struct Db(Arc<Mutex<Inner>>);
@@ -35,23 +40,25 @@ enum Inner {
         compacted: i64,
     },
     // Another process writes the file at the path. It is opened again for each read, so a read
-    // sees the file even after the writer replaced it with a compacted one.
-    Reader(PathBuf),
+    // sees the file even after the writer replaced it with a compacted one, and it checks the
+    // layout is the one `migrations` bring it to.
+    Reader { path: PathBuf, migrations: Migrations },
 }
 
 impl Db {
-    pub fn open(path: impl AsRef<Path>) -> Result<Db, String> {
+    // Opens the file at `path`, or makes it, and brings its layout up to date with `migrations`.
+    pub fn open(path: impl AsRef<Path>, migrations: &Migrations) -> Result<(Db, Migrated), String> {
         let path = path.as_ref().to_path_buf();
-        let start = || -> Result<(Database<DynCore>, i64)> {
+        let start = || -> Result<(Database<DynCore>, Migrated, i64)> {
             let mut db = Database::open(&path)?.into_dyn();
-            History::new(&db)?;
+            let migrated = History::new(&db)?.migrate(migrations)?;
             compact(&path, &mut db)?;
             let compacted = db.committed_size()?;
-            Ok((db, compacted))
+            Ok((db, migrated, compacted))
         };
-        let (db, compacted) = start().map_err(|error| describe(&path, error))?;
+        let (db, migrated, compacted) = start().map_err(|error| describe(&path, error))?;
         let path = Some(path);
-        Ok(Db(Arc::new(Mutex::new(Inner::Writer { path, db, compacted }))))
+        Ok((Db(Arc::new(Mutex::new(Inner::Writer { path, db, compacted }))), migrated))
     }
 
     pub fn open_in_memory() -> Result<Db, String> {
@@ -60,9 +67,11 @@ impl Db {
         Ok(Db(Arc::new(Mutex::new(Inner::Writer { path: None, db, compacted: 0 }))))
     }
 
-    // The file another process writes at `path`, to read.
-    pub fn open_reader(path: impl AsRef<Path>) -> Db {
-        Db(Arc::new(Mutex::new(Inner::Reader(path.as_ref().to_path_buf()))))
+    // The file another process writes at `path`, to read once its layout is the one `migrations`
+    // bring it to.
+    pub fn open_reader(path: impl AsRef<Path>, migrations: Migrations) -> Db {
+        let path = path.as_ref().to_path_buf();
+        Db(Arc::new(Mutex::new(Inner::Reader { path, migrations })))
     }
 
     // Reads the last moment. Reads touch a few keys of a local file, so they run on the async
@@ -74,10 +83,12 @@ impl Db {
                 let read = || read(&History::new(db)?.latest()?);
                 read().map_err(|error| describe_at(path.as_deref(), error))
             }
-            Inner::Reader(path) => {
+            Inner::Reader { path, migrations } => {
                 let read = || -> Result<T> {
                     let db = Database::open_read_only(path)?.into_dyn();
-                    read(&History::new(&db)?.latest()?)
+                    let history = History::new(&db)?;
+                    history.check_version(migrations)?;
+                    read(&history.latest()?)
                 };
                 read().map_err(|error| describe(path, error))
             }
@@ -122,26 +133,29 @@ fn describe_at(path: Option<&Path>, error: Error) -> String {
     }
 }
 
-// Each key in the hash map at `key` in `map`, with its text.
-pub fn texts(map: &Map, key: &str) -> Result<Vec<(String, String)>> {
-    let Some(map) = map.get_map(key)? else {
-        return Ok(Vec::new());
-    };
-    let pairs = map.entries()?.map(|pair| {
-        let pair = pair?;
-        Ok((pair.key_cursor.read_string(None)?, pair.value_cursor.read_string(None)?))
-    });
-    pairs.collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use xitdb::{Map as Typed, Set};
+
     use super::*;
+
+    const NAMES: Typed<str, String> = Typed::new("names");
+    const SEEN: Set<str> = Set::new("seen");
 
     fn path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("gem-db-{name}-{}.xitdb", std::process::id()));
         let _ = std::fs::remove_file(&path);
         path
+    }
+
+    // Layout 1 has a name, layout 2 also says so, and layout 3 is the same as 2.
+    fn migrations(latest: u64) -> Migrations {
+        let migrations = [
+            Migration::new(1, "name", |moment: &mut MapMut| NAMES.put(moment, "a", "A")),
+            Migration::new(2, "say so", |moment: &mut MapMut| moment.put("said", "yes")),
+            Migration::new(3, "nothing", |_: &mut MapMut| Ok(())),
+        ];
+        Migrations::new(migrations.into_iter().filter(|m| m.version <= latest)).unwrap()
     }
 
     fn get(db: &Db, key: &str) -> Option<String> {
@@ -154,8 +168,8 @@ mod tests {
         assert_eq!(get(&db, "name"), None);
         db.write(|moment| {
             moment.put("name", "a")?;
-            moment.put_map("names")?.put("k", "A")?;
-            moment.put_set("seen")?.put("x")?;
+            NAMES.put(moment, "k", "K")?;
+            SEEN.insert(moment, "x")?;
             // A write reads its own changes.
             assert_eq!(moment.get_string("name", None)?.as_deref(), Some("a"));
             Ok(())
@@ -163,9 +177,8 @@ mod tests {
         .unwrap();
         db.read(|moment| {
             assert_eq!(moment.get_string("name", None)?.as_deref(), Some("a"));
-            assert_eq!(texts(moment, "names")?, [("k".into(), "A".into())]);
-            assert!(moment.get_set("seen")?.unwrap().contains("x")?);
-            assert!(moment.get_map("missing")?.is_none());
+            assert_eq!(NAMES.get(moment, "k")?.as_deref(), Some("K"));
+            assert!(SEEN.contains(moment, "x")?);
             Ok(())
         })
         .unwrap();
@@ -183,18 +196,22 @@ mod tests {
     }
 
     #[test]
-    fn survives_reopening_and_compacts() {
+    fn migrates_once_and_compacts_when_reopened() {
         let path = path("reopen");
         {
-            let db = Db::open(&path).unwrap();
+            let (db, migrated) = Db::open(&path, &migrations(1)).unwrap();
+            assert_eq!(migrated.ran, ["name"]);
             for i in 0..100 {
                 db.write(|moment| moment.put("n", &*i.to_string())).unwrap();
             }
         }
         let before = std::fs::metadata(&path).unwrap().len();
-        let db = Db::open(&path).unwrap();
+        let (db, migrated) = Db::open(&path, &migrations(2)).unwrap();
+        // Only the migration it hadn't run yet.
+        assert_eq!(migrated.ran, ["say so"]);
         assert!(std::fs::metadata(&path).unwrap().len() < before);
         assert_eq!(get(&db, "n").as_deref(), Some("99"));
+        assert_eq!(get(&db, "said").as_deref(), Some("yes"));
         drop(db);
         let _ = std::fs::remove_file(&path);
     }
@@ -202,8 +219,8 @@ mod tests {
     #[test]
     fn another_process_reads_each_write_and_compaction() {
         let path = path("reader");
-        let db = Db::open(&path).unwrap();
-        let reader = Db::open_reader(&path);
+        let (db, _) = Db::open(&path, &migrations(2)).unwrap();
+        let reader = Db::open_reader(&path, migrations(2));
         db.write(|moment| moment.put("snapshot", "1")).unwrap();
         assert_eq!(get(&reader, "snapshot").as_deref(), Some("1"));
         {
@@ -219,8 +236,22 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_refuses_another_layout() {
+        let path = path("layout");
+        let (db, _) = Db::open(&path, &migrations(2)).unwrap();
+        // A build from before layout 2 doesn't read it, nor does one from after it before the
+        // server migrated.
+        let older = Db::open_reader(&path, migrations(1));
+        assert!(older.read(|moment| moment.get_string("said", None)).is_err());
+        let newer = Db::open_reader(&path, migrations(3));
+        assert!(newer.read(|moment| moment.get_string("said", None)).is_err());
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn a_reader_of_no_file_fails() {
-        let reader = Db::open_reader(path("missing"));
+        let reader = Db::open_reader(path("missing"), migrations(2));
         assert!(reader.read(|moment| moment.get_string("snapshot", None)).is_err());
     }
 }

@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use gem_db::texts;
+use gem_db::xitdb::Map;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 
 use crate::{
@@ -31,12 +31,12 @@ struct Inner {
     threads: Semaphore,
 }
 
-// In the database's moment, the hash map from each cluster's `key` to its name.
-pub const NAMES: &str = "cluster-names";
+// In the database's moment, each cluster's name by its `key`.
+const NAMES: Map<str, String> = Map::new("cluster-names");
 
 impl Names {
     pub fn load() -> Result<Self, String> {
-        let known = crate::db().read(|moment| texts(moment, NAMES))?.into_iter().collect();
+        let known = crate::db().read(|moment| NAMES.iter(moment)?.collect())?;
         Ok(Self(Arc::new(Inner {
             known: RwLock::new(known),
             requested: Mutex::default(),
@@ -67,7 +67,7 @@ impl Names {
                 let _permit = names.0.threads.acquire().await.unwrap();
                 if let Some(name) = ask_t3(&prs).await {
                     let saved =
-                        crate::db().write(|moment| moment.put_map(NAMES)?.put(&key, &*name));
+                        crate::db().write(|moment| NAMES.put(moment, &key, &name));
                     if let Err(error) = saved {
                         tracing::warn!(%error, "cannot save a cluster's name");
                     }

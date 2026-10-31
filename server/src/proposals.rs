@@ -4,7 +4,10 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, texts};
+use gem_db::{
+    Db,
+    xitdb::{Json, Map},
+};
 use serde::Deserialize;
 use tracing::Instrument;
 
@@ -801,13 +804,12 @@ pub async fn propose(
     };
     // The proposal it replaces may have been approved or dismissed meanwhile.
     let recorded = db.write(|moment| {
-        let mut proposals = moment.put_map(PROPOSALS)?;
         if let Some(replaced) = &replaced
-            && !proposals.remove(replaced)?
+            && !PROPOSALS.remove(moment, replaced)?
         {
             return Ok(false);
         }
-        proposals.put(&proposal.id, serde_json::to_string(&proposal).unwrap())?;
+        PROPOSALS.put(moment, &proposal.id, &proposal)?;
         Ok(true)
     })?;
     if !recorded {
@@ -937,14 +939,21 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     })
 }
 
-// In the database's moment, the hash map from each proposal's ID to the Proposal, as JSON.
-const PROPOSALS: &str = "proposals";
+// In the database's moment, each proposal by its ID.
+const PROPOSALS: Map<str, Json<Proposal>> = Map::new("proposals");
 
+// One that doesn't decode is left out, so the others still show.
 pub fn load(db: &Db) -> Vec<Proposal> {
-    let proposals = db.read(|moment| texts(moment, PROPOSALS));
+    let proposals = db.read(|moment| Ok(PROPOSALS.iter(moment)?.collect::<Vec<_>>()));
     match proposals {
-        Ok(proposals) => (proposals.iter())
-            .filter_map(|(_, json)| serde_json::from_str(json).ok())
+        Ok(proposals) => (proposals.into_iter())
+            .filter_map(|proposal| match proposal {
+                Ok((_, proposal)) => Some(proposal),
+                Err(error) => {
+                    tracing::warn!(%error, "cannot read a proposal");
+                    None
+                }
+            })
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "cannot read proposals");
@@ -954,16 +963,14 @@ pub fn load(db: &Db) -> Vec<Proposal> {
 }
 
 fn save(db: &Db, proposal: &Proposal) {
-    let saved = db.write(|moment| {
-        moment.put_map(PROPOSALS)?.put(&proposal.id, serde_json::to_string(proposal).unwrap())
-    });
+    let saved = db.write(|moment| PROPOSALS.put(moment, &proposal.id, proposal));
     if let Err(error) = saved {
         tracing::warn!(proposal = %proposal.id, %error, "cannot save proposal");
     }
 }
 
 fn delete(id: &str) {
-    let deleted = crate::db().write(|moment| moment.put_map(PROPOSALS)?.remove(id));
+    let deleted = crate::db().write(|moment| PROPOSALS.remove(moment, id));
     if let Err(error) = deleted {
         tracing::warn!(proposal = id, %error, "cannot delete proposal");
     }

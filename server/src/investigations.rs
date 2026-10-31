@@ -1,6 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gem_db::{Db, texts};
+use gem_db::{
+    Db,
+    xitdb::{Json, Map},
+};
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -467,21 +470,27 @@ async fn load() -> Vec<Investigation> {
     load_from(crate::db(), false)
 }
 
-// In the database's moment, the hash maps from each open investigation's ID, and from each closed
-// one's, to the Investigation, as JSON. A closed investigation stays, so later agents can search
-// what it found.
-const OPEN: &str = "investigations";
-const CLOSED: &str = "closed-investigations";
+// In the database's moment, the open investigations and the closed ones, by ID. A closed
+// investigation stays, so later agents can search what it found.
+const OPEN: Map<str, Json<Investigation>> = Map::new("investigations");
+const CLOSED: Map<str, Json<Investigation>> = Map::new("closed-investigations");
 
-fn map_of(closed: bool) -> &'static str {
+fn map_of(closed: bool) -> Map<str, Json<Investigation>> {
     if closed { CLOSED } else { OPEN }
 }
 
+// One that doesn't decode is left out, so the others still show.
 fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
-    let investigations = db.read(|moment| texts(moment, map_of(closed)));
+    let investigations = db.read(|moment| Ok(map_of(closed).iter(moment)?.collect::<Vec<_>>()));
     match investigations {
-        Ok(investigations) => (investigations.iter())
-            .filter_map(|(_, json)| serde_json::from_str(json).ok())
+        Ok(investigations) => (investigations.into_iter())
+            .filter_map(|investigation| match investigation {
+                Ok((_, investigation)) => Some(investigation),
+                Err(error) => {
+                    tracing::warn!(%error, "cannot read an investigation");
+                    None
+                }
+            })
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "cannot read investigations");
@@ -491,10 +500,8 @@ fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
 }
 
 fn insert(investigation: &Investigation, closed: bool) {
-    let saved = crate::db().write(|moment| {
-        let json = serde_json::to_string(investigation).unwrap();
-        moment.put_map(map_of(closed))?.put(&investigation.id, json)
-    });
+    let saved =
+        crate::db().write(|moment| map_of(closed).put(moment, &investigation.id, investigation));
     if let Err(error) = saved {
         tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
     }
@@ -505,20 +512,14 @@ fn insert(investigation: &Investigation, closed: bool) {
 // Returns whether it closed it.
 fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
     let updated = crate::db().write(|moment| {
-        let json = match moment.get_map(OPEN)? {
-            Some(open) => open.get_string(id, None)?,
-            None => None,
-        };
-        let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
-        else {
+        let Some(mut investigation) = OPEN.get(moment, id)? else {
             return Ok(false);
         };
         let close = change(&mut investigation);
-        let json = serde_json::to_string(&investigation).unwrap();
         if close {
-            moment.put_map(OPEN)?.remove(id)?;
+            OPEN.remove(moment, id)?;
         }
-        moment.put_map(map_of(close))?.put(id, json)?;
+        map_of(close).put(moment, id, &investigation)?;
         Ok(close)
     });
     updated.unwrap_or_else(|error| {
@@ -563,8 +564,7 @@ mod tests {
                 reply: reply.into(),
                 ..Default::default()
             };
-            let json = serde_json::to_string(&investigation).unwrap();
-            db.write(|moment| moment.put_map(map_of(closed))?.put(id, &*json)).unwrap();
+            db.write(|moment| map_of(closed).put(moment, id, &investigation)).unwrap();
         };
         write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.", true);
         write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);
