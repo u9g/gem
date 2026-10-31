@@ -188,6 +188,26 @@ const autofill = {
   room: { variable: 'GEM_ROOM', autoComplete: 'off' },
 } as const;
 
+// The fields a value holds as NAME=value pairs named after the server's variables, e.g.
+// `LIVEKIT_URL=wss://… LIVEKIT_API_SECRET=… GEM_ROOM=…`, in any order and with anything
+// between them. iOS AutoFill fills only a login's username and password, and only 1Password's
+// Safari extension fills custom fields, so a login whose password holds the URL and room too
+// fills every field from AutoFill alone, in Safari, Chrome or from the home screen. A pasted
+// .env does the same.
+function bundledFields(value: string): Partial<Profile> | undefined {
+  const keys = Object.keys(autofill) as (keyof typeof autofill)[];
+  const names = keys.flatMap((key) => autofill[key].variable ?? []);
+  // Splitting on a capture group keeps each name before its value: [before, name, value, …].
+  const parts = value.split(new RegExp(`(${names.join('|')})=`));
+  const fields: Partial<Profile> = {};
+  for (let i = 1; i < parts.length; i += 2) {
+    const key = keys.find((k) => autofill[k].variable === parts[i]);
+    const field = parts[i + 1].trim().replace(/^(["'])(.*)\1$/, '$2');
+    if (key && field) fields[key] = field;
+  }
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
 // A gem server to add, or the selected one to change: its name, the LiveKit project it is
 // configured with (LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET) and its GEM_ROOM.
 export function ProfileForm({
@@ -224,7 +244,8 @@ export function ProfileForm({
           autoComplete={autoComplete}
           autoCapitalize="none"
           value={profile[key]}
-          onChangeText={(value) => setProfile({ ...profile, [key]: value })}
+          // AutoFill fills two fields at once, so each change applies to the one before it.
+          onChangeText={(value) => setProfile((p) => ({ ...p, ...(bundledFields(value) ?? { [key]: value }) }))}
         />
       </>
     );
