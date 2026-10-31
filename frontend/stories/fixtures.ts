@@ -251,7 +251,6 @@ export const proposalInputs: Input<Proposal>[] = [
   },
 ];
 
-export type Item = { pr: Node<PullRequest>; proposal: Node<Proposal> };
 // A reply quoting code by permalink, which GitHub renders as the lines it points at.
 const permalinkInputs: Input<Proposal>[] = [
   {
@@ -264,7 +263,6 @@ const permalinkInputs: Input<Proposal>[] = [
 
 export const proposals = proposalInputs.map((proposal) => stored<Proposal>(proposal));
 export const permalinkProposals = permalinkInputs.map((proposal) => stored<Proposal>(proposal));
-export const items: Item[] = proposals.map((proposal) => ({ pr: stored<PullRequest>(pr), proposal }));
 
 const failure = {
   id: 'c883a61,check-ruff,check-tests',

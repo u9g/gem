@@ -1,14 +1,11 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   Bot,
-  CheckCheck,
   ChevronRight,
   CircleAlert,
-  GitPullRequestClosed,
   GitPullRequestCreate,
   Hammer,
   MessageCircle,
-  MessageSquareQuote,
   RotateCcw,
   SquarePen,
 } from 'lucide-react';
@@ -16,7 +13,7 @@ import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import type { Node } from './db';
-import type { Proposal, PullRequest } from './shapes';
+import type { Proposal } from './shapes';
 
 // T3 Code's dark-theme roles, over this app's background and text colors.
 export const t3 = {
@@ -44,14 +41,6 @@ export function diffFiles(diff: string): DiffFile[] {
     else if (line.startsWith('-') && !line.startsWith('---') && files.length) files[files.length - 1].removed++;
   }
   return files;
-}
-
-export function basename(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1);
-}
-
-export function visibleMarkdown(markdown: string): string {
-  return markdown.replace(/<!--[\s\S]*?-->/g, '').trim();
 }
 
 // T3 Code's work-log grouping: one sentence for what approving does.
@@ -201,65 +190,6 @@ export function Sidebar({ title, children }: { title: string; children: ReactNod
   );
 }
 
-export function firstLine(markdown: string): string {
-  return visibleMarkdown(markdown)
-    .split('\n')
-    .find((line) => line.trim() !== '')!
-    .replace(/[*#`]/g, '')
-    .trim();
-}
-
-// Each step as its own expandable row, the way T3 Code lists a turn's tool calls.
-export function Steps({ proposal }: { proposal: Node<Proposal> }) {
-  const patch = proposal.node('patch');
-  const reply = proposal.str('reply');
-  const threadId = proposal.str('threadId');
-  const requestedTool = proposal.str('requestedTool');
-  return (
-    <>
-      {patch &&
-        diffFiles(patch.str('diff')).map((file) => (
-          <Row
-            key={file.path}
-            icon={SquarePen}
-            label={basename(file.path)}
-            trailing={<DiffStat added={file.added} removed={file.removed} />}
-          >
-            <Text style={styles.meta}>{patch.str('commitMessage')}</Text>
-            <Code>{patch.str('diff')}</Code>
-          </Row>
-        ))}
-      {proposal.list('otherPatches').flatMap((other) =>
-        diffFiles(other.str('diff')).map((file) => (
-          <Row
-            key={`${other.str('pullRequestUrl')} ${file.path}`}
-            icon={SquarePen}
-            label={basename(file.path)}
-            trailing={<DiffStat added={file.added} removed={file.removed} />}
-          >
-            <Text style={styles.meta}>
-              {other.str('pullRequestUrl')} · {other.str('commitMessage')}
-            </Text>
-            <Code>{other.str('diff')}</Code>
-          </Row>
-        )),
-      )}
-      {reply !== '' && (
-        <Row icon={threadId ? MessageCircle : MessageSquareQuote} label={threadId ? 'Reply in thread' : 'Quote reply'}>
-          <Markdown>{reply}</Markdown>
-        </Row>
-      )}
-      {proposal.bool('resolveThread') && <Row icon={CheckCheck} label="Resolve thread" />}
-      {proposal.bool('closePullRequest') && <Row icon={GitPullRequestClosed} label="Close pull request" />}
-      {requestedTool !== '' && (
-        <Row icon={Hammer} label="Needs a tool">
-          <Markdown>{requestedTool}</Markdown>
-        </Row>
-      )}
-    </>
-  );
-}
-
 export function proposalIcon(proposal: Node<Proposal>) {
   if (proposal.str('error')) return CircleAlert;
   if (proposal.str('requestedTool')) return Hammer;
@@ -270,44 +200,7 @@ export function proposalIcon(proposal: Node<Proposal>) {
   return MessageCircle;
 }
 
-export function ErrorLine({ proposal }: { proposal: Node<Proposal> }) {
-  const error = proposal.str('error');
-  if (!error) return null;
-  return (
-    <Row icon={CircleAlert} label="Approval failed" labelColor={t3.deletion}>
-      <Code>{error}</Code>
-    </Row>
-  );
-}
-
-export function CommentRow({
-  item,
-  trailing,
-}: {
-  item: { pr: Node<PullRequest>; proposal: Node<Proposal> };
-  trailing?: ReactNode;
-}) {
-  const comment = item.proposal.node('comment')!;
-  const body = comment.str('body');
-  return (
-    <Row
-      trailing={trailing}
-      label={
-        <>
-          <Text style={{ color: t3.foreground }}>{comment.str('author')}</Text> {firstLine(body)}
-        </>
-      }
-    >
-      <Markdown>{visibleMarkdown(body)}</Markdown>
-    </Row>
-  );
-}
-
 const styles = StyleSheet.create({
-  meta: {
-    color: t3.muted,
-    fontSize: 11,
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
