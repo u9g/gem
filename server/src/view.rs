@@ -185,18 +185,16 @@ impl Drop for Pending {
     }
 }
 
-// A cluster keeps its key while pull requests join it and titles change: it is the URL of its
-// oldest pull request, which `cluster` and `agents::join` put first. (A name's `names::key`
-// changes with every title.) A pull request is in one cluster, so no two share a key.
-fn key(cluster: &PullRequestCluster) -> &str {
-    cluster.pull_requests.first().map_or("", |pr| pr.url.as_str())
-}
-
 fn write_view<C: Core>(
     moment: &mut WriteHashMap<'_, C>,
     response: &ListOpenPullRequestsResponse,
 ) -> Result<()> {
-    let order: Vec<&str> = response.clusters.iter().map(key).collect();
+    // A cluster keeps its key while pull requests join it and titles change: it is the URL of its
+    // oldest pull request, which `cluster` and `agents::join` put first. (A name's `names::key`
+    // changes with every title.) A pull request is in one cluster, so no two share a key.
+    let order: Vec<&str> = (response.clusters.iter())
+        .map(|cluster| cluster.pull_requests.first().map_or("", |pr| pr.url.as_str()))
+        .collect();
     for (key, cluster) in order.iter().zip(&response.clusters) {
         // Writes only what changed in the cluster, and nothing when it didn't.
         CLUSTERS.put(moment, key, cluster)?;
@@ -225,10 +223,6 @@ mod tests {
         Agent, AgentState, CheckFailure, Checks, FailedCheck, MergeBy, Proposal, PullRequest,
         Repository,
     };
-
-    fn at(seconds: i64) -> Option<Timestamp> {
-        Some(Timestamp { seconds, nanos: 0 })
-    }
 
     // A pull request as gem shows one: enums, timestamps, bools both ways, fields left at their
     // defaults (which pbjson leaves out), and a workflow run ID past 2^53, which pbjson writes
@@ -269,7 +263,7 @@ mod tests {
             checks: Some(Checks { total: 14, done: 14, failed: n % 2 }),
             head_oid: "89abcdef0123456789abcdef0123456789abcdef".to_string(),
             base: "main".to_string(),
-            created_at: at(1_790_000_000 + i64::from(n)),
+            created_at: Some(Timestamp { seconds: 1_790_000_000 + i64::from(n), nanos: 0 }),
             ..Default::default()
         }
     }
@@ -281,12 +275,12 @@ mod tests {
             state: AgentState::Waiting as i32,
             pull_request_urls: vec![format!("{url}0")],
             reply: "Done: the comments are answered.".to_string(),
-            started_at: at(1_790_000_500),
+            started_at: Some(Timestamp { seconds: 1_790_000_500, nanos: 0 }),
             ..Default::default()
         };
         PullRequestCluster {
             pull_requests: (0..3).map(|n| pull_request(url, n)).collect(),
-            updated_at: at(1_790_001_000),
+            updated_at: Some(Timestamp { seconds: 1_790_001_000, nanos: 0 }),
             name: title.to_string(),
             merge_by: MergeBy::Admin as i32,
             agents: vec![agent],
@@ -303,7 +297,7 @@ mod tests {
             agents: vec![Agent {
                 id: "lone".to_string(),
                 state: AgentState::Working as i32,
-                started_at: at(1_790_000_900),
+                started_at: Some(Timestamp { seconds: 1_790_000_900, nanos: 0 }),
                 ..Default::default()
             }],
         }
@@ -326,18 +320,6 @@ mod tests {
             let written = self.live.db.write_replicated(|moment| write_view(moment, response));
             Ok(written.unwrap().1)
         }
-
-        fn sync(&self, replica: Option<ReplicaState>) -> Result<Delta, String> {
-            self.live.db.replicate(replica)
-        }
-
-        fn size(&self) -> i64 {
-            self.sync(None).unwrap().end
-        }
-
-        fn file_id(&self) -> u64 {
-            self.sync(None).unwrap().file_id
-        }
     }
 
     impl Drop for View {
@@ -354,10 +336,6 @@ mod tests {
     }
 
     impl Frontend {
-        fn new() -> Frontend {
-            Frontend { db: Database::in_memory().unwrap(), file_id: None }
-        }
-
         // What it sends, through xitdb's serde form of its state.
         fn replica(&self) -> Option<ReplicaState> {
             self.file_id?;
@@ -380,7 +358,7 @@ mod tests {
         }
 
         fn sync(&mut self, view: &View) -> Delta {
-            let delta = view.sync(self.replica()).unwrap();
+            let delta = view.live.db.replicate(self.replica()).unwrap();
             assert!(self.receive(&delta));
             delta
         }
@@ -402,9 +380,9 @@ mod tests {
     fn an_unchanged_view_commits_nothing() {
         let mut view = View::new().unwrap();
         assert!(view.write(&response(5)).unwrap().is_some());
-        let size = view.size();
+        let size = view.live.db.replicate(None).unwrap().end;
         assert_eq!(view.write(&response(5)).unwrap(), None);
-        assert_eq!(view.size(), size);
+        assert_eq!(view.live.db.replicate(None).unwrap().end, size);
     }
 
     #[test]
@@ -430,9 +408,9 @@ mod tests {
     fn a_new_replica_is_sent_the_whole_view() {
         let mut view = View::new().unwrap();
         view.write(&response(3)).unwrap();
-        let mut frontend = Frontend::new();
+        let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         let delta = frontend.sync(&view);
-        assert_eq!((delta.start, delta.end), (0, view.size()));
+        assert_eq!((delta.start, delta.end), (0, view.live.db.replicate(None).unwrap().end));
         assert_eq!(frontend.shown(), response(3));
     }
 
@@ -440,7 +418,7 @@ mod tests {
     fn a_replica_applies_each_change() {
         let mut view = View::new().unwrap();
         view.write(&response(3)).unwrap();
-        let mut frontend = Frontend::new();
+        let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         frontend.sync(&view);
         let mut shown = response(3);
         shown.clusters.remove(1);
@@ -452,7 +430,7 @@ mod tests {
         assert!(frontend.receive(&delta));
         assert_eq!(frontend.shown(), shown);
         // One it already has, from a sync that raced the change, is not applied twice.
-        let synced = view.sync(frontend.replica()).unwrap();
+        let synced = view.live.db.replicate(frontend.replica()).unwrap();
         assert_eq!(synced.start, synced.end);
         assert!(!frontend.receive(&delta));
     }
@@ -461,7 +439,7 @@ mod tests {
     fn a_replica_that_missed_a_change_syncs_what_it_lacks() {
         let mut view = View::new().unwrap();
         view.write(&response(3)).unwrap();
-        let mut frontend = Frontend::new();
+        let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         frontend.sync(&view);
         let before = frontend.db.committed_size().unwrap();
         view.write(&response(4)).unwrap().unwrap();
@@ -476,21 +454,21 @@ mod tests {
     fn a_compacted_view_replaces_every_replica() {
         let mut view = View::new().unwrap();
         view.write(&response(3)).unwrap();
-        let mut frontend = Frontend::new();
+        let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         frontend.sync(&view);
-        let file_id = view.file_id();
+        let file_id = view.live.db.replicate(None).unwrap().file_id;
         // Growing past the threshold compacts it; each change is still sent from the old file.
         let mut shown = response(3);
         for i in 0..20_000 {
             shown.clusters[0].name = format!("name {i}");
             let delta = view.write(&shown).unwrap().unwrap();
             assert!(frontend.receive(&delta));
-            if view.file_id() != file_id {
+            if view.live.db.replicate(None).unwrap().file_id != file_id {
                 break;
             }
         }
-        assert_ne!(view.file_id(), file_id);
-        assert!(view.size() < GROWTH);
+        assert_ne!(view.live.db.replicate(None).unwrap().file_id, file_id);
+        assert!(view.live.db.replicate(None).unwrap().end < GROWTH);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
         assert_eq!(frontend.shown(), shown);
@@ -521,14 +499,14 @@ mod tests {
     fn publishing_sends_each_change_to_every_frontend() {
         let view = View::new().unwrap();
         let mut changes = view.live.changes().subscribe();
-        let before = view.size();
+        let before = view.live.db.replicate(None).unwrap().end;
         assert!(view.live.publish(&response(2)));
         let delta = changes.try_recv().unwrap();
-        assert_eq!((delta.start, delta.end), (before, view.size()));
+        assert_eq!((delta.start, delta.end), (before, view.live.db.replicate(None).unwrap().end));
         assert!(!view.live.publish(&response(2)));
         assert!(changes.try_recv().is_err());
         // A sync request carries xitdb's serde form of the replica's state.
-        assert_eq!(view.live.sync("null").unwrap().end, view.size());
+        assert_eq!(view.live.sync("null").unwrap().end, view.live.db.replicate(None).unwrap().end);
         assert!(view.live.sync("{}").is_err());
     }
 
@@ -553,14 +531,14 @@ mod tests {
     fn a_restarted_server_sends_every_replica_a_whole_copy() {
         let mut view = View::new().unwrap();
         view.write(&response(3)).unwrap();
-        let mut frontend = Frontend::new();
+        let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         frontend.sync(&view);
-        let file_id = view.file_id();
+        let file_id = view.live.db.replicate(None).unwrap().file_id;
         // The file outlives the server, and is compacted, with a new file ID, when it opens.
         let path = view.dir.join(FILE);
         view.live = Live::open(view.dir.join("other.xitdb")).unwrap();
         view.live = Live::open(&path).unwrap();
-        assert_ne!(view.file_id(), file_id);
+        assert_ne!(view.live.db.replicate(None).unwrap().file_id, file_id);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
         assert_eq!(frontend.shown(), response(3));
@@ -580,7 +558,7 @@ mod tests {
         let first = response(3);
         let full = {
             view.write(&first).unwrap();
-            view.sync(None).unwrap()
+            view.live.db.replicate(None).unwrap()
         };
         let mut second = first.clone();
         second.clusters.swap(0, 2);

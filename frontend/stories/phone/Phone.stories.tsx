@@ -6,7 +6,7 @@ import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
 import { DbContext, useDb, type Write } from '../../db';
 import { MemoryDb } from '../../memory';
-import { Agent, Cluster as ClusterShape, clusterKey, Proposal, PullRequest, shown } from '../../shapes';
+import { Agent, Cluster as ClusterShape, Proposal, PullRequest, shown } from '../../shapes';
 import { clusterMergeBy, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // Made-up clusters, one in each place a phone lists them. Stories render at the window's width,
@@ -123,7 +123,7 @@ function List() {
           <SectionTitle>{name}</SectionTitle>
         </View>,
         ...(i === 0 ? [<Legend key="legend" />] : []),
-        ...clusters.map((c) => <PhoneClusterRow key={clusterKey(c)} cluster={c} onPress={() => {}} />),
+        ...clusters.map((c) => <PhoneClusterRow key={c.pullRequests[0].url} cluster={c} onPress={() => {}} />),
       ])}
     </ScrollView>
   );

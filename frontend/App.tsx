@@ -14,7 +14,7 @@ import { DbContext, emptyDb, useDb, usePending } from './db';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
-import { type Cluster, clusterKey, type Repository, shown } from './shapes';
+import { type Cluster, type Repository, shown } from './shapes';
 import { Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {
@@ -47,11 +47,6 @@ function Contexts({
       <RenderMarkdown value={render}>{children}</RenderMarkdown>
     </Login>
   );
-}
-
-// Every pull request's URL, which actions name the cluster by.
-function urlsOf(cluster: Cluster): string[] {
-  return cluster.pullRequests.map((pr) => pr.url);
 }
 
 function sameRepository(a: Repository | undefined, b: Repository | undefined): boolean {
@@ -182,13 +177,13 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   }
 
   function restart(cluster: Cluster) {
-    const pullRequestUrls = urlsOf(cluster);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     void post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })));
   }
 
   // Starts an agent merging the cluster's PRs, without opening its thread.
   function merge(cluster: Cluster, admin: boolean) {
-    const pullRequestUrls = urlsOf(cluster);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     void post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin })));
   }
 
@@ -199,7 +194,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
 
   // Starts one agent rebasing every PR of the cluster, without opening its thread.
   function rebaseCluster(cluster: Cluster) {
-    const pullRequestUrls = urlsOf(cluster);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     void post('/clusters/rebase', toJson(RebaseClusterRequestSchema, create(RebaseClusterRequestSchema, { pullRequestUrls })));
   }
 
@@ -209,7 +204,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
 
   // Starts an agent on the message, then opens it, where the conversation goes on.
   function messageCluster(cluster: Cluster, message: string) {
-    const pullRequestUrls = urlsOf(cluster);
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     return post(
       '/clusters/message',
       toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
@@ -255,10 +250,10 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
     .sort((a, b) => a.name.localeCompare(b.name));
   const visible = clusters
     .filter((cluster) => !repoFilter || cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
-    .filter((cluster) => !search.matches || urlsOf(cluster).some((url) => search.matches!.has(url)));
+    .filter((cluster) => !search.matches || cluster.pullRequests.some((pr) => search.matches!.has(pr.url)));
   // A cluster is linked to by its oldest PR, and any of its PRs opens it, so a link still opens it
   // after an agent joins it to an older cluster.
-  const opened = clusters.find((cluster) => urlsOf(cluster).includes(place.cluster ?? ''));
+  const opened = clusters.find((cluster) => cluster.pullRequests.some((pr) => pr.url === place.cluster));
 
   const filters = (
     <View style={styles.filters}>
@@ -398,7 +393,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
                   </View>,
                   ...(i === 0 ? [<Legend key="legend" />] : []),
                   ...clusters.map((cluster) => (
-                    <PhoneClusterRow key={clusterKey(cluster)} cluster={cluster} onPress={openCluster} />
+                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={openCluster} />
                   )),
                 ])}
               </ScrollView>
@@ -417,7 +412,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
         <Board
           clusters={visible}
           agents={agents}
-          openUrl={agent || !opened ? undefined : clusterKey(opened)}
+          openUrl={agent || !opened ? undefined : opened.pullRequests[0].url}
           openAgent={agent?.id}
           onOpenCluster={openCluster}
           onOpenAgent={openAgent}

@@ -3,8 +3,8 @@ import { StyleSheet, Text, View } from 'react-native';
 import { active } from './agents';
 import { AgentRow, units } from './ClusterRow';
 import { bySubject, ProposalGroup } from './ProposalView';
-import { PullRequestList, rebasable } from './PullRequestList';
-import { type Agent, type Cluster, clusterKey } from './shapes';
+import { PullRequestList } from './PullRequestList';
+import type { Agent, Cluster } from './shapes';
 import { Button, t3, usePhone } from './t3';
 
 const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
@@ -44,7 +44,7 @@ export function ClusterView({
   onInvestigate: (id: string) => void;
 }) {
   const phone = usePhone();
-  const key = clusterKey(cluster);
+  const key = cluster.pullRequests[0].url;
   const restarting = busy?.has(key);
   const merging = busy?.has(`merge ${key}`);
   const by = cluster.mergeBy;
@@ -109,9 +109,9 @@ export function RebaseClusterButton({
   busy?: ReadonlySet<string>;
   onRebaseCluster: (cluster: Cluster) => void;
 }) {
-  const starting = busy?.has(`rebase ${clusterKey(cluster)}`);
+  const starting = busy?.has(`rebase ${cluster.pullRequests[0].url}`);
   const pullRequests = cluster.pullRequests;
-  if (!pullRequests.some(rebasable)) return null;
+  if (!pullRequests.some((pr) => pr.behind || pr.rebasing || pr.rebased)) return null;
   return (
     <Button
       label={starting ? 'Starting an agent…' : 'Rebase cluster'}
@@ -138,7 +138,7 @@ export function MergeBanner({
 }) {
   const phone = usePhone();
   stacked ||= phone;
-  const key = clusterKey(cluster);
+  const key = cluster.pullRequests[0].url;
   const restarting = busy?.has(key);
   const merging = busy?.has(`merge ${key}`);
   const admin = cluster.mergeBy === 'MERGE_BY_ADMIN';

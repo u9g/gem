@@ -162,10 +162,8 @@ export const Moment = shape({
 });
 export type Moment = Infer<typeof Moment>;
 
-// A cluster's key, which links to it: the URL of its oldest pull request.
-export const clusterKey = (cluster: Cluster): string => cluster.pullRequests[0]?.url ?? '';
-
-// What the UI shows of a moment: the clusters in order, and the rest.
+// What the UI shows of a moment: the clusters in order, and the rest. A cluster's key, which
+// links to it, is the URL of its oldest pull request.
 export function shown(moment: Moment | undefined) {
   if (!moment) return { clusters: [], agents: [], login: '', search: '' };
   return {

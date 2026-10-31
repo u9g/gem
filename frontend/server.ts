@@ -1,10 +1,10 @@
 import type { JsonValue } from '@bufbuild/protobuf';
-import { ConnectionState, type Participant, Room, RoomEvent } from 'livekit-client';
+import { ConnectionState, Room, RoomEvent } from 'livekit-client';
 import { SignJWT } from 'jose';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { Db } from './db';
-import { concat, Replica, type ViewBytes, viewBytes } from './view';
+import { Replica, type ViewBytes } from './view';
 
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
@@ -132,9 +132,12 @@ export function useServer() {
     room.registerByteStreamHandler(VIEW_TOPIC, (reader) => {
       applying = applying
         .then(async () => {
-          const bytes = concat(await reader.readAll());
-          const sent = viewBytes(reader.info.attributes);
-          if (closed || !sent) return;
+          // The stream's chunks, joined.
+          const bytes = new Uint8Array(await new Blob((await reader.readAll()) as BlobPart[]).arrayBuffer());
+          // Which bytes they are, as the server says in the stream's attributes.
+          const { fileId, start, end } = reader.info.attributes ?? {};
+          if (closed || !fileId || !start || !end) return;
+          const sent = { fileId, start: Number(start), end: Number(end) };
           const applied = replica.apply(sent, bytes);
           if (applied === 'gap') {
             ahead = [...ahead, { sent, bytes }].slice(-AHEAD);
@@ -154,21 +157,17 @@ export function useServer() {
         .catch(() => {});
     });
     // The server sends a participant data only once it is active.
-    const syncWhenActive = (server: Participant) =>
-      server.waitUntilActive().then(sync);
-    const joined = (participant: Participant) => {
-      update();
-      if (participant.identity === SERVER) void syncWhenActive(participant);
-    };
     room
       .on(RoomEvent.ConnectionStateChanged, update)
-      .on(RoomEvent.ParticipantConnected, joined)
+      .on(RoomEvent.ParticipantConnected, (participant) => {
+        update();
+        if (participant.identity === SERVER) void participant.waitUntilActive().then(sync);
+      })
       .on(RoomEvent.ParticipantDisconnected, update);
     mintToken(connection)
       .then((jwt) => room.connect(connection.url, jwt))
       .then(() => {
-        const server = room.remoteParticipants.get(SERVER);
-        if (server) void syncWhenActive(server);
+        void room.remoteParticipants.get(SERVER)?.waitUntilActive().then(sync);
       })
       // A project that refuses the token can still be edited or switched away from.
       .catch(() => setStatus('unreachable'));

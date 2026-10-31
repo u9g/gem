@@ -59,10 +59,33 @@ export type Infer<S> = S extends Shape<infer F> ? Message<F> : never;
 // A message of shape `S` to write, for fixtures: any field can be left out.
 export type Write<S> = S extends Shape<infer F> ? Input<F> : never;
 
-// A scalar: `zero` when left out.
+// A scalar: `zero` when left out. `from` is given it as stored: bytes as a string, or a bool when
+// tagged `bl`, and integers as numbers, or decimal strings past 2^53.
 function scalar<T, I>(zero: T, from: (stored: string | number | boolean) => T, to: (value: I) => Bytes | Uint | Int | Float): Kind<T, I> {
   return {
-    read: (cursor) => (cursor ? from(stored(cursor)) : zero),
+    read: (cursor) => {
+      if (!cursor) return zero;
+      const slot = cursor.slot();
+      switch (slot.tag) {
+        case BYTES:
+        case SHORT_BYTES: {
+          const bytes = cursor.readBytesObject();
+          const text = decoder.decode(bytes.value);
+          const tag = bytes.formatTag;
+          return from(tag?.length === 2 && tag[0] === BOOL[0] && tag[1] === BOOL[1] ? text === 'true' : text);
+        }
+        case UINT:
+        case INT: {
+          const value = slot.tag === UINT ? BigInt.asUintN(64, slot.value) : BigInt.asIntN(64, slot.value);
+          const safe = value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= BigInt(Number.MIN_SAFE_INTEGER);
+          return from(safe ? Number(value) : value.toString());
+        }
+        case FLOAT:
+          return from(cursor.readFloat());
+        default:
+          throw new Error(`a value tagged ${slot.tag} where a scalar was expected`);
+      }
+    },
     write: (cursor, value) => cursor.write(to(value)),
   };
 }
@@ -73,7 +96,12 @@ export const num = scalar(0, Number, (value: number) => {
   if (!Number.isInteger(value)) return new Float(value);
   return value < 0 ? new Int(value) : new Uint(value);
 });
-export const bool = scalar(false, isTrue, (value: boolean) => new Bytes(value ? 'true' : 'false', 'bl'));
+// Also as xitdb's own bool codec writes it, a 0 or 1.
+export const bool = scalar(
+  false,
+  (value) => value === true || value === 1 || value === 'true',
+  (value: boolean) => new Bytes(value ? 'true' : 'false', 'bl'),
+);
 // A 64-bit integer, stored as a decimal string.
 export const int64 = scalar(0n, (value) => BigInt(value as string | number), (value: bigint) => new Bytes(value.toString()));
 // A Timestamp, stored as RFC 3339, or undefined when it isn't set.
@@ -92,7 +120,24 @@ export function shape<F extends Fields>(fields: F): Shape<F> {
     fields,
     read: (cursor, views) => {
       if (!cursor) throw new Error('a message that is not stored');
-      return views.view(self, cursor) as Message<F>;
+      return views.kept(self, cursor, () => {
+        const map = new ReadHashMap(cursor);
+        const view = new View();
+        for (const [name, kind] of Object.entries(fields)) {
+          Object.defineProperty(view, name, {
+            enumerable: true,
+            configurable: true,
+            get: () => {
+              // A field left out, or empty, reads as its default.
+              const stored = map.getCursor(name);
+              const value = kind.read(stored && stored.slot().tag !== NONE ? stored : undefined, views);
+              Object.defineProperty(view, name, { value, enumerable: true, writable: false, configurable: false });
+              return value;
+            },
+          });
+        }
+        return Object.preventExtensions(view);
+      }) as Message<F>;
     },
     write: (cursor, value) => {
       const map = new WriteHashMap(cursor);
@@ -117,7 +162,10 @@ const none: readonly never[] = Object.freeze([]);
 // A repeated field, of messages or scalars, empty when left out.
 export function list<T, I>(item: Kind<T, I>): Kind<readonly T[], readonly I[]> {
   return {
-    read: (cursor, views) => (cursor ? views.list(cursor, item) : none),
+    read: (cursor, views) =>
+      cursor
+        ? views.kept(item, cursor, () => Object.freeze([...new ReadArrayList(cursor)].map((value) => item.read(value, views))))
+        : none,
     write: (cursor, values) => {
       const list = new WriteArrayList(cursor);
       for (const value of values) item.write(list.appendCursor(), value);
@@ -142,8 +190,8 @@ export class Keyed<T> {
   get(key: string): T | undefined {
     if (!this.map) return undefined;
     if (!this.kept.has(key)) {
-      const cursor = present(this.map.getCursor(key));
-      this.kept.set(key, cursor && this.item.read(cursor, this.views));
+      const cursor = this.map.getCursor(key);
+      this.kept.set(key, cursor && cursor.slot().tag !== NONE ? this.item.read(cursor, this.views) : undefined);
     }
     return this.kept.get(key);
   }
@@ -160,7 +208,10 @@ export class Keyed<T> {
 
 export function keyed<T, I>(item: Kind<T, I>): Kind<Keyed<T>, Readonly<Record<string, I>>> {
   return {
-    read: (cursor, views) => (cursor ? views.keyed(cursor, item) : new Keyed(undefined, item, views)),
+    read: (cursor, views) =>
+      cursor
+        ? views.kept(keyed, cursor, () => new Keyed(new ReadHashMap(cursor), item, views))
+        : new Keyed(undefined, item, views),
     write: (cursor, values) => {
       const map = new WriteHashMap(cursor);
       for (const [key, value] of Object.entries(values)) item.write(map.putCursor(key), value);
@@ -177,36 +228,8 @@ export class Views {
   private known = new Map<string, unknown>();
   private kinds = new Map<unknown, number>();
 
-  // The view of the message of `shape` at `cursor`.
-  view(shape: Shape, cursor: ReadCursor): View {
-    return this.kept(shape, cursor, () => {
-      const map = new ReadHashMap(cursor);
-      const view = new View();
-      for (const [name, kind] of Object.entries(shape.fields)) {
-        Object.defineProperty(view, name, {
-          enumerable: true,
-          configurable: true,
-          get: () => {
-            const value = kind.read(present(map.getCursor(name)), this);
-            Object.defineProperty(view, name, { value, enumerable: true, writable: false, configurable: false });
-            return value;
-          },
-        });
-      }
-      return Object.preventExtensions(view);
-    });
-  }
-
-  list<T>(cursor: ReadCursor, item: Kind<T, never>): readonly T[] {
-    return this.kept(item, cursor, () => Object.freeze([...new ReadArrayList(cursor)].map((value) => item.read(value, this))));
-  }
-
-  keyed<T>(cursor: ReadCursor, item: Kind<T, never>): Keyed<T> {
-    return this.kept(this, cursor, () => new Keyed(new ReadHashMap(cursor), item, this));
-  }
-
   // What `make` made of the value at `cursor` as `kind`, kept by the value's slot.
-  private kept<T>(kind: unknown, cursor: ReadCursor, make: () => T): T {
+  kept<T>(kind: unknown, cursor: ReadCursor, make: () => T): T {
     if (!this.kinds.has(kind)) this.kinds.set(kind, this.kinds.size);
     const slot = cursor.slot();
     const at = `${this.kinds.get(kind)}:${slot.tag}:${slot.value}`;
@@ -220,15 +243,20 @@ export function same(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
   if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
   if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, i) => same(item, b[i]));
-  if (plain(a) && plain(b)) {
-    const keys = Object.keys(a);
-    return keys.length === Object.keys(b).length && keys.every((key) => key in b && same(a[key], b[key]));
+  // Plain objects, as a read builds, not views.
+  if (
+    typeof a === 'object' &&
+    typeof b === 'object' &&
+    a !== null &&
+    b !== null &&
+    Object.getPrototypeOf(a) === Object.prototype &&
+    Object.getPrototypeOf(b) === Object.prototype
+  ) {
+    const [x, y] = [a as Record<string, unknown>, b as Record<string, unknown>];
+    const keys = Object.keys(x);
+    return keys.length === Object.keys(y).length && keys.every((key) => key in y && same(x[key], y[key]));
   }
   return false;
-}
-
-function plain(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 // The database a component reads: the replica, or a fixture in stories and tests. `version`
@@ -287,44 +315,6 @@ export class BrowserSha1 extends Hasher {
 }
 
 const decoder = new TextDecoder();
-
-// The value at `cursor`, unless it's missing or empty, as a field left out is.
-function present(cursor: ReadCursor | null): ReadCursor | undefined {
-  return cursor && cursor.slot().tag !== NONE ? cursor : undefined;
-}
-
-// A stored scalar: bytes as a string, or a bool when tagged `bl`, and integers as numbers, or
-// decimal strings past 2^53.
-function stored(cursor: ReadCursor): string | number | boolean {
-  const slot = cursor.slot();
-  switch (slot.tag) {
-    case BYTES:
-    case SHORT_BYTES: {
-      const bytes = cursor.readBytesObject();
-      const text = decoder.decode(bytes.value);
-      const tag = bytes.formatTag;
-      return tag?.length === 2 && tag[0] === BOOL[0] && tag[1] === BOOL[1] ? text === 'true' : text;
-    }
-    case UINT:
-      return integer(BigInt.asUintN(64, slot.value));
-    case INT:
-      return integer(BigInt.asIntN(64, slot.value));
-    case FLOAT:
-      return cursor.readFloat();
-    default:
-      throw new Error(`a value tagged ${slot.tag} where a scalar was expected`);
-  }
-}
-
-// A bool as stored, or as xitdb's own bool codec writes it, a 0 or 1.
-function isTrue(value: string | number | boolean): boolean {
-  return value === true || value === 1 || value === 'true';
-}
-
-function integer(value: bigint): number | string {
-  const safe = value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= BigInt(Number.MIN_SAFE_INTEGER);
-  return safe ? Number(value) : value.toString();
-}
 
 // xitdb's tags, as numbers: its `Tag` is a const enum, which a bundler that compiles a file at a
 // time can't inline.

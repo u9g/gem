@@ -3,13 +3,13 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from '../../Board';
-import { clusterName, PhoneClusterRow } from '../../ClusterRow';
+import { PhoneClusterRow } from '../../ClusterRow';
 import { DbContext, useDb, type Write } from '../../db';
 import { MemoryDb } from '../../memory';
 import { ProfileChip, ProfileForm, ProfileSheet, ProfileTitle } from '../../Profiles';
 import { PullRequestList } from '../../PullRequestList';
 import { type Profile, type Project } from '../../server';
-import { Cluster, clusterKey, shown } from '../../shapes';
+import { Cluster, shown } from '../../shapes';
 import { Login } from '../../surfaces';
 import { t3 } from '../../t3';
 import { clusterMergeBy, mergeBy, proposalInputs as proposals } from '../fixtures';
@@ -122,7 +122,7 @@ function Desktop() {
 function DesktopBoard({ profile, switchTo }: { profile: Profile; switchTo: (id: string) => void }) {
   const { clusters } = useDb(shown);
   const [selectedUrl, setSelectedUrl] = useState<string>();
-  const selected = clusters.find((c) => clusterKey(c) === selectedUrl);
+  const selected = clusters.find((c) => c.pullRequests[0].url === selectedUrl);
   return (
     <Login value={profile.login!}>
       <View style={styles.container}>
@@ -141,7 +141,7 @@ function DesktopBoard({ profile, switchTo }: { profile: Profile; switchTo: (id: 
         >
           {selected && (
             <View style={styles.column}>
-              <Text style={styles.title}>{clusterName(selected)}</Text>
+              <Text style={styles.title}>{selected.name || selected.pullRequests[0].title}</Text>
               <PullRequestList pullRequests={selected.pullRequests} agents={[]} />
             </View>
           )}
@@ -174,7 +174,7 @@ function PhoneList({ profile, switchTo }: { profile: Profile; switchTo: (id: str
           </View>
           <ScrollView>
             {clusters.map((c) => (
-              <PhoneClusterRow key={clusterKey(c)} cluster={c} onPress={() => {}} />
+              <PhoneClusterRow key={c.pullRequests[0].url} cluster={c} onPress={() => {}} />
             ))}
           </ScrollView>
         </View>

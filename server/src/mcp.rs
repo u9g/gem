@@ -37,14 +37,6 @@ use crate::view;
 
 const NAME: &str = "gem";
 
-// The clusters in the view, in the order gem shows them. An error says why they can't be read,
-// e.g. no server has written the view yet, or one of another build of gem.
-fn clusters(view: &Db) -> Result<Vec<PullRequestCluster>, String> {
-    view.read(view::clusters).map_err(|error| {
-        format!("cannot read gem's clusters ({error}); is its server running?")
-    })
-}
-
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
 // already does. Builds are replaced on every update, so each one registers itself.
 pub fn register() {
@@ -273,28 +265,31 @@ const READS: &[&str] = &["clusters", "cluster"];
 
 // Answers `gem.<op>(...args)` from the view.
 fn read(view: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
-    let clusters = clusters(view)?;
+    // In the order gem shows them. An error says why they can't be read, e.g. no server has
+    // written the view yet, or one of another build of gem.
+    let clusters = view.read(view::clusters).map_err(|error| {
+        format!("cannot read gem's clusters ({error}); is its server running?")
+    })?;
     let cluster = match op {
         "clusters" => return Ok(Value::Array(clusters.iter().map(cluster_value).collect())),
         "cluster" => {
             let url = (args.first().and_then(Value::as_str))
                 .ok_or("gem.cluster takes a pull request's URL")?;
-            holding(clusters, url)
+            let url = url.trim().trim_end_matches('/');
+            (clusters.into_iter())
+                .find(|cluster| cluster.pull_requests.iter().any(|pr| pr.url == url))
         }
         op => return Err(format!("no function gem.{op}")),
     };
     Ok(cluster.as_ref().map(cluster_value).unwrap_or_default())
 }
 
-// The cluster holding the pull request at `url`.
-fn holding(clusters: Vec<PullRequestCluster>, url: &str) -> Option<PullRequestCluster> {
-    let url = url.trim().trim_end_matches('/');
-    (clusters.into_iter()).find(|cluster| cluster.pull_requests.iter().any(|pr| pr.url == url))
-}
-
 // The URLs of the pull requests in the view's cluster holding `pr`, or none when it holds none.
 fn cluster_of(view: &Db, pr: &str) -> Vec<String> {
-    let cluster = clusters(view).ok().and_then(|clusters| holding(clusters, pr));
+    let pr = pr.trim().trim_end_matches('/');
+    let clusters = view.read(view::clusters).unwrap_or_default();
+    let cluster = (clusters.into_iter())
+        .find(|cluster| cluster.pull_requests.iter().any(|other| other.url == pr));
     let prs = cluster.map(|cluster| cluster.pull_requests).unwrap_or_default();
     prs.into_iter().map(|pr| pr.url).collect()
 }
@@ -668,11 +663,6 @@ mod tests {
 
         fn db(&self) -> &Db {
             &self.db
-        }
-
-        // Shows `clusters`, as the server's snapshot loop does.
-        fn show(&self, clusters: Vec<PullRequestCluster>) {
-            self.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
         }
 
         // A token for an agent answering `subject`.
@@ -1090,7 +1080,8 @@ mod tests {
             ..Default::default()
         };
         const ELSEWHERE: &str = "https://github.com/o/r/pull/3";
-        server.show(vec![cluster(&[PR, OTHER]), cluster(&[ELSEWHERE])]);
+        let clusters = vec![cluster(&[PR, OTHER]), cluster(&[ELSEWHERE])];
+        server.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
         let token = server.token(&in_thread()).await;
         let other_patch = |pr: &str| {
             json!({
@@ -1141,7 +1132,8 @@ mod tests {
             pull_requests: vec![pr],
             ..Default::default()
         };
-        server.show(vec![cluster]);
+        let clusters = vec![cluster];
+        server.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
         let token = server.token(&in_thread()).await;
         let result = server
             .execute(&token, &format!("async () => gem.cluster('{PR}/')"))

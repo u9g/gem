@@ -5,8 +5,8 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { ClusterAgents, type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
 import { Composer } from './AgentView';
 import { bySubject, ProposalGroup } from './ProposalView';
-import { ChecksIcon, rebasable, ref, StatusLine } from './PullRequestList';
-import { clusterKey, type Proposal, type PullRequest } from './shapes';
+import { ChecksIcon, StatusLine } from './PullRequestList';
+import type { Proposal, PullRequest } from './shapes';
 import { parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
@@ -19,9 +19,6 @@ function pathOf(proposal: Proposal): string {
   return proposal.comment?.path || diffFiles(proposal.patch?.diff ?? '')[0]?.path || '';
 }
 
-// The line a proposal's review comment is on, or 0.
-const lineOf = (proposal: Proposal) => proposal.comment?.line ?? 0;
-
 export function sectionsOf(pr: PullRequest): Section[] {
   const byPath = new Map<string, (readonly Proposal[])[]>();
   for (const group of bySubject(pr.proposals)) {
@@ -33,7 +30,7 @@ export function sectionsOf(pr: PullRequest): Section[] {
     .map(([path, groups]) => ({
       pr,
       path,
-      groups: groups.sort((a, b) => lineOf(a[0]) - lineOf(b[0])),
+      groups: groups.sort((a, b) => (a[0].comment?.line ?? 0) - (b[0].comment?.line ?? 0)),
     }));
 }
 
@@ -61,7 +58,7 @@ export function ClusterReview(props: Props) {
   const [chosen, setChosen] = useState<string>();
   // Approving or dismissing the last conversation on a file removes its section.
   const section = sections.find((s) => anchor(s) === chosen) ?? sections[0];
-  const key = clusterKey(cluster);
+  const key = cluster.pullRequests[0].url;
   const restarting = busy?.has(key);
   const merging = busy?.has(`merge ${key}`);
   const updatedAt = cluster.updatedAt;
@@ -99,10 +96,10 @@ export function ClusterReview(props: Props) {
               <Pressable style={styles.pr} onPress={() => Linking.openURL(url)}>
                 <ChecksIcon pr={pr} size={12} />
                 <Text numberOfLines={1} style={styles.ref}>
-                  {ref(pr)}
+                  {pr.repository?.name}#{pr.number}
                 </Text>
                 {failed > 0 && <Text style={styles.failed}>{failed} failed</Text>}
-                {rebasable(pr) && (
+                {(pr.behind || pr.rebasing || pr.rebased) && (
                   <Button
                     label="Rebase"
                     disabled={pr.rebasing || pr.rebased || busy?.has(url)}
@@ -181,7 +178,9 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
   return (
     <View style={styles.fileView}>
       <View style={styles.bar}>
-        <Text style={styles.barRef}>{ref(section.pr)}</Text>
+        <Text style={styles.barRef}>
+          {section.pr.repository?.name}#{section.pr.number}
+        </Text>
         <Text numberOfLines={1} style={styles.barPath}>
           {section.path || 'Conversation'}
         </Text>

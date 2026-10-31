@@ -96,21 +96,3 @@ export class Replica implements Db {
     return 'applied';
   }
 }
-
-// The attributes the server sends bytes with, or undefined when they are not that.
-export function viewBytes(attributes: Record<string, string> | undefined): ViewBytes | undefined {
-  const { fileId, start, end } = attributes ?? {};
-  if (!fileId || !start || !end) return undefined;
-  return { fileId, start: Number(start), end: Number(end) };
-}
-
-// Joins a byte stream's chunks.
-export function concat(chunks: Uint8Array[]): Uint8Array {
-  const all = new Uint8Array(chunks.reduce((length, chunk) => length + chunk.length, 0));
-  let at = 0;
-  for (const chunk of chunks) {
-    all.set(chunk, at);
-    at += chunk.length;
-  }
-  return all;
-}

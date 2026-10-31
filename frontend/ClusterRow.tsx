@@ -3,7 +3,7 @@ import { memo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { active } from './agents';
-import { type Agent, type Cluster, clusterKey, type PullRequest } from './shapes';
+import type { Agent, Cluster, PullRequest } from './shapes';
 import { t3 } from './t3';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -80,7 +80,7 @@ function CopyCluster({ cluster }: { cluster: Cluster }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     const urls = cluster.pullRequests.map((pr) => pr.url).join(' + ');
-    await navigator.clipboard.writeText(`${urls} - ${clusterName(cluster)}`);
+    await navigator.clipboard.writeText(`${urls} - ${cluster.name || cluster.pullRequests[0].title}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -90,11 +90,6 @@ function CopyCluster({ cluster }: { cluster: Cluster }) {
       <Mark size={13} color={copied ? t3.addition : 'rgba(208, 207, 212, 0.45)'} strokeWidth={2} />
     </Pressable>
   );
-}
-
-// The name a cluster's thread gave it, or before then its oldest pull request's title.
-export function clusterName(cluster: Cluster): string {
-  return cluster.name || (cluster.pullRequests[0]?.title ?? '');
 }
 
 // A cluster sized for a thumb: its name, a button that copies its links, and how long ago, over one
@@ -118,12 +113,12 @@ export const PhoneClusterRow = memo(function PhoneClusterRow({
   const updatedAt = cluster.updatedAt;
   return (
     <Pressable
-      onPress={() => onPress(clusterKey(cluster))}
+      onPress={() => onPress(cluster.pullRequests[0].url)}
       style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}
     >
       <View style={styles.cardTop}>
         <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, by === 'MERGE_BY_APPROVAL' && styles.ready, by === 'MERGE_BY_ADMIN' && styles.forceable]}>
-          {clusterName(cluster)}
+          {cluster.name || cluster.pullRequests[0].title}
         </Text>
         <CopyCluster cluster={cluster} />
         {updatedAt && <Text style={styles.rowTime}>{shortAgo(updatedAt)}</Text>}

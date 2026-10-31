@@ -174,7 +174,11 @@ impl Db {
         let written = written.map_err(describe)?;
         let end = db.committed_size().map_err(describe)?;
         let delta = match replicated && end > start {
-            true => Some(read_committed(db, start, end).map_err(describe)?),
+            true => {
+                let mut bytes = Vec::with_capacity((end - start) as usize);
+                db.read_committed(start, end, &mut bytes).map_err(describe)?;
+                Some(Delta { file_id: db.header().file_id, start, end, bytes })
+            }
             false => None,
         };
         if let Some(path) = path
@@ -199,16 +203,13 @@ impl Db {
                 Some(replica) => db.replication_start(replica)?,
                 None => 0,
             };
-            read_committed(db, start, db.committed_size()?)
+            let end = db.committed_size()?;
+            let mut bytes = Vec::with_capacity((end - start) as usize);
+            db.read_committed(start, end, &mut bytes)?;
+            Ok(Delta { file_id: db.header().file_id, start, end, bytes })
         };
         read().map_err(|error| describe_at(path.as_deref(), error))
     }
-}
-
-fn read_committed(db: &Database<DynCore>, start: i64, end: i64) -> Result<Delta> {
-    let mut bytes = Vec::with_capacity((end - start) as usize);
-    db.read_committed(start, end, &mut bytes)?;
-    Ok(Delta { file_id: db.header().file_id, start, end, bytes })
 }
 
 // Replaces the file at `path`, which `db` writes, with one holding only its last moment, or logs

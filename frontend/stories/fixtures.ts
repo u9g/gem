@@ -26,9 +26,6 @@ export function stored<S extends Shape>(shape: S, value: Write<S>): Infer<S> {
   return view;
 }
 
-// A time `seconds` before now.
-export const ago = (seconds: number) => new Date(Date.now() - seconds * 1000);
-
 // Made-up conversations shaped like real ones: this repository is public.
 
 export const pr = {
@@ -352,21 +349,21 @@ export const agentInputs: Write<typeof Agent>[] = [
     title: 'Fix checks on agents#4821',
     pullRequestUrls: [pr.url],
     state: 'AGENT_STATE_WAITING',
-    startedAt: ago(600),
+    startedAt: new Date(Date.now() - 600_000),
     proposals: [checkProposalInputs[1], checkProposalInputs[2]],
   },
   {
     id: 'investigation-working',
     title: 'Investigate tests (3.12) on agents#4821',
     pullRequestUrls: [pr.url],
-    startedAt: ago(240),
+    startedAt: new Date(Date.now() - 240_000),
   },
   {
     id: 'investigation-answered',
     title: 'Investigate ruff on agents#4821',
     pullRequestUrls: [pr.url],
     state: 'AGENT_STATE_WAITING',
-    startedAt: ago(7200),
+    startedAt: new Date(Date.now() - 7200_000),
     reply:
       'Not flaky. `ruff` on the runner resolves to 0.6, which `uv.lock` does not pin, and 0.6 added F401 for re-exports. It fails the same way on every run since Oct 2.',
     replyHtml:
@@ -408,14 +405,14 @@ export const agentInputs: Write<typeof Agent>[] = [
     id: 'follow-up-working',
     title: 'Open a PR on main pinning ruff to 0.5',
     pullRequestUrls: [pr.url],
-    startedAt: ago(60),
+    startedAt: new Date(Date.now() - 60_000),
   },
   {
     id: 'rebase:thread-rebase',
     title: 'Rebase agents#4821',
     pullRequestUrls: [pr.url],
     state: 'AGENT_STATE_WAITING',
-    startedAt: ago(900),
+    startedAt: new Date(Date.now() - 900_000),
     reply: 'Rebasing onto main conflicts in `tts_retry.py`: main renamed `synthesize` to `synthesize_stream`. Keep the retry around the new name?',
     replyHtml:
       '<p dir="auto">Rebasing onto main conflicts in <code class="notranslate">tts_retry.py</code>: main renamed <code class="notranslate">synthesize</code> to <code class="notranslate">synthesize_stream</code>. Keep the retry around the new name?</p>',

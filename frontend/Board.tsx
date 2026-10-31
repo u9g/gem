@@ -3,7 +3,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
-import { type Agent, type Cluster, clusterKey } from './shapes';
+import type { Agent, Cluster } from './shapes';
 import { Icon, t3 } from './t3';
 
 const COLUMN_MIN_WIDTH = 220;
@@ -66,10 +66,10 @@ export function Board({
             <Column key={name} name={name} count={listed.length} urgent={name === 'Needs you'}>
               {listed.map((cluster) => (
                 <PhoneClusterRow
-                  key={clusterKey(cluster)}
+                  key={cluster.pullRequests[0].url}
                   cluster={cluster}
                   board
-                  selected={clusterKey(cluster) === openUrl}
+                  selected={cluster.pullRequests[0].url === openUrl}
                   onPress={onOpenCluster}
                 />
               ))}

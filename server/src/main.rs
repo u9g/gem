@@ -395,7 +395,9 @@ async fn run_server() {
         let live = live.clone();
         tokio::spawn(async move {
             loop {
-                publish(&prs, &names, &conversations, &live).await;
+                if let Some(response) = filled(&prs, &names, &conversations).await {
+                    live.publish(&response);
+                }
                 tokio::time::sleep(SNAPSHOT_INTERVAL).await;
             }
         });
@@ -585,18 +587,6 @@ async fn run_server() {
         changes,
     )
     .await;
-}
-
-// Writes the clusters as gem shows them to the view, which sends every frontend what changed.
-async fn publish(
-    prs: &Cache<ListOpenPullRequestsResponse>,
-    names: &Names,
-    conversations: &Conversations,
-    live: &view::Live,
-) {
-    if let Some(response) = filled(prs, names, conversations).await {
-        live.publish(&response);
-    }
 }
 
 // What the action routes share: the view, and the clusters as gem shows them now, to write to it.

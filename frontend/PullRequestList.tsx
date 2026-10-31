@@ -25,7 +25,7 @@ export function PullRequestList({
 }) {
   const phone = usePhone();
   // Wide enough for the longest repo#number, so they line up and never wrap.
-  const refWidth = Math.max(...pullRequests.map((pr) => ref(pr).length)) * 7.5;
+  const refWidth = Math.max(...pullRequests.map((pr) => `${pr.repository?.name}#${pr.number}`.length)) * 7.5;
   return (
     <View style={styles.list}>
       {pullRequests.map((pr, i) => {
@@ -37,7 +37,7 @@ export function PullRequestList({
             <View style={styles.row}>
               <ChecksIcon pr={pr} />
               <Text numberOfLines={1} style={[styles.ref, { width: refWidth }]}>
-                {ref(pr)}
+                {pr.repository?.name}#{pr.number}
               </Text>
               <Text numberOfLines={1} style={styles.title}>
                 {pr.title}
@@ -52,7 +52,7 @@ export function PullRequestList({
               {on(pr, agents).some((agent) => agent.state === 'AGENT_STATE_WORKING') && (
                 <ActivityIndicator size={12} color="#8FA8F5" />
               )}
-              {onRebase && rebasable(pr) && (
+              {onRebase && (pr.behind || pr.rebasing || pr.rebased) && (
                 <Button
                   label="Rebase"
                   disabled={pr.rebasing || pr.rebased || busy?.has(url)}
@@ -67,16 +67,6 @@ export function PullRequestList({
       })}
     </View>
   );
-}
-
-// "agents#4821".
-export function ref(pr: PullRequest): string {
-  return `${pr.repository?.name}#${pr.number}`;
-}
-
-// Waiting on a rebase, or being rebased.
-export function rebasable(pr: PullRequest): boolean {
-  return pr.behind || pr.rebasing || pr.rebased;
 }
 
 // The agents acting on the PR.

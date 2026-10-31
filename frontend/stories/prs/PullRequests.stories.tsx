@@ -1,4 +1,4 @@
-import type { Write, Shape } from '../../db';
+import type { Write } from '../../db';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
@@ -12,8 +12,6 @@ import { mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // A pull request being made up, before it's stored.
 type Row = { -readonly [K in keyof Write<typeof PullRequest>]: Write<typeof PullRequest>[K] };
-// The rows as the components read them.
-const views = <S extends Shape>(shape: S, rows: readonly Write<S>[]) => rows.map((row) => stored(shape, row));
 
 // Made-up cluster: one change across three repositories.
 const pullRequest = (
@@ -46,7 +44,8 @@ const moved = (id: string, to: Row) => ({ ...proposals.find((p) => p.id === id)!
 agents.proposals = proposals.filter((p) => !['quote-reply', 'failed'].includes(p.id ?? ''));
 agentsJs.proposals = [moved('quote-reply', agentsJs)];
 pending.proposals = [moved('failed', pending)];
-const cluster = views(PullRequest, [agents, agentsJs, protocol, pending]);
+// The rows as the components read them.
+const cluster = [agents, agentsJs, protocol, pending].map((row) => stored(PullRequest, row));
 
 function ref(pr: PullRequest) {
   return `${pr.repository?.name}#${pr.number}`;
@@ -184,13 +183,13 @@ export const CTabs: StoryObj = { name: 'C · Tabs', render: () => <Tabs /> };
 
 // Behind a base that requires it up to date, conflicting with its base, being rebased, and being
 // rebased by an agent with a question.
-const rebasing = views(PullRequest, [
+const rebasing = [
   { ...agents, behind: true },
   { ...pullRequest('client-sdk-swift', 611, 'Close data channels idle for 30 s', {}), behind: true, conflicts: true },
   { ...agentsJs, behind: true, rebasing: true },
   { ...protocol, behind: true, rebasing: true },
   pending,
-]);
+].map((row) => stored(PullRequest, row));
 export const DRebase: StoryObj = {
   name: 'D · Rebase',
   render: () => (
@@ -199,7 +198,7 @@ export const DRebase: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={rebasing} agents={views(Agent, rebasingAgents)} onRebase={() => {}} />
+          <PullRequestList pullRequests={rebasing} agents={rebasingAgents.map((row) => stored(Agent, row))} onRebase={() => {}} />
         </View>
       }
     />
@@ -276,7 +275,7 @@ export const FRestarted: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={views(PullRequest, restarted)} agents={views(Agent, restartedAgents)} />
+          <PullRequestList pullRequests={restarted.map((row) => stored(PullRequest, row))} agents={restartedAgents.map((row) => stored(Agent, row))} />
         </View>
       }
     />
@@ -291,7 +290,7 @@ export const EStatus: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={views(PullRequest, steps)} agents={views(Agent, stepAgents)} onRebase={() => {}} />
+          <PullRequestList pullRequests={steps.map((row) => stored(PullRequest, row))} agents={stepAgents.map((row) => stored(Agent, row))} onRebase={() => {}} />
         </View>
       }
     />

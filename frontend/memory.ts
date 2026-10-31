@@ -34,17 +34,17 @@ export class MemoryDb implements Db {
   version = () => this.changes;
 
   moment = (): Moment | undefined => {
-    const moment = this.latest();
-    return moment && Moment.read(moment, this.views);
+    const moment = new ReadArrayList(this.db.rootCursor()).getCursor(-1);
+    return moment ? Moment.read(moment, this.views) : undefined;
   };
 
   // Writes a new moment showing `shown`.
   show(shown: Shown) {
-    const clusters = shown.clusters ?? [];
-    const key = (cluster: Write<typeof Cluster>) => cluster.pullRequests?.[0]?.url ?? '';
+    // Each cluster's key is the URL of its oldest pull request.
+    const clusters = (shown.clusters ?? []).map((cluster) => [cluster.pullRequests?.[0]?.url ?? '', cluster] as const);
     this.append(Moment, {
-      clusters: Object.fromEntries(clusters.map((cluster) => [key(cluster), cluster])),
-      order: clusters.map(key),
+      clusters: Object.fromEntries(clusters),
+      order: clusters.map(([key]) => key),
       login: shown.login ?? '',
       search: shown.search ?? '',
       agents: shown.agents ?? [],
@@ -57,11 +57,7 @@ export class MemoryDb implements Db {
   // data never changes.
   put<S extends Shape>(shape: S, value: Write<S>): Infer<S> {
     this.append(shape, value);
-    return shape.read(this.latest(), this.views) as Infer<S>;
-  }
-
-  private latest() {
-    return new ReadArrayList(this.db.rootCursor()).getCursor(-1) ?? undefined;
+    return shape.read(new ReadArrayList(this.db.rootCursor()).getCursor(-1) ?? undefined, this.views) as Infer<S>;
   }
 
   private append<S extends Shape>(shape: S, value: Write<S>) {

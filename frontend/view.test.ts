@@ -12,8 +12,8 @@ import { Hasher } from 'xitdb';
 
 import { BrowserSha1, type Db, type Kept, same, select, shape, str, View } from './db';
 import { MemoryDb } from './memory';
-import { clusterKey, type Moment, PullRequest, shown } from './shapes';
-import { Replica, viewBytes } from './view';
+import { type Moment, PullRequest, shown } from './shapes';
+import { Replica, type ViewBytes } from './view';
 
 // On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, as here:
 // the replica looks keys up with its own SHA-1 alone.
@@ -33,19 +33,18 @@ const skip = !dir && 'GEM_VIEW_FIXTURE is not set';
 
 // The bytes the server wrote, and pbjson's JSON of the view before and after its change.
 function fixture() {
-  const read = (name: string) => new Uint8Array(readFileSync(join(dir!, name)));
   const json = JSON.parse(readFileSync(join(dir!, 'fixture.json'), 'utf8'));
   return {
-    full: { sent: viewBytes(json.full)!, bytes: read('full.bin') },
-    delta: { sent: viewBytes(json.delta)!, bytes: read('delta.bin') },
+    full: { sent: { ...json.full, start: Number(json.full.start), end: Number(json.full.end) }, bytes: new Uint8Array(readFileSync(join(dir!, 'full.bin'))) },
+    delta: { sent: { ...json.delta, start: Number(json.delta.start), end: Number(json.delta.end) }, bytes: new Uint8Array(readFileSync(join(dir!, 'delta.bin'))) },
     first: json.first,
     second: json.second,
   };
 }
 
-function replicaOf(...changes: { sent: ReturnType<typeof viewBytes>; bytes: Uint8Array }[]) {
+function replicaOf(...changes: { sent: ViewBytes; bytes: Uint8Array }[]) {
   const replica = new Replica();
-  for (const change of changes) assert.equal(replica.apply(change.sent!, change.bytes), 'applied');
+  for (const change of changes) assert.equal(replica.apply(change.sent, change.bytes), 'applied');
   return replica;
 }
 
@@ -73,7 +72,7 @@ test('views read every field kind as the server wrote it', { skip }, () => {
   const { clusters, agents, login, search } = shown(replicaOf(full).moment());
   assert.equal(login, first.login);
   assert.equal(search, first.search);
-  assert.deepEqual(clusters.map(clusterKey), first.clusters.map((c: any) => c.pullRequests[0].url));
+  assert.deepEqual(clusters.map((c) => c.pullRequests[0].url), first.clusters.map((c: any) => c.pullRequests[0].url));
   const cluster = clusters[0];
   const expected = first.clusters[0];
   // Enums by name, and the first value when left out.
@@ -97,7 +96,7 @@ test('views read every field kind as the server wrote it', { skip }, () => {
   assert.equal(workflowRunId, 1152921504606846977n);
   // Nested messages, lists and lists of strings.
   assert.equal(odd.repository?.name, 'gem');
-  assert.deepEqual(cluster.agents[0].pullRequestUrls, [clusterKey(cluster)]);
+  assert.deepEqual(cluster.agents[0].pullRequestUrls, [cluster.pullRequests[0].url]);
   assert.equal(odd.proposals[0].reply, expected.pullRequests[1].proposals[0].reply);
   // Fields left out: their defaults, and no message.
   assert.equal(odd.noProposalReason, '');
@@ -129,9 +128,8 @@ test('a read changes only when what it read changed', { skip }, () => {
   const replica = replicaOf(full);
   let notified = 0;
   replica.subscribe(() => notified++);
-  const cluster = (key: string) => (moment: Moment | undefined) => moment?.clusters.get(key);
-  const untouched = selecting(replica, cluster('https://github.com/o/r/pull/2/0'));
-  const renamed = selecting(replica, cluster('https://github.com/o/r/pull/1/0'));
+  const untouched = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/2/0'));
+  const renamed = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/1/0'));
   const order = selecting(replica, (moment) => moment?.order);
   const name = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/2/0')?.name);
   const before = { untouched: untouched()!, renamed: renamed()!, order: order(), name: name() };
@@ -181,10 +179,12 @@ test('reading one cluster reads nothing of the others', { skip }, () => {
   // One key looked up for each field read, and nothing else.
   assert.equal(lookups, 3);
   // The fields not read are still getters.
-  const unread = (view: object, field: string) => Object.getOwnPropertyDescriptor(view, field)?.get !== undefined;
-  assert.ok(unread(clusters[0], 'agents'));
-  assert.ok(unread(clusters[0].pullRequests[1], 'title'));
-  assert.ok(clusters.slice(1).every((other) => unread(other, 'name') && unread(other, 'pullRequests')));
+  assert.ok(Object.getOwnPropertyDescriptor(clusters[0], 'agents')?.get);
+  assert.ok(Object.getOwnPropertyDescriptor(clusters[0].pullRequests[1], 'title')?.get);
+  for (const other of clusters.slice(1)) {
+    assert.ok(Object.getOwnPropertyDescriptor(other, 'name')?.get);
+    assert.ok(Object.getOwnPropertyDescriptor(other, 'pullRequests')?.get);
+  }
 });
 
 test('a fixture written in TypeScript reads like the server writes', () => {
