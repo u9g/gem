@@ -33,6 +33,7 @@ serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "sync", "time", "fs", "io-util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter"] }
+ts-rs = { version = "12.0.1", features = ["serde-compat"] }
 
 [dev-dependencies]
 rusqlite = { version = "0.37.0", features = ["bundled"] }

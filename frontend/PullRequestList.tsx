@@ -2,7 +2,7 @@ import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { active } from './agents';
-import { type Agent, type PullRequest } from './shapes';
+import { type Agent, type PullRequest } from './view-types';
 import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its

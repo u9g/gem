@@ -4,7 +4,7 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import './ProposalView.css';
 
-import type { Proposal } from './shapes';
+import type { Proposal } from './view-types';
 import {
   Clamp,
   ClosesTag,

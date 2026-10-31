@@ -2,7 +2,7 @@ import { sha1 } from '@noble/hashes/legacy.js';
 import { createContext, useContext, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Hasher, ReadArrayList, type ReadCursor, ReadHashMap } from 'xitdb';
 
-import type { Moment } from './shapes';
+import type { Moment } from './view-types';
 
 // Components read the server's view straight from this frontend's replica of its database, through
 // `useDb`, which re-renders them when what they read changes.
@@ -11,7 +11,8 @@ import type { Moment } from './shapes';
 // so the stored data describes itself and is read without a schema: a map is a read-only object
 // whose properties are read from the replica as they're used, a list a frozen array, bytes a
 // string, or a bool when tagged `bl`, a number a number, and an empty slot undefined. Nothing is
-// read up front, so a component reads only what it renders. shapes.ts says what the objects hold.
+// read up front, so a component reads only what it renders. view-types.ts, generated
+// from the server's structs, says what the objects hold.
 //
 // What changed: committed data never changes in place, so a stored value whose slot (its tag and
 // its position in the file) is the same is the same value. Maps and lists are kept by slot, so

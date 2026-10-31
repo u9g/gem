@@ -3,7 +3,7 @@ import { memo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { active } from './agents';
-import type { Agent, Cluster, PullRequest } from './shapes';
+import type { Agent, Cluster, PullRequest } from './view-types';
 import { t3 } from './t3';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [

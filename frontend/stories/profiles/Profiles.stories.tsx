@@ -9,7 +9,7 @@ import { MemoryDb } from '../../memory';
 import { ProfileChip, ProfileForm, ProfileSheet, ProfileTitle } from '../../Profiles';
 import { PullRequestList } from '../../PullRequestList';
 import { type Profile, type Project } from '../../server';
-import type { Cluster } from '../../shapes';
+import type { Cluster } from '../../view-types';
 import { shown } from '../../view';
 import { Login } from '../../surfaces';
 import { t3 } from '../../t3';

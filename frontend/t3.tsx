@@ -12,7 +12,7 @@ import {
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-import type { Proposal } from './shapes';
+import type { Proposal } from './view-types';
 
 // T3 Code's dark-theme roles, over this app's background and text colors.
 export const t3 = {

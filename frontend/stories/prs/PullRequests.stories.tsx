@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
-import type { Agent, AgentState, PullRequest } from '../../shapes';
+import type { Agent, AgentState, PullRequest } from '../../view-types';
 import { Icon, t3 } from '../../t3';
 import { blank, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 

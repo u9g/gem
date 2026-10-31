@@ -7,7 +7,7 @@ import { ClusterReview } from '../../ClusterFiles';
 import { AgentView } from '../../AgentView';
 import { DbContext, useDb } from '../../db';
 import { MemoryDb } from '../../memory';
-import type { Agent, Cluster, Proposal, PullRequest } from '../../shapes';
+import type { Agent, Cluster, Proposal, PullRequest } from '../../view-types';
 import { shown } from '../../view';
 import { agentInputs as followed, blank, clusterMergeBy, mergeBy, prFiles, proposalInputs as proposals } from '../fixtures';
 

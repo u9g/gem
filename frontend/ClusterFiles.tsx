@@ -6,7 +6,7 @@ import { ClusterAgents, type ClusterView, MergeBanner, RebaseClusterButton, time
 import { Composer } from './AgentView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
-import type { Proposal, PullRequest } from './shapes';
+import type { Proposal, PullRequest } from './view-types';
 import { parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 

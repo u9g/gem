@@ -1,4 +1,4 @@
-import { type Agent } from './shapes';
+import { type Agent } from './view-types';
 
 // Queued or working, rather than waiting on the user.
 export function active(agent: Agent): boolean {

@@ -4,7 +4,7 @@ import { active } from './agents';
 import { AgentRow, units } from './ClusterRow';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
-import type { Agent, Cluster } from './shapes';
+import type { Agent, Cluster } from './view-types';
 import { Button, t3, usePhone } from './t3';
 
 const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });

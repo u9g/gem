@@ -1,5 +1,5 @@
 import { MemoryDb } from '../memory';
-import type { Agent, Cluster, Comment, MergeBy, Patch, Proposal, PullRequest } from '../shapes';
+import type { Agent, Cluster, Comment, MergeBy, Patch, Proposal, PullRequest } from '../view-types';
 
 // Each type with every field at its default, as the server writes a field nothing set: made-up
 // values spread one and set only what they're about.

@@ -15,7 +15,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 
 import 'github-markdown-css/github-markdown-dark.css';
 
-import type { CheckFailure, Comment, NewPullRequest, Proposal } from './shapes';
+import type { CheckFailure, Comment, NewPullRequest, Proposal } from './view-types';
 import { languageOf, Tokens, useTokens } from './highlight';
 import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';

@@ -1,7 +1,7 @@
 import { Bytes, CoreMemory, Database, Float, Int, ReadArrayList, Uint, WriteArrayList, type WriteCursor, WriteHashMap } from 'xitdb';
 
 import { BrowserSha1, type Db, Views } from './db';
-import type { Agent, Cluster, Moment } from './shapes';
+import type { Agent, Cluster, Moment } from './view-types';
 
 // A view database in memory, written from plain values the way the server's `Structured` codec
 // writes its structs, for stories and tests to render and read as the app reads its replica: an

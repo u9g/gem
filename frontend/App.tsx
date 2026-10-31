@@ -15,7 +15,7 @@ import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
 import { shown } from './view';
-import type { Cluster, Repository } from './shapes';
+import type { Cluster, Repository } from './view-types';
 import { Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {

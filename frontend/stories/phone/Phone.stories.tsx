@@ -6,7 +6,7 @@ import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
 import { DbContext, useDb } from '../../db';
 import { MemoryDb } from '../../memory';
-import type { Agent, Cluster as ClusterShape, Proposal, PullRequest } from '../../shapes';
+import type { Agent, Cluster as ClusterShape, Proposal, PullRequest } from '../../view-types';
 import { shown } from '../../view';
 import { blank, clusterMergeBy, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 

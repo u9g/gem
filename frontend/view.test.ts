@@ -12,7 +12,7 @@ import { Hasher } from 'xitdb';
 
 import { BrowserSha1, type Db, type Kept, same, select } from './db';
 import { MemoryDb } from './memory';
-import type { Cluster, Moment } from './shapes';
+import type { Cluster, Moment } from './view-types';
 import { blank } from './stories/fixtures';
 import { Replica, shown, type ViewBytes } from './view';
 

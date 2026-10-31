@@ -1,7 +1,7 @@
 import { CoreMemory, Database, ReadArrayList } from 'xitdb';
 
 import { BrowserSha1, type Db, Views } from './db';
-import type { Moment } from './shapes';
+import type { Moment } from './view-types';
 
 // A replica of the server's view database (server/src/view.rs), the clusters as gem shows them,
 // which components read through `useDb`. The server's file only grows, so the replica is sent the

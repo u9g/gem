@@ -3,7 +3,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
-import type { Agent, Cluster } from './shapes';
+import type { Agent, Cluster } from './view-types';
 import { Icon, t3 } from './t3';
 
 const COLUMN_MIN_WIDTH = 220;

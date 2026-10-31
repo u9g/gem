@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { bySubject, ProposalGroup } from './ProposalView';
-import { type Agent } from './shapes';
+import { type Agent } from './view-types';
 import { Html } from './surfaces';
 import { Button, t3 } from './t3';
 

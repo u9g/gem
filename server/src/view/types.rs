@@ -6,13 +6,21 @@
 //
 // They're made from the protobuf messages the server fills, in `From` impls here, the one place
 // the two meet; the protobuf types stay for the action requests and responses.
+//
+// The frontend's types, frontend/view-types.ts, are rendered from these by ts-rs, and a test fails
+// when the committed file is stale. ts-rs reads the serde attributes, so the names are the stored
+// ones; an `Option` field is an optional property, as the frontend reads an unset one as
+// undefined.
+
+use std::collections::HashMap;
 
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::proto;
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum MergeBy {
     // It can't merge.
@@ -24,7 +32,7 @@ pub enum MergeBy {
     Admin,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentState {
     #[default]
@@ -33,8 +41,9 @@ pub enum AgentState {
     Waiting,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
 pub struct Cluster {
     // Oldest first.
     pub pull_requests: Vec<PullRequest>,
@@ -44,8 +53,9 @@ pub struct Cluster {
     pub agents: Vec<Agent>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
 pub struct PullRequest {
     pub repository: Option<Repository>,
     pub number: u32,
@@ -69,7 +79,7 @@ pub struct PullRequest {
     pub created_at: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Checks {
     pub total: u32,
@@ -77,15 +87,16 @@ pub struct Checks {
     pub failed: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
     pub owner: String,
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
 pub struct Agent {
     pub id: String,
     pub title: String,
@@ -97,8 +108,9 @@ pub struct Agent {
     pub started_at: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
 pub struct Proposal {
     pub id: String,
     pub summary: String,
@@ -123,8 +135,9 @@ pub struct Proposal {
     pub open_pull_request: Option<NewPullRequest>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
 pub struct NewPullRequest {
     pub repository: String,
     pub base: String,
@@ -135,7 +148,7 @@ pub struct NewPullRequest {
     pub patch: Option<Patch>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckFailure {
     pub id: String,
@@ -143,7 +156,7 @@ pub struct CheckFailure {
     pub checks: Vec<FailedCheck>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct FailedCheck {
     pub id: String,
@@ -154,7 +167,7 @@ pub struct FailedCheck {
     pub excerpt: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Comment {
     pub id: String,
@@ -167,20 +180,37 @@ pub struct Comment {
     pub diff_hunk: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct FileDiff {
     pub path: String,
     pub patch: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Patch {
     pub diff: String,
     pub commit_message: String,
     pub head_oid: String,
     pub pull_request_url: String,
+}
+
+// A moment of the view, as the frontend reads it. The server writes each of its keys on its own,
+// so it's never made here; it exists to say what the frontend reads.
+#[derive(TS)]
+#[allow(dead_code)]
+pub struct Moment {
+    // Each cluster by its key, the URL of its oldest pull request.
+    pub clusters: HashMap<String, Cluster>,
+    // The clusters' keys, most recently updated first.
+    pub order: Vec<String>,
+    pub login: String,
+    pub search: String,
+    // The agents acting on no open pull request.
+    pub agents: Vec<Agent>,
+    // The actions in progress, each by the key the frontend names it by, with its route.
+    pub pending: HashMap<String, String>,
 }
 
 // What the UI shows, as the server fills it: the clusters in order, and the rest.
@@ -352,5 +382,58 @@ impl From<&proto::Patch> for Patch {
             head_oid: patch.head_oid.clone(),
             pull_request_url: patch.pull_request_url.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use ts_rs::{Config, TS};
+
+    use super::*;
+
+    // The frontend's types are these, as ts-rs renders them, in one file. A 64-bit integer is a
+    // `number`, as the frontend's reader reads one. Run with UPDATE_VIEW_TYPES set, this writes
+    // the file instead.
+    #[test]
+    fn the_frontend_view_types_are_current() {
+        let cfg = Config::new().with_large_int("number");
+        let types = [
+            Moment::decl(&cfg),
+            Cluster::decl(&cfg),
+            PullRequest::decl(&cfg),
+            Checks::decl(&cfg),
+            Repository::decl(&cfg),
+            Agent::decl(&cfg),
+            AgentState::decl(&cfg),
+            MergeBy::decl(&cfg),
+            Proposal::decl(&cfg),
+            Comment::decl(&cfg),
+            Patch::decl(&cfg),
+            CheckFailure::decl(&cfg),
+            FailedCheck::decl(&cfg),
+            NewPullRequest::decl(&cfg),
+            FileDiff::decl(&cfg),
+        ];
+        let file = format!(
+            "// Generated by ts-rs from server/src/view/types.rs; don't edit it. After changing\n\
+             // those structs, regenerate it from server/ with:\n\
+             //\n\
+             //   UPDATE_VIEW_TYPES=1 cargo test view_types\n\
+             \n{}",
+            types.map(|decl| format!("export {decl}\n")).join("\n"),
+        );
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../frontend/view-types.ts");
+        if std::env::var_os("UPDATE_VIEW_TYPES").is_some() {
+            std::fs::write(&path, &file).unwrap();
+            return;
+        }
+        let committed = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        assert!(
+            committed == file,
+            "frontend/view-types.ts is stale: regenerate it from server/ with \
+             `UPDATE_VIEW_TYPES=1 cargo test view_types`"
+        );
     }
 }
