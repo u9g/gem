@@ -15,7 +15,7 @@ const PRS_PER_REQUEST: usize = 25;
 const THRESHOLD: f64 = 0.5;
 
 // What search reads of an open PR. Kept here rather than in the clusters, so descriptions are not
-// sent to every frontend with each snapshot.
+// copied into every frontend's replica of the view.
 #[derive(Clone)]
 struct Described {
     url: String,

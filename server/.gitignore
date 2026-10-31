@@ -7,6 +7,10 @@
 /gem.xitdb.compacting*
 /gem.xitdb.importing*
 /gem.xitdb.lock
+# What frontends show, which they replicate and `server mcp` reads.
+/view.xitdb
+/view.xitdb.compacting*
+/view.xitdb.lock
 # The state servers kept before gem.xitdb, kept once imported.
 /gem.sqlite*
 /server.log

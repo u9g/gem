@@ -3,7 +3,7 @@ import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
-import type { Agent, PullRequestCluster } from './gen/gem_pb';
+import type { Agent, Cluster } from './shapes';
 import { Icon, t3 } from './t3';
 
 const COLUMN_MIN_WIDTH = 220;
@@ -25,13 +25,14 @@ export function Board({
   children,
 }: {
   // The clusters shown, after filters.
-  clusters: PullRequestCluster[];
+  clusters: readonly Cluster[];
   // The agents acting on no open pull request.
-  agents: Agent[];
-  // The oldest PR's URL of the open cluster.
+  agents: readonly Agent[];
+  // The key, the oldest PR's URL, of the open cluster.
   openUrl?: string;
   openAgent?: string;
-  onOpenCluster: (cluster: PullRequestCluster) => void;
+  // Called with the cluster's key.
+  onOpenCluster: (key: string) => void;
   onOpenAgent: (id: string) => void;
   onClose: () => void;
   wide?: boolean;
@@ -54,7 +55,7 @@ export function Board({
                 key={agent.id}
                 agent={agent}
                 selected={agent.id === openAgent}
-                onPress={() => onOpenAgent(agent.id)}
+                onPress={onOpenAgent}
               />
             ))}
           </Column>
@@ -69,7 +70,7 @@ export function Board({
                   cluster={cluster}
                   board
                   selected={cluster.pullRequests[0].url === openUrl}
-                  onPress={() => onOpenCluster(cluster)}
+                  onPress={onOpenCluster}
                 />
               ))}
             </Column>

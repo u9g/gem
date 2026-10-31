@@ -1,21 +1,18 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   Bot,
-  CheckCheck,
   ChevronRight,
   CircleAlert,
-  GitPullRequestClosed,
   GitPullRequestCreate,
   Hammer,
   MessageCircle,
-  MessageSquareQuote,
   RotateCcw,
   SquarePen,
 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-import type { Proposal, PullRequest } from './gen/gem_pb';
+import type { Proposal } from './shapes';
 
 // T3 Code's dark-theme roles, over this app's background and text colors.
 export const t3 = {
@@ -45,24 +42,18 @@ export function diffFiles(diff: string): DiffFile[] {
   return files;
 }
 
-export function basename(path: string): string {
-  return path.slice(path.lastIndexOf('/') + 1);
-}
-
-export function visibleMarkdown(markdown: string): string {
-  return markdown.replace(/<!--[\s\S]*?-->/g, '').trim();
-}
-
 // T3 Code's work-log grouping: one sentence for what approving does.
 export function stepSentence(proposal: Proposal): string {
+  const patch = proposal.patch;
+  const others = proposal.otherPatches.length;
   const phrases: string[] = [];
   if (proposal.followUp) phrases.push('start a follow-up agent');
-  if (proposal.patch) {
-    const n = diffFiles(proposal.patch.diff).length;
+  if (patch) {
+    const n = diffFiles(patch.diff).length;
     phrases.push(`change ${n} ${n === 1 ? 'file' : 'files'}`);
   }
-  if (proposal.otherPatches.length) {
-    const n = proposal.otherPatches.length;
+  if (others) {
+    const n = others;
     phrases.push(`change ${n} other ${n === 1 ? 'pull request' : 'pull requests'}`);
   }
   if (proposal.openPullRequest) phrases.push('open a pull request');
@@ -198,64 +189,6 @@ export function Sidebar({ title, children }: { title: string; children: ReactNod
   );
 }
 
-export function firstLine(markdown: string): string {
-  return visibleMarkdown(markdown)
-    .split('\n')
-    .find((line) => line.trim() !== '')!
-    .replace(/[*#`]/g, '')
-    .trim();
-}
-
-// Each step as its own expandable row, the way T3 Code lists a turn's tool calls.
-export function Steps({ proposal }: { proposal: Proposal }) {
-  return (
-    <>
-      {proposal.patch &&
-        diffFiles(proposal.patch.diff).map((file) => (
-          <Row
-            key={file.path}
-            icon={SquarePen}
-            label={basename(file.path)}
-            trailing={<DiffStat added={file.added} removed={file.removed} />}
-          >
-            <Text style={styles.meta}>{proposal.patch!.commitMessage}</Text>
-            <Code>{proposal.patch!.diff}</Code>
-          </Row>
-        ))}
-      {proposal.otherPatches.flatMap((patch) =>
-        diffFiles(patch.diff).map((file) => (
-          <Row
-            key={`${patch.pullRequestUrl} ${file.path}`}
-            icon={SquarePen}
-            label={basename(file.path)}
-            trailing={<DiffStat added={file.added} removed={file.removed} />}
-          >
-            <Text style={styles.meta}>
-              {patch.pullRequestUrl} · {patch.commitMessage}
-            </Text>
-            <Code>{patch.diff}</Code>
-          </Row>
-        )),
-      )}
-      {proposal.reply !== '' && (
-        <Row
-          icon={proposal.threadId ? MessageCircle : MessageSquareQuote}
-          label={proposal.threadId ? 'Reply in thread' : 'Quote reply'}
-        >
-          <Markdown>{proposal.reply}</Markdown>
-        </Row>
-      )}
-      {proposal.resolveThread && <Row icon={CheckCheck} label="Resolve thread" />}
-      {proposal.closePullRequest && <Row icon={GitPullRequestClosed} label="Close pull request" />}
-      {proposal.requestedTool !== '' && (
-        <Row icon={Hammer} label="Needs a tool">
-          <Markdown>{proposal.requestedTool}</Markdown>
-        </Row>
-      )}
-    </>
-  );
-}
-
 export function proposalIcon(proposal: Proposal) {
   if (proposal.error) return CircleAlert;
   if (proposal.requestedTool) return Hammer;
@@ -266,42 +199,7 @@ export function proposalIcon(proposal: Proposal) {
   return MessageCircle;
 }
 
-export function ErrorLine({ proposal }: { proposal: Proposal }) {
-  if (!proposal.error) return null;
-  return (
-    <Row icon={CircleAlert} label="Approval failed" labelColor={t3.deletion}>
-      <Code>{proposal.error}</Code>
-    </Row>
-  );
-}
-
-export function CommentRow({
-  item,
-  trailing,
-}: {
-  item: { pr: PullRequest; proposal: Proposal };
-  trailing?: ReactNode;
-}) {
-  const comment = item.proposal.comment!;
-  return (
-    <Row
-      trailing={trailing}
-      label={
-        <>
-          <Text style={{ color: t3.foreground }}>{comment.author}</Text> {firstLine(comment.body)}
-        </>
-      }
-    >
-      <Markdown>{visibleMarkdown(comment.body)}</Markdown>
-    </Row>
-  );
-}
-
 const styles = StyleSheet.create({
-  meta: {
-    color: t3.muted,
-    fontSize: 11,
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,9 +1,8 @@
-import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { type Agent, AgentState } from './gen/gem_pb';
-import { ProposalGroup } from './ProposalView';
+import { bySubject, ProposalGroup } from './ProposalView';
+import { type Agent } from './shapes';
 import { Html } from './surfaces';
 import { Button, t3 } from './t3';
 
@@ -27,6 +26,8 @@ export function AgentView({
   onMessage: (message: string) => Promise<unknown>;
   onClose: () => void;
 }) {
+  const state = agent.state;
+  const startedAt = agent.startedAt;
   const on = agent.pullRequestUrls.map((url) => {
     const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(url) ?? [];
     return `${repository}#${number}`;
@@ -38,23 +39,24 @@ export function AgentView({
           <Text style={styles.title}>{agent.title}</Text>
           <Text style={styles.meta}>
             {on.length > 0 && `on ${on.join(', ')}`}
-            {agent.startedAt && ` · ${ago(timestampDate(agent.startedAt))}`}
+            {startedAt && ` · ${ago(startedAt)}`}
           </Text>
         </View>
         <Button label="Done" disabled={busy?.has(agent.id)} onPress={onClose} />
       </View>
       {agent.reply !== '' && <Html html={agent.replyHtml} />}
-      {agent.state === AgentState.WORKING && (
+      {state === 'AGENT_STATE_WORKING' && (
         <View style={styles.working}>
           <ActivityIndicator size={12} color="#8FA8F5" />
           <Text style={styles.meta}>Working…</Text>
         </View>
       )}
-      {agent.state === AgentState.QUEUED && <Text style={styles.meta}>Queued behind other agents…</Text>}
-      {agent.proposals.map((proposal) => (
-        <ProposalGroup key={proposal.id} proposals={[proposal]} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
+      {state === 'AGENT_STATE_QUEUED' && <Text style={styles.meta}>Queued behind other agents…</Text>}
+      {/* Alternatives, answering the same comment or the same failed checks, are one card. */}
+      {bySubject(agent.proposals).map((group) => (
+        <ProposalGroup key={group[0].id} proposals={group} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
       ))}
-      {agent.state !== AgentState.QUEUED && <Composer placeholder="Message the agent…" onSend={onMessage} />}
+      {state !== 'AGENT_STATE_QUEUED' && <Composer placeholder="Message the agent…" onSend={onMessage} />}
     </View>
   );
 }

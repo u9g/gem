@@ -15,7 +15,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 
 import 'github-markdown-css/github-markdown-dark.css';
 
-import type { CheckFailure, Comment, NewPullRequest, Proposal } from './gen/gem_pb';
+import type { CheckFailure, Comment, NewPullRequest, Proposal } from './shapes';
 import { languageOf, Tokens, useTokens } from './highlight';
 import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
@@ -368,11 +368,12 @@ export function Quote({ children, lines }: { children: string; lines?: number })
 // everyone else's on the left. The body is GitHub's own rendering, styled with GitHub's stylesheet,
 // cut to `max` pixels when given.
 export function Theirs({ comment, trailing, max }: { comment: Comment; trailing?: ReactNode; max?: number }) {
-  const side = comment.author === useContext(Login) ? 'right' : 'left';
+  const author = comment.author;
+  const side = author === useContext(Login) ? 'right' : 'left';
   return (
     <View style={{ gap: 4 }}>
       <View style={[styles.theirsHeader, side === 'right' && styles.theirsHeaderRight]}>
-        <Text style={styles.meta}>{comment.author}</Text>
+        <Text style={styles.meta}>{author}</Text>
         {trailing}
       </View>
       <Bubble side={side}>
@@ -399,7 +400,8 @@ export function FailedChecks({ failure }: { failure: CheckFailure }) {
           <View style={styles.checkHeader}>
             <Icon icon={CircleX} size={12} color={t3.deletion} />
             <Text numberOfLines={1} style={styles.checkName}>
-              {check.name} <Text style={styles.meta}>· {check.conclusion.toLowerCase().replace('_', ' ')}</Text>
+              {check.name}{' '}
+              <Text style={styles.meta}>· {check.conclusion.toLowerCase().replace('_', ' ')}</Text>
             </Text>
             <Pressable accessibilityLabel="Open logs" onPress={() => Linking.openURL(check.url)}>
               <Icon icon={ExternalLink} size={12} />
@@ -665,8 +667,10 @@ export function FollowUpCard({
 // The pull request approving opens: where it goes, its title and description as GitHub renders
 // them, and the change it commits, until an approve that failed after pushing it.
 export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullRequest }) {
-  const diff = pullRequest.patch?.diff ?? '';
+  const patch = pullRequest.patch;
+  const diff = patch?.diff ?? '';
   const files = diffFiles(diff);
+  const branch = pullRequest.branch;
   return (
     <View style={styles.followUp}>
       <View style={styles.followUpHeader}>
@@ -674,17 +678,17 @@ export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullReques
         <Text style={styles.meta}>
           <Text style={{ color: t3.foreground, fontWeight: '500' }}>New pull request</Text>
           {'  '}
-          {pullRequest.repository} · {pullRequest.base} ← {pullRequest.branch}
+          {pullRequest.repository} · {pullRequest.base} ← {branch}
         </Text>
       </View>
       <Text style={{ color: t3.foreground, fontWeight: '600' }}>{pullRequest.title}</Text>
       <Clamp max={130}>
         <Html html={pullRequest.bodyHtml} />
       </Clamp>
-      {pullRequest.patch ? (
+      {patch ? (
         <>
           <Text style={styles.meta}>
-            {pullRequest.patch.commitMessage}
+            {patch.commitMessage}
             {'  '}
             <DiffStat added={files.reduce((n, f) => n + f.added, 0)} removed={files.reduce((n, f) => n + f.removed, 0)} />
           </Text>
@@ -693,7 +697,7 @@ export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullReques
           </Clamp>
         </>
       ) : (
-        <Text style={styles.meta}>Pushed {pullRequest.branch}; approving again opens the pull request.</Text>
+        <Text style={styles.meta}>Pushed {branch}; approving again opens the pull request.</Text>
       )}
     </View>
   );

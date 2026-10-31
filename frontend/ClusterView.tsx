@@ -1,11 +1,10 @@
-import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { active } from './agents';
 import { AgentRow, units } from './ClusterRow';
-import { type Agent, MergeBy, type PullRequestCluster } from './gen/gem_pb';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { PullRequestList } from './PullRequestList';
+import type { Agent, Cluster } from './shapes';
 import { Button, t3, usePhone } from './t3';
 
 const relativeTime = new Intl.RelativeTimeFormat('en', { numeric: 'always' });
@@ -32,29 +31,33 @@ export function ClusterView({
   onMerge,
   onInvestigate,
 }: {
-  cluster: PullRequestCluster;
+  cluster: Cluster;
   onOpenAgent: (id: string) => void;
   busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
   onDismiss: (id: string) => void;
-  onRestart: (cluster: PullRequestCluster) => void;
+  onRestart: (cluster: Cluster) => void;
   onRebase: (url: string) => void;
-  onRebaseCluster: (cluster: PullRequestCluster) => void;
+  onRebaseCluster: (cluster: Cluster) => void;
   // `admin`: the user chose to force the unapproved pull requests in as an admin.
-  onMerge: (cluster: PullRequestCluster, admin: boolean) => void;
+  onMerge: (cluster: Cluster, admin: boolean) => void;
   onInvestigate: (id: string) => void;
 }) {
   const phone = usePhone();
-  const restarting = busy?.has(cluster.pullRequests[0].url);
-  const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
-  const admin = cluster.mergeBy === MergeBy.ADMIN;
+  const key = cluster.pullRequests[0].url;
+  const restarting = busy?.has(key);
+  const merging = busy?.has(`merge ${key}`);
+  const by = cluster.mergeBy;
+  const admin = by === 'MERGE_BY_ADMIN';
+  const updatedAt = cluster.updatedAt;
+  const pullRequests = cluster.pullRequests;
   return (
     <View style={styles.column}>
       <View style={styles.header}>
         <View style={styles.titleBlock}>
-          <Text style={[styles.title, phone && styles.phoneTitle, cluster.mergeBy === MergeBy.APPROVAL && styles.ready, admin && styles.forceable]}>{cluster.name}</Text>
+          <Text style={[styles.title, phone && styles.phoneTitle, by === 'MERGE_BY_APPROVAL' && styles.ready, admin && styles.forceable]}>{cluster.name}</Text>
           <Text style={styles.meta}>
-            {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+            {updatedAt && timeAgo(updatedAt)}
           </Text>
         </View>
         <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
@@ -65,11 +68,11 @@ export function ClusterView({
         />
       </View>
       <View style={styles.pullRequests}>
-        <PullRequestList pullRequests={cluster.pullRequests} agents={cluster.agents} busy={busy} onRebase={onRebase} />
+        <PullRequestList pullRequests={pullRequests} agents={cluster.agents} busy={busy} onRebase={onRebase} />
       </View>
       <ClusterAgents agents={cluster.agents} onOpenAgent={onOpenAgent} />
       <MergeBanner cluster={cluster} busy={busy} onMerge={onMerge} />
-      {bySubject(cluster.pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
+      {bySubject(pullRequests.flatMap((pr) => pr.proposals)).map((group) => (
         <ProposalGroup
           key={group[0].id}
           proposals={group}
@@ -84,12 +87,12 @@ export function ClusterView({
 }
 
 // The cluster's agents, those waiting on the user first, each opening where it can be messaged.
-export function ClusterAgents({ agents, onOpenAgent }: { agents: Agent[]; onOpenAgent: (id: string) => void }) {
+export function ClusterAgents({ agents, onOpenAgent }: { agents: readonly Agent[]; onOpenAgent: (id: string) => void }) {
   if (agents.length === 0) return null;
   return (
     <View>
       {[...agents].sort((a, b) => Number(active(a)) - Number(active(b))).map((agent) => (
-        <AgentRow key={agent.id} agent={agent} selected={false} onPress={() => onOpenAgent(agent.id)} />
+        <AgentRow key={agent.id} agent={agent} selected={false} onPress={onOpenAgent} />
       ))}
     </View>
   );
@@ -102,16 +105,19 @@ export function RebaseClusterButton({
   busy,
   onRebaseCluster,
 }: {
-  cluster: PullRequestCluster;
+  cluster: Cluster;
   busy?: ReadonlySet<string>;
-  onRebaseCluster: (cluster: PullRequestCluster) => void;
+  onRebaseCluster: (cluster: Cluster) => void;
 }) {
   const starting = busy?.has(`rebase ${cluster.pullRequests[0].url}`);
-  if (!cluster.pullRequests.some((pr) => pr.behind || pr.rebasing || pr.rebased)) return null;
+  const pullRequests = cluster.pullRequests;
+  if (!pullRequests.some((pr) => pr.behind || pr.rebasing || pr.rebased)) return null;
   return (
     <Button
       label={starting ? 'Starting an agent…' : 'Rebase cluster'}
-      disabled={starting || cluster.pullRequests.some((pr) => pr.rebasing || pr.rebased || busy?.has(pr.url))}
+      disabled={
+        starting || pullRequests.some((pr) => pr.rebasing || pr.rebased || busy?.has(pr.url))
+      }
       onPress={() => onRebaseCluster(cluster)}
     />
   );
@@ -125,24 +131,26 @@ export function MergeBanner({
   onMerge,
   stacked = false,
 }: {
-  cluster: PullRequestCluster;
+  cluster: Cluster;
   busy?: ReadonlySet<string>;
-  onMerge: (cluster: PullRequestCluster, admin: boolean) => void;
+  onMerge: (cluster: Cluster, admin: boolean) => void;
   stacked?: boolean;
 }) {
   const phone = usePhone();
   stacked ||= phone;
-  const restarting = busy?.has(cluster.pullRequests[0].url);
-  const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
-  const admin = cluster.mergeBy === MergeBy.ADMIN;
-  const forced = cluster.pullRequests.filter((pr) => pr.mergeBy === MergeBy.ADMIN).length;
+  const key = cluster.pullRequests[0].url;
+  const restarting = busy?.has(key);
+  const merging = busy?.has(`merge ${key}`);
+  const admin = cluster.mergeBy === 'MERGE_BY_ADMIN';
+  const pullRequests = cluster.pullRequests;
+  const forced = pullRequests.filter((pr) => pr.mergeBy === 'MERGE_BY_ADMIN').length;
   const one = forced === 1;
-  if (cluster.mergeBy === MergeBy.UNSPECIFIED || cluster.pullRequests.some((pr) => pr.merging)) return null;
+  if (cluster.mergeBy === 'MERGE_BY_UNSPECIFIED' || pullRequests.some((pr) => pr.merging)) return null;
   return (
     <View style={[styles.merge, admin && styles.adminMerge, stacked && styles.mergeStacked]}>
       <Text style={[styles.mergeText, stacked && styles.mergeTextStacked]}>
         {admin
-          ? `${forced} of ${cluster.pullRequests.length} pull requests ${one ? 'is' : 'are'} not approved. Every check passes, and you are an admin of ${one ? 'its repository' : 'their repositories'}, so you can force ${one ? 'it' : 'them'} in past review.`
+          ? `${forced} of ${pullRequests.length} pull requests ${one ? 'is' : 'are'} not approved. Every check passes, and you are an admin of ${one ? 'its repository' : 'their repositories'}, so you can force ${one ? 'it' : 'them'} in past review.`
           : 'Every pull request is approved and its checks pass.'}
       </Text>
       <Button

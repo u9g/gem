@@ -8,11 +8,23 @@
 use gem_db::{MapMut, Migration, Migrations};
 
 pub fn migrations() -> Migrations {
+    up_to(u64::MAX)
+}
+
+// The migrations up to layout `latest`.
+fn up_to(latest: u64) -> Migrations {
     let index_by_thread = |moment: &mut MapMut| {
         gem_merges::rebuild_index(moment)?;
         gem_rebases::rebuild_index(moment).map(drop)
     };
-    let migrations = [Migration::new(1, "index merges and rebases by thread", index_by_thread)];
+    // The clusters as gem last showed them, as JSON, which `server mcp` read before it read
+    // view.xitdb.
+    let drop_snapshot = |moment: &mut MapMut| moment.remove("snapshot").map(drop);
+    let migrations = [
+        Migration::new(1, "index merges and rebases by thread", index_by_thread),
+        Migration::new(2, "drop the clusters' snapshot", drop_snapshot),
+    ];
+    let migrations = migrations.into_iter().filter(|migration| migration.version <= latest);
     Migrations::new(migrations).expect("migrations are in order")
 }
 
@@ -67,7 +79,7 @@ mod tests {
         gem_sqlite_import::import(&sqlite, &xitdb).unwrap();
 
         let (db, migrated) = gem_db::Db::open(&xitdb, &migrations()).unwrap();
-        assert_eq!((migrated.from, migrated.to), (0, 1));
+        assert_eq!((migrated.from, migrated.to), (0, 2));
         let merges = Merges::new(db.clone(), NoHost).unwrap();
         let merge = &merges.all().unwrap()["https://github.com/o/r/pull/1"];
         assert_eq!(merge.thread_id.as_deref(), Some("m"));
@@ -86,6 +98,21 @@ mod tests {
         drop(db);
         let reader = gem_db::Db::open_reader(&xitdb, migrations());
         assert!(reader.read(|moment| moment.get_string("snapshot", None)).is_ok());
+        let _ = std::fs::remove_dir_all(Path::new(&dir));
+    }
+
+    // A server from before view.xitdb kept the clusters' JSON in gem.xitdb, which layout 2 drops.
+    #[test]
+    fn layout_2_drops_the_snapshot() {
+        let dir = crate::tokens::tests::temp_dir("snapshot");
+        let path = dir.join(gem_db::FILE);
+        let (db, _) = gem_db::Db::open(&path, &up_to(1)).unwrap();
+        db.write(|moment| moment.put("snapshot", r#"{"clusters":[]}"#)).unwrap();
+        drop(db);
+        let (db, migrated) = gem_db::Db::open(&path, &migrations()).unwrap();
+        assert_eq!(migrated.ran, ["drop the clusters' snapshot"]);
+        assert_eq!(db.read(|moment| moment.get_string("snapshot", None)).unwrap(), None);
+        drop(db);
         let _ = std::fs::remove_dir_all(Path::new(&dir));
     }
 }

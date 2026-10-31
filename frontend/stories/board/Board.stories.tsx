@@ -1,28 +1,19 @@
-import { create } from '@bufbuild/protobuf';
-import { timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { View } from 'react-native';
 
 import { Board } from '../../Board';
 import { ClusterReview } from '../../ClusterFiles';
 import { AgentView } from '../../AgentView';
-import {
-  type Agent,
-  AgentSchema,
-  AgentState,
-  type Proposal,
-  type PullRequest,
-  type PullRequestCluster,
-  PullRequestClusterSchema,
-  PullRequestSchema,
-} from '../../gen/gem_pb';
-import { agents as followed, clusterMergeBy, mergeBy, prFiles, proposals } from '../fixtures';
+import { DbContext, useDb, type Write } from '../../db';
+import { MemoryDb } from '../../memory';
+import { Agent, Cluster, Proposal, PullRequest, shown } from '../../shapes';
+import { agentInputs as followed, clusterMergeBy, mergeBy, prFiles, proposalInputs as proposals } from '../fixtures';
 
 // Made-up clusters, at least one in each column. Stories render at the window's width, so view
 // them at a laptop's.
 
-const minutesAgo = (minutes: number) => timestampFromDate(new Date(Date.now() - minutes * 60_000));
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
 type Fields = {
   approved?: boolean;
@@ -30,13 +21,12 @@ type Fields = {
   checksFailing?: boolean;
   behind?: boolean;
   checks?: { total: number; done: number; failed: number };
-  proposals?: Proposal[];
+  proposals?: Write<typeof Proposal>[];
   merging?: boolean;
   files?: { path: string; patch: string }[];
 };
 
-const pullRequest = (name: string, number: number, title: string, fields: Fields) =>
-  create(PullRequestSchema, {
+const pullRequest = (name: string, number: number, title: string, fields: Fields): Write<typeof PullRequest> => ({
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -47,13 +37,13 @@ const pullRequest = (name: string, number: number, title: string, fields: Fields
     ...fields,
   });
 
-const cluster = (name: string, minutes: number, pullRequests: PullRequest[]) =>
-  create(PullRequestClusterSchema, {
-    name,
-    updatedAt: minutesAgo(minutes),
-    pullRequests,
-    mergeBy: clusterMergeBy(pullRequests),
-  });
+const cluster = (name: string, minutes: number, pullRequests: Write<typeof PullRequest>[]): Write<typeof Cluster> => ({
+  name,
+  updatedAt: minutesAgo(minutes),
+  pullRequests,
+  mergeBy: clusterMergeBy(pullRequests),
+});
+
 
 const passing = { approved: true, checksPassing: true };
 
@@ -93,49 +83,59 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
 const clusters = [needsYou, behind, ready1, merging, working, running, reviewing];
 
 // The agents merging and answering a comment, which their clusters list.
-const clusterAgents = [
-  create(AgentSchema, { id: 'merge:m', title: 'Merge Drop the legacy room service client', pullRequestUrls: [merging.pullRequests[0].url] }),
-  create(AgentSchema, { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests[0].url] }),
+const clusterAgents: Write<typeof Agent>[] = [
+  { id: 'merge:m', title: 'Merge Drop the legacy room service client', pullRequestUrls: [merging.pullRequests![0].url!] },
+  { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests![0].url!] },
 ];
 
 // An investigation whose pull request merged, so it acts on no open pull request.
-const orphan = create(AgentSchema, {
+const orphan: Write<typeof Agent> = {
   id: 'investigation-merged',
   title: 'Investigate e2e on agents#4790',
   pullRequestUrls: ['https://github.com/livekit/agents/pull/4790'],
-  state: AgentState.WAITING,
+  state: 'AGENT_STATE_WAITING',
   reply: 'The e2e failure was a flaky TURN server; it passed on rerun before the merge.',
   replyHtml: '<p dir="auto">The e2e failure was a flaky TURN server; it passed on rerun before the merge.</p>',
-});
+};
 
 const noop = () => {};
 
-// Each cluster holding the agents acting on its pull requests, as the server sends it.
-const holding = (agents: Agent[]) =>
-  clusters.map((c) =>
-    create(PullRequestClusterSchema, {
-      ...c,
-      agents: agents.filter((a) => c.pullRequests.some((pr) => a.pullRequestUrls.includes(pr.url))),
-    }),
-  );
+// Each cluster holding the agents acting on its pull requests, as the server writes it.
+const holding = (agents: readonly Write<typeof Agent>[]): Write<typeof Cluster>[] =>
+  clusters.map((c) => ({
+    ...c,
+    agents: agents.filter((a) => c.pullRequests?.some((pr) => a.pullRequestUrls?.includes(pr.url ?? ''))),
+  }));
 
-function Desktop({ initial, agents = false }: { initial?: PullRequestCluster; agents?: boolean }) {
-  const [openUrl, setOpenUrl] = useState(initial?.pullRequests[0].url);
+// The board as the app shows it, read from a database holding the clusters and agents.
+function Desktop({ initial, agents = false }: { initial?: Write<typeof Cluster>; agents?: boolean }) {
+  const db = useMemo(() => {
+    const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
+    return new MemoryDb({ clusters: holding(all), agents: agents ? [orphan] : [] });
+  }, [agents]);
+  return (
+    <DbContext value={db}>
+      <Shown initial={initial?.pullRequests?.[0]?.url} />
+    </DbContext>
+  );
+}
+
+function Shown({ initial }: { initial?: string }) {
+  const { clusters, agents } = useDb(shown);
+  const [openUrl, setOpenUrl] = useState(initial);
   const [openAgent, setOpenAgent] = useState<string>();
-  const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
-  const listed = holding(all);
-  const opened = listed.find((c) => c.pullRequests[0].url === openUrl);
-  const agent = [orphan, ...all].find((a) => a.id === openAgent);
+  const opened = clusters.find((c) => c.pullRequests[0].url === openUrl);
+  const agent = [...agents, ...clusters.flatMap((c) => c.agents)].find((a) => a.id === openAgent);
   return (
     <View style={{ height: '100vh' as unknown as number }}>
       <Board
-        clusters={listed}
-        agents={agents ? [orphan] : []}
+        clusters={clusters}
+        agents={agents}
         openUrl={agent ? undefined : openUrl}
         openAgent={openAgent}
-        onOpenCluster={(c) => {
+        onOpenCluster={(key) => {
           setOpenAgent(undefined);
-          setOpenUrl(c.pullRequests[0].url);
+          setOpenUrl(key);
         }}
         onOpenAgent={setOpenAgent}
         onClose={() => {

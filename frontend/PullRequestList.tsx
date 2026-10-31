@@ -1,8 +1,8 @@
 import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type Agent, AgentState, MergeBy, type PullRequest } from './gen/gem_pb';
 import { active } from './agents';
+import { type Agent, type PullRequest } from './shapes';
 import { Button, Icon, t3, usePhone } from './t3';
 
 // A cluster's PRs as a bordered list like T3 Code's changed-files panel: one row per PR with its
@@ -17,9 +17,9 @@ export function PullRequestList({
   busy,
   onRebase,
 }: {
-  pullRequests: PullRequest[];
+  pullRequests: readonly PullRequest[];
   // The cluster's agents.
-  agents: Agent[];
+  agents: readonly Agent[];
   busy?: ReadonlySet<string>;
   onRebase?: (url: string) => void;
 }) {
@@ -28,60 +28,64 @@ export function PullRequestList({
   const refWidth = Math.max(...pullRequests.map((pr) => `${pr.repository?.name}#${pr.number}`.length)) * 7.5;
   return (
     <View style={styles.list}>
-      {pullRequests.map((pr, i) => (
-        <Pressable
-          key={pr.url}
-          style={[styles.item, i > 0 && styles.rowBorder]}
-          onPress={() => Linking.openURL(pr.url)}
-        >
-          <View style={styles.row}>
-            <ChecksIcon pr={pr} />
-            <Text numberOfLines={1} style={[styles.ref, { width: refWidth }]}>
-              {pr.repository?.name}#{pr.number}
-            </Text>
-            <Text numberOfLines={1} style={styles.title}>
-              {pr.title}
-            </Text>
-            {phone ? (
-              pr.approved && <Icon icon={Check} size={14} color={t3.addition} />
-            ) : (
-              <Text style={[styles.review, pr.approved && { color: t3.addition }]}>
-                {pr.approved ? 'Approved' : 'Review required'}
+      {pullRequests.map((pr, i) => {
+        const url = pr.url;
+        const approved = pr.approved;
+        const proposals = pr.proposals.length;
+        return (
+          <Pressable key={url} style={[styles.item, i > 0 && styles.rowBorder]} onPress={() => Linking.openURL(url)}>
+            <View style={styles.row}>
+              <ChecksIcon pr={pr} />
+              <Text numberOfLines={1} style={[styles.ref, { width: refWidth }]}>
+                {pr.repository?.name}#{pr.number}
               </Text>
-            )}
-            {on(pr, agents).some((agent) => agent.state === AgentState.WORKING) && <ActivityIndicator size={12} color="#8FA8F5" />}
-            {onRebase && (pr.behind || pr.rebasing || pr.rebased) && (
-              <Button
-                label="Rebase"
-                disabled={pr.rebasing || pr.rebased || busy?.has(pr.url)}
-                onPress={() => onRebase(pr.url)}
-              />
-            )}
-            <View style={styles.countSlot}>
-              {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
+              <Text numberOfLines={1} style={styles.title}>
+                {pr.title}
+              </Text>
+              {phone ? (
+                approved && <Icon icon={Check} size={14} color={t3.addition} />
+              ) : (
+                <Text style={[styles.review, approved && { color: t3.addition }]}>
+                  {approved ? 'Approved' : 'Review required'}
+                </Text>
+              )}
+              {on(pr, agents).some((agent) => agent.state === 'AGENT_STATE_WORKING') && (
+                <ActivityIndicator size={12} color="#8FA8F5" />
+              )}
+              {onRebase && (pr.behind || pr.rebasing || pr.rebased) && (
+                <Button
+                  label="Rebase"
+                  disabled={pr.rebasing || pr.rebased || busy?.has(url)}
+                  onPress={() => onRebase(url)}
+                />
+              )}
+              <View style={styles.countSlot}>{proposals > 0 && <Text style={styles.count}>{proposals}</Text>}</View>
             </View>
-          </View>
-          <StatusLine pr={pr} agents={agents} />
-        </Pressable>
-      ))}
+            <StatusLine pr={pr} agents={agents} />
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
 
 // The agents acting on the PR.
-function on(pr: PullRequest, agents: Agent[]): Agent[] {
+function on(pr: PullRequest, agents: readonly Agent[]): readonly Agent[] {
   return agents.filter((agent) => agent.pullRequestUrls.includes(pr.url));
 }
 
 // What is happening to the PR and what it waits on.
 type Status = { doing: string; waiting?: string; ready?: boolean; forceable?: boolean };
 
-function status(pr: PullRequest, agents: Agent[]): Status | undefined {
-  const checks = pr.checks ?? { total: 0, done: 0, failed: 0 };
+function status(pr: PullRequest, agents: readonly Agent[]): Status | undefined {
+  const stored = pr.checks;
+  const checks = { total: stored?.total ?? 0, done: stored?.done ?? 0, failed: stored?.failed ?? 0 };
   const running = checks.total - checks.done;
   const checksFailed = `${checks.failed} ${checks.failed === 1 ? 'check' : 'checks'} failed`;
   const acting = on(pr, agents).filter(active);
-  const working = acting.filter((agent) => agent.state === AgentState.WORKING);
+  const working = acting.filter((agent) => agent.state === 'AGENT_STATE_WORKING');
+  const proposals = pr.proposals.length;
+  const base = pr.base;
   if (pr.rebased) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
   if (working.length === 1 && acting.length === 1) return { doing: working[0].title, waiting: 'waiting on its agent' };
   if (working.length > 0) {
@@ -99,18 +103,18 @@ function status(pr: PullRequest, agents: Agent[]): Status | undefined {
     return { doing: checksFailed, waiting: `waiting on ${running} still running before an agent looks at them` };
   }
   if (running > 0) return { doing: `${checks.done} of ${checks.total} checks done`, waiting: `waiting on ${running} running` };
-  if (pr.proposals.length > 0) {
-    return { doing: `${pr.proposals.length} ${pr.proposals.length === 1 ? 'proposal' : 'proposals'}`, waiting: 'waiting on you' };
+  if (proposals > 0) {
+    return { doing: `${proposals} ${proposals === 1 ? 'proposal' : 'proposals'}`, waiting: 'waiting on you' };
   }
   if (checks.failed > 0) return { doing: checksFailed, waiting: pr.noProposalReason || 'no proposal for them' };
-  if (pr.conflicts) return { doing: `Conflicts with ${pr.base}`, waiting: 'waiting on you to rebase' };
-  if (pr.behind) return { doing: `${pr.base} requires it up to date`, waiting: 'waiting on you to rebase' };
-  if (pr.mergeBy === MergeBy.APPROVAL) return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
-  if (pr.mergeBy === MergeBy.ADMIN) return { doing: 'Not approved', waiting: 'you can force it in as an admin', forceable: true };
+  if (pr.conflicts) return { doing: `Conflicts with ${base}`, waiting: 'waiting on you to rebase' };
+  if (pr.behind) return { doing: `${base} requires it up to date`, waiting: 'waiting on you to rebase' };
+  if (pr.mergeBy === 'MERGE_BY_APPROVAL') return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
+  if (pr.mergeBy === 'MERGE_BY_ADMIN') return { doing: 'Not approved', waiting: 'you can force it in as an admin', forceable: true };
   return undefined;
 }
 
-export function StatusLine({ pr, agents }: { pr: PullRequest; agents: Agent[] }) {
+export function StatusLine({ pr, agents }: { pr: PullRequest; agents: readonly Agent[] }) {
   const line = status(pr, agents);
   if (!line) return null;
   return (

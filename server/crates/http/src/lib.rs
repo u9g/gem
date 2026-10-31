@@ -18,12 +18,7 @@ pub async fn respond(app: Router, request: String) -> Result<String, (u32, Strin
     let path = request.uri().path().to_string();
     let response = app.oneshot(request).await.unwrap();
     let status = response.status().as_u16();
-    // `/prs` is asked for after every action and on every reconnect.
-    if path == "/prs" {
-        tracing::debug!(%method, path, status, "request");
-    } else {
-        tracing::info!(%method, path, status, "request");
-    }
+    tracing::info!(%method, path, status, "request");
     body(response).await
 }
 

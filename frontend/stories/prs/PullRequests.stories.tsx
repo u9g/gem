@@ -1,18 +1,25 @@
-import { clone, create, type MessageInitShape } from '@bufbuild/protobuf';
+import type { Write } from '../../db';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { AgentSchema, AgentState, type PullRequest, ProposalSchema, PullRequestSchema } from '../../gen/gem_pb';
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
+import { Agent, AgentState, PullRequest } from '../../shapes';
 import { Icon, t3 } from '../../t3';
-import { mergeBy, proposals } from '../fixtures';
+import { mergeBy, proposalInputs as proposals, stored } from '../fixtures';
+
+// A pull request being made up, before it's stored.
+type Row = { -readonly [K in keyof Write<typeof PullRequest>]: Write<typeof PullRequest>[K] };
 
 // Made-up cluster: one change across three repositories.
-const pullRequest = (name: string, number: number, title: string, status: { approved?: boolean; checksPassing?: boolean; checksFailing?: boolean }) =>
-  create(PullRequestSchema, {
+const pullRequest = (
+  name: string,
+  number: number,
+  title: string,
+  status: { approved?: boolean; checksPassing?: boolean; checksFailing?: boolean },
+): Row => ({
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -33,15 +40,12 @@ const protocol = pullRequest('protocol', 1147, 'Add retry_interval to TTS connec
 });
 const pending = pullRequest('agents', 4830, 'test(voice): cover TTS retries in the e2e suite', {});
 
-const moved = (id: string, to: PullRequest) => {
-  const proposal = clone(ProposalSchema, proposals.find((p) => p.id === id)!);
-  proposal.pullRequestUrl = to.url;
-  return proposal;
-};
-agents.proposals = proposals.filter((p) => !['quote-reply', 'failed'].includes(p.id));
+const moved = (id: string, to: Row) => ({ ...proposals.find((p) => p.id === id)!, pullRequestUrl: to.url });
+agents.proposals = proposals.filter((p) => !['quote-reply', 'failed'].includes(p.id ?? ''));
 agentsJs.proposals = [moved('quote-reply', agentsJs)];
 pending.proposals = [moved('failed', pending)];
-const cluster = [agents, agentsJs, protocol, pending];
+// The rows as the components read them.
+const cluster = [agents, agentsJs, protocol, pending].map((row) => stored(PullRequest, row));
 
 function ref(pr: PullRequest) {
   return `${pr.repository?.name}#${pr.number}`;
@@ -185,7 +189,7 @@ const rebasing = [
   { ...agentsJs, behind: true, rebasing: true },
   { ...protocol, behind: true, rebasing: true },
   pending,
-];
+].map((row) => stored(PullRequest, row));
 export const DRebase: StoryObj = {
   name: 'D · Rebase',
   render: () => (
@@ -194,7 +198,7 @@ export const DRebase: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={rebasing} agents={rebasingAgents} onRebase={() => {}} />
+          <PullRequestList pullRequests={rebasing} agents={rebasingAgents.map((row) => stored(Agent, row))} onRebase={() => {}} />
         </View>
       }
     />
@@ -202,8 +206,7 @@ export const DRebase: StoryObj = {
 };
 
 // One PR through a rebase, its checks, and the agent answering the checks that failed.
-const step = (title: string, status: Exclude<MessageInitShape<typeof PullRequestSchema>, PullRequest>) =>
-  create(PullRequestSchema, {
+const step = (title: string, status: Row): Row => ({
     repository: { owner: 'livekit', name: 'agents' },
     number: 4821,
     title,
@@ -242,21 +245,25 @@ const restarted = [
 ];
 
 // The agents on the rows above, as the server lists them.
-const agent = (id: string, title: string, url: string, state = AgentState.WORKING) =>
-  create(AgentSchema, { id, title, pullRequestUrls: [url], state });
-const urlOf = (rows: PullRequest[], title: string) => rows.find((pr) => pr.title === title)!.url;
-const rebasingAgents = [agent('rebase:r', 'Rebase agents-js#1290 and protocol#1147', agentsJs.url), agent('rebase:r2', 'Rebase agents-js#1290 and protocol#1147', protocol.url)];
+const agent = (id: string, title: string, url: string, state: AgentState = 'AGENT_STATE_WORKING'): Write<typeof Agent> => ({
+  id,
+  title,
+  pullRequestUrls: [url],
+  state,
+});
+const urlOf = (rows: Row[], title: string) => rows.find((pr) => pr.title === title)!.url!;
+const rebasingAgents = [agent('rebase:r', 'Rebase agents-js#1290 and protocol#1147', agentsJs.url!), agent('rebase:r2', 'Rebase agents-js#1290 and protocol#1147', protocol.url!)];
 const stepAgents = [
   agent('rebase:s', 'Rebase agents#4821', urlOf(steps, 'Rebasing')),
-  agent('answer:q', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent queued'), AgentState.QUEUED),
+  agent('answer:q', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent queued'), 'AGENT_STATE_QUEUED'),
   agent('answer:l', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent looking')),
 ];
 const restartedAgents = [
-  agent('answer:1', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), AgentState.QUEUED),
-  agent('answer:2', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), AgentState.QUEUED),
+  agent('answer:1', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), 'AGENT_STATE_QUEUED'),
+  agent('answer:2', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), 'AGENT_STATE_QUEUED'),
   agent('answer:3', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Answering comments')),
   agent('answer:4', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Answering comments')),
-  agent('answer:5', 'Answer longcw on livekit/agents#4821', urlOf(restarted, 'Answering comments'), AgentState.QUEUED),
+  agent('answer:5', 'Answer longcw on livekit/agents#4821', urlOf(restarted, 'Answering comments'), 'AGENT_STATE_QUEUED'),
   agent('answer:6', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Answering a comment and failed checks')),
   agent('answer:7', 'Fix checks on livekit/agents#4821', urlOf(restarted, 'Answering a comment and failed checks')),
 ];
@@ -268,7 +275,7 @@ export const FRestarted: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={restarted} agents={restartedAgents} />
+          <PullRequestList pullRequests={restarted.map((row) => stored(PullRequest, row))} agents={restartedAgents.map((row) => stored(Agent, row))} />
         </View>
       }
     />
@@ -283,7 +290,7 @@ export const EStatus: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={steps} agents={stepAgents} onRebase={() => {}} />
+          <PullRequestList pullRequests={steps.map((row) => stored(PullRequest, row))} agents={stepAgents.map((row) => stored(Agent, row))} onRebase={() => {}} />
         </View>
       }
     />

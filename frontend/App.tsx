@@ -1,4 +1,4 @@
-import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
+import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
@@ -10,19 +10,18 @@ import { ClusterReview } from './ClusterFiles';
 import { AgentView, Composer } from './AgentView';
 import { Legend, PhoneAgentRow, PhoneClusterRow, section, sections, SectionTitle } from './ClusterRow';
 import { ClusterView, timeAgo } from './ClusterView';
+import { DbContext, emptyDb, useDb, usePending } from './db';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
+import { type Cluster, type Repository, shown } from './shapes';
 import { Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {
-  type Agent,
   ApproveProposalRequestSchema,
   CloseAgentRequestSchema,
   DismissProposalRequestSchema,
   InvestigateRequestSchema,
-  ListOpenPullRequestsRequestSchema,
-  ListOpenPullRequestsResponseSchema,
   MergeClusterRequestSchema,
   MessageClusterRequestSchema,
   MessageAgentRequestSchema,
@@ -32,8 +31,6 @@ import {
   RenderMarkdownRequestSchema,
   RenderMarkdownResponseSchema,
   RestartClusterRequestSchema,
-  type PullRequestCluster,
-  type Repository,
 } from './gen/gem_pb';
 
 function Contexts({
@@ -92,22 +89,34 @@ function placeSearch(place: Place): string {
   return params.length > 0 ? `?${params.join('&')}` : '';
 }
 
+// Components read the server's view from this connection's replica of its database.
 export default function App() {
-  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot } =
-    useServer();
+  const server = useServer();
+  return (
+    <DbContext value={server.db ?? emptyDb}>
+      <Main server={server} />
+    </DbContext>
+  );
+}
+
+function Main({ server }: { server: ReturnType<typeof useServer> }) {
+  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post } = server;
+  // What the replica holds now: the clusters, most recently updated first, and the agents acting
+  // on no open pull request. App renders again when a cluster changes; each card only when its own
+  // cluster did.
+  const { clusters, agents, login, search: searched } = useDb(shown);
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
-  const [clusters, setClusters] = useState<PullRequestCluster[]>([]);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [login, setLogin] = useState('');
   const [place, setPlace] = useState(currentPlace);
   const [repoFilter, setRepoFilter] = useState<Repository>();
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
-  // Each request in flight: proposals being approved, dismissed or investigated, the oldest PR's URL
-  // of clusters being restarted, `merge` and that URL for ones whose merge is starting, `rebase` and
-  // that URL for clusters whose rebase is starting, the URLs of PRs whose rebase is starting, and
-  // agents being closed.
-  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  // Each action in progress, from any frontend, as the view holds it: proposals being approved,
+  // dismissed or investigated, the oldest PR's URL of clusters being restarted, `merge` and that
+  // URL for ones whose merge is starting, `rebase` and that URL for clusters whose rebase is
+  // starting, the URLs of PRs whose rebase is starting, and agents being closed. The server marks
+  // each pending before it runs and refuses a second of the same, so they're greyed out
+  // everywhere at once.
+  const busy = usePending();
   const phone = usePhone();
   const search = useSearch(post);
   const render = useCallback(
@@ -119,27 +128,10 @@ export default function App() {
     [post],
   );
 
-  const show = useCallback(
-    (json: JsonValue) => {
-      const response = fromJson(ListOpenPullRequestsResponseSchema, json);
-      setClusters(response.clusters);
-      setAgents(response.agents);
-      setLogin(response.login);
-      reported(response.login, response.search);
-    },
-    [reported],
-  );
-
-  const load = useCallback(
-    () => post('/prs', toJson(ListOpenPullRequestsRequestSchema, create(ListOpenPullRequestsRequestSchema))).then(show),
-    [post, show],
-  );
-
-
-  // The server sends a snapshot whenever this frontend or the server joins, and on every change.
+  // Labels the profile with what its server last reported.
   useEffect(() => {
-    if (snapshot) show(snapshot);
-  }, [snapshot, show]);
+    if (login) reported(login, searched);
+  }, [login, searched, reported]);
 
   // A pushed entry's state is the query of the entry it was pushed from, so going to that place goes
   // back to it instead of stacking a copy. `replace` overwrites the current entry otherwise, for a
@@ -154,15 +146,14 @@ export default function App() {
   }, []);
 
   const closeDrawer = useCallback(() => go({}), [go]);
+  const openCluster = useCallback((key: string) => go({ cluster: key }), [go]);
+  const openAgentAlone = useCallback((id: string) => go({ agent: id }), [go]);
 
   // Another profile is another server: nothing shown belongs to it. The place a page was loaded
   // with is kept, since it was opened for the profile selected then.
   const profileId = profile?.id;
   const shownProfile = useRef(profileId);
   useEffect(() => {
-    setClusters([]);
-    setAgents([]);
-    setLogin('');
     setRepoFilter(undefined);
     if (shownProfile.current && shownProfile.current !== profileId) go({}, true);
     shownProfile.current = profileId;
@@ -174,104 +165,73 @@ export default function App() {
     return () => removeEventListener('popstate', restore);
   }, []);
 
-  // Marks `key` busy until the request and the reload after it settle. A refused request reloads too:
-  // the server refuses an action on a cluster whose pull requests changed, and the reload shows them.
-  function track(key: string, request: Promise<unknown>) {
-    setBusy((keys) => new Set(keys).add(key));
-    request
-      .then(load, load)
-      .finally(() =>
-        setBusy((keys) => {
-          const rest = new Set(keys);
-          rest.delete(key);
-          return rest;
-        }),
-      );
-  }
-
   function approve(id: string, reply: string, followUp: string, diff: string) {
-    track(
-      id,
-      post(
-        '/proposals/approve',
-        toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp, diff })),
-      ),
+    void post(
+      '/proposals/approve',
+      toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp, diff })),
     );
   }
 
   function dismiss(id: string) {
-    track(id, post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id }))));
+    void post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id })));
   }
 
-  function restart(cluster: PullRequestCluster) {
+  function restart(cluster: Cluster) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    track(
-      cluster.pullRequests[0].url,
-      post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls }))),
-    );
+    void post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })));
   }
 
   // Starts an agent merging the cluster's PRs, without opening its thread.
-  function merge(cluster: PullRequestCluster, admin: boolean) {
+  function merge(cluster: Cluster, admin: boolean) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    track(
-      `merge ${cluster.pullRequests[0].url}`,
-      post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin }))),
-    );
+    void post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin })));
   }
 
   // Starts an agent rebasing the PR, without opening its thread.
   function rebase(url: string) {
-    track(url, post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url }))));
+    void post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url })));
   }
 
   // Starts one agent rebasing every PR of the cluster, without opening its thread.
-  function rebaseCluster(cluster: PullRequestCluster) {
+  function rebaseCluster(cluster: Cluster) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    track(
-      `rebase ${cluster.pullRequests[0].url}`,
-      post('/clusters/rebase', toJson(RebaseClusterRequestSchema, create(RebaseClusterRequestSchema, { pullRequestUrls }))),
-    );
+    void post('/clusters/rebase', toJson(RebaseClusterRequestSchema, create(RebaseClusterRequestSchema, { pullRequestUrls })));
   }
 
   function investigate(proposalId: string) {
-    track(
-      proposalId,
-      post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId }))),
-    );
+    void post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId })));
   }
 
   // Starts an agent on the message, then opens it, where the conversation goes on.
-  function messageCluster(cluster: PullRequestCluster, message: string) {
+  function messageCluster(cluster: Cluster, message: string) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     return post(
       '/clusters/message',
       toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
     )
       .then((json) => fromJson(MessageClusterResponseSchema, json).agentId)
-      .then((id) => load().then(() => go({ cluster: place.cluster, agent: id })));
+      .then((id) => go({ cluster: place.cluster, agent: id }));
   }
 
   function messageAgent(id: string, message: string) {
     return post('/agents/message', toJson(MessageAgentRequestSchema, create(MessageAgentRequestSchema, { id, message }))).then(
-      load,
+      () => {},
     );
   }
 
   function closeAgent(id: string) {
-    track(
-      id,
-      post('/agents/close', toJson(CloseAgentRequestSchema, create(CloseAgentRequestSchema, { id }))).then(() => {
-        // The agent is gone, so its entry is not kept. Nothing moves if something else was opened
-        // meanwhile.
-        const now = currentPlace();
-        if (now.agent === id) go({ cluster: now.cluster }, true);
-      }),
-    );
+    void post('/agents/close', toJson(CloseAgentRequestSchema, create(CloseAgentRequestSchema, { id }))).then(() => {
+      // The agent is gone, so its entry is not kept. Nothing moves if something else was opened
+      // meanwhile.
+      const now = currentPlace();
+      if (now.agent === id) go({ cluster: now.cluster }, true);
+    });
   }
 
   const openAgent = (id: string) => go({ cluster: place.cluster, agent: id });
-  const agent = [...agents, ...clusters.flatMap((cluster) => cluster.agents)].find((a) => a.id === place.agent);
+  const agent = [...agents, ...clusters.flatMap((cluster) => cluster.agents)].find(
+    (a) => a.id === place.agent,
+  );
   const agentView = agent && (
     <AgentView
       agent={agent}
@@ -285,7 +245,7 @@ export default function App() {
   );
 
   const repositories = clusters
-    .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => (pr.repository ? [pr.repository] : [])))
+    .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => pr.repository ?? []))
     .filter((repository, i, all) => all.findIndex((other) => sameRepository(other, repository)) === i)
     .sort((a, b) => a.name.localeCompare(b.name));
   const visible = clusters
@@ -424,7 +384,7 @@ export default function App() {
                     </View>
                   )}
                   {agents.map((a) => (
-                    <PhoneAgentRow key={a.id} agent={a} onPress={() => go({ agent: a.id })} />
+                    <PhoneAgentRow key={a.id} agent={a} onPress={openAgentAlone} />
                   ))}
                 </View>
                 {listed.flatMap(({ name, clusters }, i) => [
@@ -433,7 +393,7 @@ export default function App() {
                   </View>,
                   ...(i === 0 ? [<Legend key="legend" />] : []),
                   ...clusters.map((cluster) => (
-                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={() => go({ cluster: cluster.pullRequests[0].url })} />
+                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={openCluster} />
                   )),
                 ])}
               </ScrollView>
@@ -452,9 +412,9 @@ export default function App() {
         <Board
           clusters={visible}
           agents={agents}
-          openUrl={agent ? undefined : opened?.pullRequests[0].url}
+          openUrl={agent || !opened ? undefined : opened.pullRequests[0].url}
           openAgent={agent?.id}
-          onOpenCluster={(cluster) => go({ cluster: cluster.pullRequests[0].url })}
+          onOpenCluster={openCluster}
           onOpenAgent={openAgent}
           onClose={closeDrawer}
           wide={!agentView && opened !== undefined}

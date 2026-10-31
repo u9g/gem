@@ -1,24 +1,18 @@
-import { create } from '@bufbuild/protobuf';
-import { timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
+import { useMemo } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
-import {
-  AgentSchema,
-  type Proposal,
-  type PullRequest,
-  type PullRequestCluster,
-  PullRequestClusterSchema,
-  PullRequestSchema,
-} from '../../gen/gem_pb';
-import { clusterMergeBy, mergeBy, proposals } from '../fixtures';
+import { DbContext, useDb, type Write } from '../../db';
+import { MemoryDb } from '../../memory';
+import { Agent, Cluster as ClusterShape, Proposal, PullRequest, shown } from '../../shapes';
+import { clusterMergeBy, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // Made-up clusters, one in each place a phone lists them. Stories render at the window's width,
 // so view them at a phone's.
 
-const minutesAgo = (minutes: number) => timestampFromDate(new Date(Date.now() - minutes * 60_000));
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
 type Fields = {
   approved?: boolean;
@@ -27,12 +21,11 @@ type Fields = {
   checksPassing?: boolean;
   checksFailing?: boolean;
   checks?: { total: number; done: number; failed: number };
-  proposals?: Proposal[];
+  proposals?: Write<typeof Proposal>[];
   merging?: boolean;
 };
 
-const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields) =>
-  create(PullRequestSchema, {
+const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields): Write<typeof PullRequest> => ({
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -42,13 +35,18 @@ const pullRequest = (name: string, number: number, title: string, { admin, ...fi
     ...fields,
   });
 
-const cluster = (name: string, minutes: number, pullRequests: PullRequest[]) =>
-  create(PullRequestClusterSchema, {
-    name,
-    updatedAt: minutesAgo(minutes),
-    pullRequests,
-    mergeBy: clusterMergeBy(pullRequests),
-  });
+const cluster = (
+  name: string,
+  minutes: number,
+  pullRequests: Write<typeof PullRequest>[],
+  agents: Write<typeof Agent>[] = [],
+): Write<typeof ClusterShape> => ({
+  name,
+  updatedAt: minutesAgo(minutes),
+  pullRequests,
+  mergeBy: clusterMergeBy(pullRequests),
+  agents,
+});
 
 const passing = { approved: true, checksPassing: true };
 
@@ -68,15 +66,34 @@ const forceable = cluster('Respect the configured S3 region', 180, [
   pullRequest('protocol', 1103, 'Add region to S3 upload options', passing),
   pullRequest('egress', 902, 'Upload to the configured S3 region', { checksPassing: true, admin: true }),
 ]);
-const merging = cluster('Respect the configured S3 region', 1, [
-  pullRequest('protocol', 1103, 'Add region to S3 upload options', { ...passing, merging: true }),
-  pullRequest('egress', 902, 'Upload to the configured S3 region', { ...passing, merging: true }),
-]);
-const working = cluster('Hedge gateway requests', 120, [
-  pullRequest('agent-gateway', 388, 'Hedge requests after the p95', {
-    checks: { total: 14, done: 9, failed: 0 },
-  }),
-]);
+// The agents merging and answering a comment, which their clusters list.
+const merging = cluster(
+  'Respect the configured S3 region',
+  1,
+  [
+    pullRequest('protocol', 1103, 'Add region to S3 upload options', { ...passing, merging: true }),
+    pullRequest('egress', 902, 'Upload to the configured S3 region', { ...passing, merging: true }),
+  ],
+  [
+    {
+      id: 'merge:m',
+      title: 'Merge Respect the configured S3 region',
+      pullRequestUrls: ['https://github.com/livekit/protocol/pull/1103', 'https://github.com/livekit/egress/pull/902'],
+    },
+  ],
+);
+const working = cluster(
+  'Hedge gateway requests',
+  120,
+  [pullRequest('agent-gateway', 388, 'Hedge requests after the p95', { checks: { total: 14, done: 9, failed: 0 } })],
+  [
+    {
+      id: 'answer:c',
+      title: 'Answer davidzhao on livekit/agent-gateway#388',
+      pullRequestUrls: ['https://github.com/livekit/agent-gateway/pull/388'],
+    },
+  ],
+);
 const running = cluster('Type room metadata updates', 40, [
   pullRequest('client-sdk-js', 1612, 'Type room metadata updates', { checks: { total: 22, done: 15, failed: 0 } }),
 ]);
@@ -84,15 +101,18 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
   pullRequest('agents', 4810, 'Pin agent version on dispatch', { checksPassing: true }),
 ]);
 
-// The agents merging and answering a comment, which their clusters list.
-merging.agents = [
-  create(AgentSchema, { id: 'merge:m', title: 'Merge Respect the configured S3 region', pullRequestUrls: merging.pullRequests.map((pr) => pr.url) }),
-];
-working.agents = [
-  create(AgentSchema, { id: 'answer:c', title: 'Answer davidzhao on livekit/agent-gateway#388', pullRequestUrls: [working.pullRequests[0].url] }),
-];
+// The list as the app shows it, read from a database holding `clusters`.
+function Home({ clusters }: { clusters: Write<typeof ClusterShape>[] }) {
+  const db = useMemo(() => new MemoryDb({ clusters }), [clusters]);
+  return (
+    <DbContext value={db}>
+      <List />
+    </DbContext>
+  );
+}
 
-function Home({ clusters }: { clusters: PullRequestCluster[] }) {
+function List() {
+  const { clusters } = useDb(shown);
   const listed = sections
     .map((name) => ({ name, clusters: clusters.filter((c) => section(c) === name) }))
     .filter((s) => s.clusters.length > 0);
@@ -109,11 +129,11 @@ function Home({ clusters }: { clusters: PullRequestCluster[] }) {
   );
 }
 
-function Cluster({ cluster }: { cluster: PullRequestCluster }) {
+function Cluster({ cluster }: { cluster: Write<typeof ClusterShape> }) {
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <ClusterView
-        cluster={cluster}
+        cluster={stored(ClusterShape, cluster)}
         onOpenAgent={() => {}}
         onApprove={() => {}}
         onDismiss={() => {}}

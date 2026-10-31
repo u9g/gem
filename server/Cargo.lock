@@ -785,6 +785,7 @@ dependencies = [
 name = "gem-room"
 version = "0.1.0"
 dependencies = [
+ "gem-db",
  "livekit",
  "livekit-api",
  "tokio",
@@ -3645,7 +3646,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xitdb"
 version = "0.1.0"
-source = "git+https://github.com/u9g/xitdb-rs?rev=a2780a59e8eb535496934dfde810491daf30641d#a2780a59e8eb535496934dfde810491daf30641d"
+source = "git+https://github.com/u9g/xitdb-rs?rev=b9341f2386b3a9f99177a83e9f0e5aeb2711e23c#b9341f2386b3a9f99177a83e9f0e5aeb2711e23c"
 dependencies = [
  "getrandom 0.3.4",
  "serde",
@@ -3657,7 +3658,7 @@ dependencies = [
 [[package]]
 name = "xitdb-derive"
 version = "0.1.0"
-source = "git+https://github.com/u9g/xitdb-rs?rev=a2780a59e8eb535496934dfde810491daf30641d#a2780a59e8eb535496934dfde810491daf30641d"
+source = "git+https://github.com/u9g/xitdb-rs?rev=b9341f2386b3a9f99177a83e9f0e5aeb2711e23c#b9341f2386b3a9f99177a83e9f0e5aeb2711e23c"
 dependencies = [
  "proc-macro2",
  "quote",

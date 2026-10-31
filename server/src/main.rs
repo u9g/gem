@@ -3,13 +3,18 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     future::Future,
+    pin::Pin,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use axum::{
     Json, Router,
+    body::Body,
+    extract::{Request, State},
     http::StatusCode,
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use pbjson_types::Timestamp;
@@ -23,7 +28,7 @@ use names::Names;
 use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest,
     CloseAgentResponse, DismissProposalRequest, DismissProposalResponse, InvestigateRequest,
-    InvestigateResponse, ListOpenPullRequestsRequest, ListOpenPullRequestsResponse, MergeBy,
+    InvestigateResponse, ListOpenPullRequestsResponse, MergeBy,
     MergeClusterRequest, MergeClusterResponse, MessageAgentRequest, MessageAgentResponse,
     MessageClusterRequest, MessageClusterResponse, PullRequest, PullRequestCluster,
     RebaseClusterRequest,
@@ -45,6 +50,7 @@ mod rebases;
 mod sandbox;
 mod search;
 mod tokens;
+mod view;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
 use gem_github::{gh, gh_json, gh_partial_json, login, render};
@@ -377,31 +383,28 @@ async fn run_server() {
     rebases::init(db.clone(), prs.clone()).unwrap_or_else(|error| panic!("{error}"));
     merges::init(db).unwrap_or_else(|error| panic!("{error}"));
 
-    // Agents read the clusters through `server mcp`, and frontends are sent them, as soon as they
-    // change. Proposals and investigations change in the database, so the snapshot is compared rather than
-    // announced. The agents gem starts propose through `gem-agent`.
+    // Agents read the clusters from the view through `server mcp`, and frontends' replicas of it
+    // are sent them, as soon as they change. Proposals and investigations change in the database,
+    // so the view is compared rather than announced. The agents gem starts propose through
+    // `gem-agent`.
+    let live = view::Live::open(view::FILE).unwrap_or_else(|error| panic!("{error}"));
     tokio::task::spawn_blocking(mcp::register);
-    tokio::spawn(mcp::listen());
-    let (snapshots, snapshot) = tokio::sync::watch::channel(String::new());
+    tokio::spawn(mcp::listen(live.db().clone()));
     {
         let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+        let live = live.clone();
         tokio::spawn(async move {
             loop {
                 if let Some(response) = filled(&prs, &names, &conversations).await {
-                    let json = serde_json::to_string(&response).unwrap();
-                    if *snapshots.borrow() != json {
-                        mcp::save(&response).await;
-                        snapshots.send_replace(json);
-                    }
+                    live.publish(&response);
                 }
                 tokio::time::sleep(SNAPSHOT_INTERVAL).await;
             }
         });
     }
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/repos", get(move || serve(repos)))
+    // Every route that changes what frontends see.
+    let actions = Router::new()
         .route("/clusters/restart", {
             let conversations = conversations.clone();
             post(|Json(request): Json<RestartClusterRequest>| async move {
@@ -455,21 +458,6 @@ async fn run_server() {
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })
-        .route("/prs", {
-            let (prs, conversations) = (prs.clone(), conversations.clone());
-            post(move |Json(_): Json<ListOpenPullRequestsRequest>| {
-                serve_prs(prs, names, conversations)
-            })
-        })
-        .route(
-            "/prs/search",
-            post(|Json(request): Json<SearchPullRequestsRequest>| async move {
-                search::matching(&request.query)
-                    .await
-                    .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
-                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
-            }),
-        )
         .route(
             "/prs/rebase",
             post(|Json(request): Json<RebasePullRequestRequest>| async move {
@@ -546,6 +534,39 @@ async fn run_server() {
             })
         })
         .route(
+            "/proposals/dismiss",
+            post(|Json(request): Json<DismissProposalRequest>| async move {
+                proposals::dismiss(&request.id).await;
+                tracing::info!(proposal = %request.id, "proposal dismissed");
+                Json(DismissProposalResponse {})
+            }),
+        );
+    // Each action is pending in the view while it runs, and publishes the view once it has made
+    // its change, so every frontend sees both at once rather than at the next snapshot.
+    let actions_state = Actions {
+        live: live.clone(),
+        shown: {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            Arc::new(move || {
+                let (prs, names, conversations) =
+                    (prs.clone(), names.clone(), conversations.clone());
+                Box::pin(async move { filled(&prs, &names, &conversations).await })
+            })
+        },
+    };
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/repos", get(move || serve(repos)))
+        .route(
+            "/prs/search",
+            post(|Json(request): Json<SearchPullRequestsRequest>| async move {
+                search::matching(&request.query)
+                    .await
+                    .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
+                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
+            }),
+        )
+        .route(
             "/markdown/render",
             post(|Json(request): Json<RenderMarkdownRequest>| async move {
                 render(&request.pull_request_url, &request.markdown)
@@ -554,22 +575,86 @@ async fn run_server() {
                     .map_err(|error| (StatusCode::BAD_GATEWAY, error))
             }),
         )
-        .route(
-            "/proposals/dismiss",
-            post(|Json(request): Json<DismissProposalRequest>| async move {
-                proposals::dismiss(&request.id).await;
-                tracing::info!(proposal = %request.id, "proposal dismissed");
-                Json(DismissProposalResponse {})
-            }),
-        );
+        .merge(actions.layer(middleware::from_fn_with_state(actions_state, pending_while)));
 
     investigations::watch();
     agents::watch(conversations);
+    let changes = live.changes();
+    let sync = move |payload: &str| live.sync(payload);
     gem_room::serve(
         move |request| gem_http::respond(app.clone(), request),
-        snapshot,
+        sync,
+        changes,
     )
     .await;
+}
+
+// What the action routes share: the view, and the clusters as gem shows them now, to write to it.
+#[derive(Clone)]
+struct Actions {
+    live: view::Live,
+    shown: ShownNow,
+}
+
+type ShownNow = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Option<ListOpenPullRequestsResponse>> + Send>>
+        + Send
+        + Sync,
+>;
+
+// Runs an action with its key pending in the view, which is published before it runs, so every
+// frontend shows it in progress, and refuses one whose key is pending already, so two frontends
+// can't approve or merge the same thing twice. Afterwards, whether it succeeded or not (one that
+// failed can still have changed something), the key leaves `pending` in the same moment as the
+// view after the action. A handler that panics, or a request dropped midway, drops the `Pending`,
+// which takes the key out too.
+async fn pending_while(State(actions): State<Actions>, request: Request, next: Next) -> Response {
+    let (parts, body) = request.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, usize::MAX).await else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    // The key the frontend names the action by: the proposal's ID, the cluster's key (its oldest
+    // pull request's URL), `merge` or `rebase` and the cluster's key, a pull request's URL, or an
+    // agent's ID. Messages have none: they can run side by side.
+    #[derive(Deserialize, Default)]
+    #[serde(default, rename_all = "camelCase")]
+    struct Named {
+        id: String,
+        proposal_id: String,
+        url: String,
+        pull_request_urls: Vec<String>,
+    }
+    let route = parts.uri.path().to_string();
+    let named: Named = serde_json::from_slice(&body).unwrap_or_default();
+    let cluster = named.pull_request_urls.first().cloned().unwrap_or_default();
+    let key = match route.as_str() {
+        "/proposals/approve" | "/proposals/dismiss" | "/agents/close" => named.id,
+        "/investigations/start" => named.proposal_id,
+        "/prs/rebase" => named.url,
+        "/clusters/restart" => cluster,
+        "/clusters/merge" if !cluster.is_empty() => format!("merge {cluster}"),
+        "/clusters/rebase" if !cluster.is_empty() => format!("rebase {cluster}"),
+        _ => String::new(),
+    };
+    let pending = match key.as_str() {
+        "" => None,
+        key => match actions.live.begin(key, &route) {
+            Ok(Some(pending)) => Some(pending),
+            Ok(None) => {
+                return (StatusCode::CONFLICT, format!("{key} is in progress")).into_response();
+            }
+            // The action runs without a spinner rather than not at all.
+            Err(_) => None,
+        },
+    };
+    let response = next.run(Request::from_parts(parts, Body::from(body))).await;
+    let shown = (actions.shown)().await;
+    match (pending, &shown) {
+        (Some(pending), shown) => pending.finish(shown.as_ref()),
+        (None, Some(shown)) => drop(actions.live.publish(shown)),
+        (None, None) => {}
+    }
+    response
 }
 
 // One line of JSON per event on stderr, which the launcher appends to server.log. RUST_LOG
@@ -620,18 +705,6 @@ async fn serve<T: Serialize + Clone>(cache: Cache<T>) -> Result<Json<T>, StatusC
         .read()
         .await
         .clone()
-        .map(Json)
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)
-}
-
-// Names and proposals arrive after the refresh that asked for them, so they are filled in per
-// request.
-async fn serve_prs(
-    cache: Cache<ListOpenPullRequestsResponse>,
-    names: Names,
-    conversations: Conversations,
-) -> Result<Json<ListOpenPullRequestsResponse>, StatusCode> {
-    (filled(&cache, &names, &conversations).await)
         .map(Json)
         .ok_or(StatusCode::SERVICE_UNAVAILABLE)
 }
@@ -849,7 +922,160 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use serde_json::json;
+
+    use axum::body::Body;
+    use tower::ServiceExt;
+
     use super::*;
+
+    // The action routes over a view of their own, whose clusters are `shown`, with handlers that
+    // record what was pending as they ran.
+    struct Server {
+        live: view::Live,
+        app: Router,
+        seen: Arc<Mutex<Vec<Vec<String>>>>,
+        // Each request to /prs/rebase waits until it's let go.
+        rebasing: Arc<tokio::sync::Semaphore>,
+        _dir: std::path::PathBuf,
+    }
+
+    impl Server {
+        fn new() -> Server {
+            let dir = crate::tokens::tests::temp_dir("actions");
+            let live = view::Live::open(dir.join(view::FILE)).unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let rebasing = Arc::new(tokio::sync::Semaphore::new(0));
+            let record = |live: &view::Live, seen: &Arc<Mutex<Vec<Vec<String>>>>| {
+                let mut pending = live.pending();
+                pending.sort();
+                seen.lock().unwrap().push(pending);
+            };
+            let actions = Router::new()
+                .route("/proposals/approve", {
+                    let (live, seen) = (live.clone(), seen.clone());
+                    post(move || async move {
+                        record(&live, &seen);
+                        StatusCode::OK
+                    })
+                })
+                .route("/proposals/dismiss", {
+                    let (live, seen) = (live.clone(), seen.clone());
+                    post(move || async move {
+                        record(&live, &seen);
+                        StatusCode::BAD_REQUEST
+                    })
+                })
+                .route("/agents/close", post(|| async { panic!("in the handler") as StatusCode }))
+                .route("/prs/rebase", {
+                    let (live, seen, rebasing) = (live.clone(), seen.clone(), rebasing.clone());
+                    post(move || async move {
+                        record(&live, &seen);
+                        rebasing.acquire().await.unwrap().forget();
+                        StatusCode::OK
+                    })
+                })
+                .route("/agents/message", post(|| async { StatusCode::OK }));
+            let shown = || async {
+                let cluster = PullRequestCluster {
+                    pull_requests: vec![PullRequest { url: "a".into(), ..Default::default() }],
+                    ..Default::default()
+                };
+                Some(ListOpenPullRequestsResponse { clusters: vec![cluster], ..Default::default() })
+            };
+            let state = Actions { live: live.clone(), shown: Arc::new(move || Box::pin(shown())) };
+            let app = actions.layer(middleware::from_fn_with_state(state, pending_while));
+            Server { live, app, seen, rebasing, _dir: dir }
+        }
+
+        async fn post(&self, path: &str, body: Value) -> StatusCode {
+            let request = axum::http::Request::post(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            self.app.clone().oneshot(request).await.unwrap().status()
+        }
+    }
+
+    // An action's key is in the view, sent to every frontend, before its handler runs, and leaves
+    // it with the view after the action, whether the handler succeeded or failed.
+    #[tokio::test]
+    async fn an_action_is_pending_while_it_runs() {
+        let server = Server::new();
+        let mut changes = server.live.changes().subscribe();
+        assert_eq!(server.post("/proposals/approve", json!({ "id": "p1" })).await, StatusCode::OK);
+        let dismissed = server.post("/proposals/dismiss", json!({ "id": "p2" })).await;
+        assert_eq!(dismissed, StatusCode::BAD_REQUEST);
+        assert_eq!(*server.seen.lock().unwrap(), [vec!["p1".to_string()], vec!["p2".to_string()]]);
+        assert!(server.live.pending().is_empty());
+        // Each: the key going pending, then the view and the key leaving, in one change; the
+        // second's view is unchanged, so its change is only the key leaving.
+        let mut sent = 0;
+        while changes.try_recv().is_ok() {
+            sent += 1;
+        }
+        assert_eq!(sent, 4);
+        // The cluster the view held after the first was written in its key's last change.
+        let clusters = server.live.db().read(view::clusters).unwrap();
+        assert_eq!(clusters[0].pull_requests[0].url, "a");
+        // An action without a key, like a message, runs and publishes without one.
+        assert_eq!(server.post("/agents/message", json!({ "id": "a1" })).await, StatusCode::OK);
+        assert!(server.live.pending().is_empty());
+    }
+
+    // A second request for a key that's pending is refused without running, while another key
+    // runs beside it.
+    #[tokio::test]
+    async fn one_action_runs_per_key() {
+        let server = Arc::new(Server::new());
+        let rebase = |url: &'static str| {
+            let server = server.clone();
+            tokio::spawn(async move { server.post("/prs/rebase", json!({ "url": url })).await })
+        };
+        let first = rebase("https://github.com/o/r/pull/1");
+        let other = rebase("https://github.com/o/r/pull/2");
+        while server.seen.lock().unwrap().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        let mut pending = server.live.pending();
+        pending.sort();
+        assert_eq!(pending, ["https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2"]);
+        let again = server.post("/prs/rebase", json!({ "url": "https://github.com/o/r/pull/1" }));
+        assert_eq!(again.await, StatusCode::CONFLICT);
+        assert_eq!(server.seen.lock().unwrap().len(), 2);
+        server.rebasing.add_permits(2);
+        assert_eq!(first.await.unwrap(), StatusCode::OK);
+        assert_eq!(other.await.unwrap(), StatusCode::OK);
+        assert!(server.live.pending().is_empty());
+    }
+
+    // A handler that panics, or a request dropped while its handler runs, leaves nothing pending.
+    #[tokio::test]
+    async fn a_failed_or_dropped_action_leaves_nothing_pending() {
+        let server = Arc::new(Server::new());
+        let panicked = {
+            let server = server.clone();
+            let close = async move { server.post("/agents/close", json!({ "id": "agent" })).await };
+            tokio::spawn(close)
+        };
+        assert!(panicked.await.unwrap_err().is_panic());
+        assert!(server.live.pending().is_empty());
+        let dropped = {
+            let server = server.clone();
+            tokio::spawn(async move { server.post("/prs/rebase", json!({ "url": "u" })).await })
+        };
+        while server.live.pending().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        dropped.abort();
+        assert!(dropped.await.unwrap_err().is_cancelled());
+        assert!(server.live.pending().is_empty());
+        // So the same action can run again.
+        server.rebasing.add_permits(1);
+        assert_eq!(server.post("/prs/rebase", json!({ "url": "u" })).await, StatusCode::OK);
+    }
 
     #[test]
     fn an_action_reaches_only_the_cluster_the_user_saw() {
