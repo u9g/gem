@@ -7,11 +7,14 @@
 // when it opens the file, and which readers in other processes check before they read.
 //
 // The file only grows, so it is compacted to its last moment when it opens and whenever it has
-// grown well past its size then.
+// grown well past its size then. Compacting replaces the file, so one process writes it: the server
+// holds a lock on a file beside it for as long as it has it open.
 
 use std::{
+    ffi::OsString,
+    fs::File,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 pub use xitdb;
@@ -39,8 +42,10 @@ enum Inner {
     Writer {
         path: Option<PathBuf>,
         db: Database<DynCore>,
-        // The file's size when it was last compacted.
+        // The file's size when it was last compacted, or last failed to be.
         compacted: i64,
+        // Held for as long as the file is open: the lock on `<path>.lock`.
+        _lock: Option<File>,
     },
     // Another process writes the file at the path. It is opened again for each read, so a read
     // sees the file even after the writer replaced it with a compacted one, and it checks the
@@ -52,22 +57,37 @@ impl Db {
     // Opens the file at `path`, or makes it, and brings its layout up to date with `migrations`.
     pub fn open(path: impl AsRef<Path>, migrations: &Migrations) -> Result<(Db, Migrated), String> {
         let path = path.as_ref().to_path_buf();
-        let start = || -> Result<(Database<DynCore>, Migrated, i64)> {
-            let mut db = Database::open(&path)?.into_dyn();
+        let mut lock_path = OsString::from(&path);
+        lock_path.push(".lock");
+        let lock = File::create(&lock_path).map_err(|error| format!("{lock_path:?}: {error}"))?;
+        if lock.try_lock().is_err() {
+            return Err(format!("{}: another server has it open", path.display()));
+        }
+        let start = || -> Result<(Database<DynCore>, Migrated)> {
+            let db = Database::open(&path)?.into_dyn();
             let migrated = History::new(&db)?.migrate(migrations)?;
-            compact(&path, &mut db)?;
-            let compacted = db.committed_size()?;
-            Ok((db, migrated, compacted))
+            Ok((db, migrated))
         };
-        let (db, migrated, compacted) = start().map_err(|error| describe(&path, error))?;
-        let path = Some(path);
-        Ok((Db(Arc::new(Mutex::new(Inner::Writer { path, db, compacted }))), migrated))
+        let (mut db, migrated) = start().map_err(|error| describe(&path, error))?;
+        // The file is whole either way, so a server starts on it even when it can't compact it.
+        compact_or_log(&path, &mut db);
+        let compacted = db.committed_size().map_err(|error| describe(&path, error))?;
+        let (path, _lock) = (Some(path), Some(lock));
+        let inner = Inner::Writer { path, db, compacted, _lock };
+        Ok((Db(Arc::new(Mutex::new(inner))), migrated))
     }
 
     pub fn open_in_memory() -> Result<Db, String> {
         let db = Database::in_memory().map(Database::into_dyn);
         let db = db.map_err(|error| format!("gem's database: {error}"))?;
-        Ok(Db(Arc::new(Mutex::new(Inner::Writer { path: None, db, compacted: 0 }))))
+        let inner = Inner::Writer { path: None, db, compacted: 0, _lock: None };
+        Ok(Db(Arc::new(Mutex::new(inner))))
+    }
+
+    // A panic in a read or a write leaves the file whole, since xitdb discards the transaction it
+    // was in, so the database stays usable.
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     // The file another process writes at `path`, to read once its layout is the one `migrations`
@@ -80,7 +100,7 @@ impl Db {
     // Reads the last moment. Reads touch a few keys of a local file, so they run on the async
     // runtime's threads.
     pub fn read<T>(&self, read: impl FnOnce(&Map) -> Result<T>) -> Result<T, String> {
-        let inner = self.0.lock().unwrap();
+        let inner = self.lock();
         match &*inner {
             Inner::Writer { path, db, .. } => {
                 let read = || read(&History::new(db)?.latest()?);
@@ -101,28 +121,35 @@ impl Db {
     // Appends a moment with the changes `write` makes to the last one, or none when it fails or
     // changes nothing.
     pub fn write<T>(&self, write: impl FnOnce(&mut MapMut) -> Result<T>) -> Result<T, String> {
-        let mut inner = self.0.lock().unwrap();
-        let Inner::Writer { path, db, compacted } = &mut *inner else {
+        let mut inner = self.lock();
+        let Inner::Writer { path, db, compacted, .. } = &mut *inner else {
             return Err("gem's database: only the server writes it".into());
         };
         let written = History::new(db).and_then(|history| history.transact(write));
         let written = written.map_err(|error| describe_at(path.as_deref(), error))?;
         if let Some(path) = path
-            && db.committed_size().is_ok_and(|size| size > 2 * *compacted + GROWTH)
+            && let Ok(size) = db.committed_size()
+            && size > 2 * *compacted + GROWTH
         {
-            match compact(path, db).and_then(|()| db.committed_size()) {
-                Ok(size) => *compacted = size,
-                Err(error) => eprintln!("{}", describe(path, error)),
-            }
+            compact_or_log(path, db);
+            // After a failure too, so the next try waits for the file to grow again.
+            *compacted = db.committed_size().unwrap_or(size);
         }
         Ok(written)
     }
 }
 
-// Replaces the file at `path`, which `db` writes, with one holding only its last moment.
-fn compact(path: &Path, db: &mut Database<DynCore>) -> Result<()> {
+// Replaces the file at `path`, which `db` writes, with one holding only its last moment, or logs
+// why it could not. When it failed after `db` moved to the compacted copy, the server stops: its
+// writes would go to that copy, which neither readers nor its next start see. The file at `path`
+// still has every write until then.
+fn compact_or_log(path: &Path, db: &mut Database<DynCore>) {
     let open = |file| Box::new(CoreBufferedFile::new(file)) as DynCore;
-    db.compact_file(path, &mut MemoryOffsetMap::new(), open)
+    match db.compact_file(path, &mut MemoryOffsetMap::new(), open) {
+        Ok(()) => {}
+        Err(error @ Error::CompactFileReopenFailed { .. }) => panic!("{}", describe(path, error)),
+        Err(error) => eprintln!("cannot compact {}", describe(path, error)),
+    }
 }
 
 fn describe(path: &Path, error: Error) -> String {
@@ -229,7 +256,7 @@ mod tests {
         {
             let mut inner = db.0.lock().unwrap();
             let Inner::Writer { db: inner, .. } = &mut *inner else { unreachable!() };
-            compact(&path, inner).unwrap();
+            compact_or_log(&path, inner);
         }
         db.write(|moment| moment.put("snapshot", "2")).unwrap();
         assert_eq!(get(&reader, "snapshot").as_deref(), Some("2"));
@@ -250,6 +277,32 @@ mod tests {
         assert!(newer.read(|moment| moment.get_string("said", None)).is_err());
         drop(db);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn one_server_writes_the_file_at_once() {
+        let path = path("lock");
+        let (db, _) = Db::open(&path, &migrations(1)).unwrap();
+        let error = Db::open(&path, &migrations(1)).err().unwrap();
+        assert!(error.contains("another server has it open"), "{error}");
+        drop(db);
+        Db::open(&path, &migrations(1)).unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_panic_in_a_write_leaves_the_database_usable() {
+        let db = Db::open_in_memory().unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.write(|moment| -> Result<()> {
+                moment.put("name", "a")?;
+                panic!("in the write");
+            })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(get(&db, "name"), None);
+        db.write(|moment| moment.put("name", "b")).unwrap();
+        assert_eq!(get(&db, "name").as_deref(), Some("b"));
     }
 
     #[test]

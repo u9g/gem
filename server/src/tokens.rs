@@ -133,8 +133,18 @@ impl Tokens {
         issued: Option<(&str, &Subject)>,
     ) -> Result<Vec<String>, String> {
         self.db.write(|moment| {
-            let revoked = TOKENS.keys_where(moment, |_, subject| revoked(subject))?;
-            TOKENS.remove_all(moment, revoked.iter().map(String::as_str))?;
+            // A subject that doesn't decode, e.g. one an older build issued, is left alone, so it
+            // can't keep any other token from being issued or revoked.
+            let mut revoke = Vec::new();
+            for token in TOKENS.iter(moment)? {
+                match token {
+                    Ok((token, subject)) if revoked(&subject) => revoke.push(token),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "cannot read a token"),
+                }
+            }
+            TOKENS.remove_all(moment, revoke.iter().map(String::as_str))?;
+            let revoked = revoke;
             if let Some((token, subject)) = issued {
                 TOKENS.put(moment, token, subject)?;
             }
@@ -204,6 +214,21 @@ pub mod tests {
             pr: "https://github.com/o/r/pull/1".into(),
             id: id.into(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_token_whose_subject_does_not_decode_blocks_no_other() {
+        let tokens = tokens("undecodable");
+        // As a build issued it to an agent that no longer exists.
+        let old = |moment: &mut gem_db::MapMut| {
+            moment.put_map("agent-tokens")?.put("old", r#"{"comment":{"id":"c"}}"#)
+        };
+        tokens.db.write(old).unwrap();
+        let config = tokens.issue(&failure("IC_1"), "http://127.0.0.1:1/mcp").await.unwrap();
+        let token = token(&config);
+        assert_eq!(tokens.subject(&token).await, Some(failure("IC_1")));
+        tokens.revoke("IC_1").await;
+        assert_eq!(tokens.subject(&token).await, None);
     }
 
     #[tokio::test]

@@ -5,7 +5,8 @@
 /launcher.lock
 /gem.xitdb
 /gem.xitdb.compacting*
-/gem.xitdb.importing
+/gem.xitdb.importing*
+/gem.xitdb.lock
 # The state servers kept before gem.xitdb, kept once imported.
 /gem.sqlite*
 /server.log

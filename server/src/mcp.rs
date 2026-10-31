@@ -51,9 +51,10 @@ fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
     }
 }
 
-// The snapshot's JSON, once the server saved one.
-fn snapshot(db: &Db) -> Option<String> {
-    db.read(|moment| moment.get_string(SNAPSHOT, None)).ok().flatten()
+// The snapshot's JSON, once the server saved one. An error says why it can't be read, e.g. a
+// layout of another build of gem.
+fn snapshot(db: &Db) -> Result<Option<String>, String> {
+    db.read(|moment| moment.get_string(SNAPSHOT, None))
 }
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
@@ -284,6 +285,7 @@ const READS: &[&str] = &["clusters", "cluster"];
 // Answers `gem.<op>(...args)` from the snapshot.
 fn read(db: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
     let snapshot = snapshot(db)
+        .map_err(|error| format!("cannot read gem's clusters: {error}"))?
         .ok_or("gem has not listed any clusters yet; is its server running?".to_string())?;
     let mut snapshot: Value = serde_json::from_str(&snapshot).map_err(|e| e.to_string())?;
     // Rendered HTML repeats the markdown next to it.
@@ -310,7 +312,7 @@ fn read(db: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
 // The URLs of the pull requests in the snapshot's cluster holding `pr`, or none when it holds none.
 fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
     let pr = pr.trim().trim_end_matches('/');
-    let snapshot: ListOpenPullRequestsResponse = snapshot(db)
+    let snapshot: ListOpenPullRequestsResponse = (snapshot(db).ok().flatten())
         .and_then(|json| serde_json::from_str(&json).ok())
         .unwrap_or_default();
     (snapshot.clusters.into_iter())

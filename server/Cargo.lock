@@ -2647,6 +2647,7 @@ dependencies = [
  "pbjson-types",
  "reqwest 0.13.5",
  "rquickjs",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",
@@ -3644,7 +3645,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "xitdb"
 version = "0.1.0"
-source = "git+https://github.com/u9g/xitdb-rs#a2780a59e8eb535496934dfde810491daf30641d"
+source = "git+https://github.com/u9g/xitdb-rs?rev=a2780a59e8eb535496934dfde810491daf30641d#a2780a59e8eb535496934dfde810491daf30641d"
 dependencies = [
  "getrandom 0.3.4",
  "serde",
@@ -3656,7 +3657,7 @@ dependencies = [
 [[package]]
 name = "xitdb-derive"
 version = "0.1.0"
-source = "git+https://github.com/u9g/xitdb-rs#a2780a59e8eb535496934dfde810491daf30641d"
+source = "git+https://github.com/u9g/xitdb-rs?rev=a2780a59e8eb535496934dfde810491daf30641d#a2780a59e8eb535496934dfde810491daf30641d"
 dependencies = [
  "proc-macro2",
  "quote",

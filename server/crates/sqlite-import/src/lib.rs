@@ -3,9 +3,10 @@
 // runs it before it starts a server, and so does the server: a launcher started before this
 // existed keeps running its own build, and starts new servers without it.
 //
-// It imports into a file beside gem.xitdb, reads everything back, and only then renames that file
-// to gem.xitdb and moves gem.sqlite aside to gem.sqlite.imported, so a failure at any step leaves
-// gem.sqlite to import again and no gem.xitdb a server would start empty on.
+// It imports into a file beside gem.xitdb, reads everything back from that file, and only then
+// renames it to gem.xitdb, so a failure leaves gem.sqlite to import again and no gem.xitdb a server
+// would start empty on. gem.sqlite is then moved aside, which can fail while an older `gem` MCP
+// server still has it open; the next start tries again.
 //
 // Remove this crate once no machine has a gem.sqlite left.
 
@@ -17,19 +18,37 @@ use std::{
 
 use gem_db::{
     Db, Migrations,
-    xitdb::{Map, Set},
+    xitdb::{Database, History, Map, Set},
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 pub const SQLITE: &str = "gem.sqlite";
 
+// The last migration the servers that kept gem.sqlite ran on it. One that hasn't run it holds rows
+// the import doesn't know how to read, e.g. tokens of agents that no longer exist.
+const LAST_MIGRATION: &str = "20261030120000_create_cluster_agents";
+
+// In an imported gem.xitdb's moment, how many rows it imported, so a gem.xitdb beside a gem.sqlite
+// is known to be the import of it.
+const IMPORTED: &str = "imported-from-sqlite";
+
 // Imports gem.sqlite in the working directory, where the server keeps its state, if it is still
 // there. Returns what to log, if anything.
 pub fn import_here() -> Result<Option<String>, String> {
-    let message = match import(Path::new(SQLITE), Path::new(gem_db::FILE))? {
+    let (sqlite, xitdb) = (Path::new(SQLITE), Path::new(gem_db::FILE));
+    let message = match import(sqlite, xitdb)? {
         Imported::Nothing => return Ok(None),
-        Imported::Rows(rows) => format!("imported {rows} rows of {SQLITE} into {}", gem_db::FILE),
-        Imported::Both => format!("{SQLITE} is still here beside {}, so it is not imported", gem_db::FILE),
+        Imported::Rows { rows, left: None } => {
+            format!("imported {rows} rows of {SQLITE} into {}", gem_db::FILE)
+        }
+        Imported::Rows { rows, left: Some(error) } => format!(
+            "imported {rows} rows of {SQLITE} into {}, but cannot move it aside yet: {error}",
+            gem_db::FILE
+        ),
+        Imported::Before { left: None } => format!("moved {SQLITE}, imported before, aside"),
+        Imported::Before { left: Some(error) } => {
+            format!("cannot move {SQLITE}, imported before, aside yet: {error}")
+        }
     };
     Ok(Some(message))
 }
@@ -37,30 +56,22 @@ pub fn import_here() -> Result<Option<String>, String> {
 pub enum Imported {
     // There is no gem.sqlite.
     Nothing,
-    // Every row, with this many in all.
-    Rows(usize),
-    // There is a gem.sqlite, but also a gem.xitdb, which it would replace, so neither is touched.
-    Both,
+    // Every row, with this many in all, and why gem.sqlite is still there, if it is.
+    Rows { rows: usize, left: Option<String> },
+    // gem.xitdb is the import of gem.sqlite, which an earlier import could not move aside.
+    Before { left: Option<String> },
 }
 
 // The maps in the moment, by the names the server's modules use, that take the rows of a key and
 // a text from each table.
-const TEXTS: &[(&str, &str, &str)] = &[
-    ("cluster-names", "cluster_names", "SELECT key, name FROM cluster_names"),
-    ("no-proposal-reasons", "no_proposal_reasons", "SELECT id, reason FROM no_proposal_reasons"),
-    ("proposals", "proposals", "SELECT id, proposal FROM proposals"),
-    ("agent-tokens", "agent_tokens", "SELECT token, subject FROM agent_tokens"),
-    ("cluster-agents", "cluster_agents", "SELECT pr, thread_id FROM cluster_agents"),
-    (
-        "investigations",
-        "investigations",
-        "SELECT id, investigation FROM investigations WHERE closed = 0",
-    ),
-    (
-        "closed-investigations",
-        "investigations",
-        "SELECT id, investigation FROM investigations WHERE closed != 0",
-    ),
+const TEXTS: &[(&str, &str)] = &[
+    ("cluster-names", "SELECT key, name FROM cluster_names"),
+    ("no-proposal-reasons", "SELECT id, reason FROM no_proposal_reasons"),
+    ("proposals", "SELECT id, proposal FROM proposals"),
+    ("agent-tokens", "SELECT token, subject FROM agent_tokens"),
+    ("cluster-agents", "SELECT pr, thread_id FROM cluster_agents"),
+    ("investigations", "SELECT id, investigation FROM investigations WHERE closed = 0"),
+    ("closed-investigations", "SELECT id, investigation FROM investigations WHERE closed != 0"),
 ];
 const STARTED: Set<str> = Set::new("started-conversations");
 
@@ -86,38 +97,62 @@ struct Rows {
 impl Rows {
     fn count(&self) -> usize {
         let texts: usize = self.texts.iter().map(|(_, rows)| rows.len()).sum();
-        texts + self.started.len() + usize::from(self.snapshot.is_some())
-            + self.merges.len()
-            + self.rebases.len()
+        let agents = self.merges.len() + self.rebases.len();
+        texts + self.started.len() + usize::from(self.snapshot.is_some()) + agents
     }
 }
 
-// Imports `sqlite` into `xitdb` unless there is no `sqlite`, or there already is an `xitdb`.
+// Imports `sqlite` into `xitdb`, unless there is no `sqlite`. With an `xitdb` already there that is
+// not the import of it, it touches neither and fails: a server would run on the wrong state.
 pub fn import(sqlite: &Path, xitdb: &Path) -> Result<Imported, String> {
     if !sqlite.exists() {
         return Ok(Imported::Nothing);
     }
     if xitdb.exists() {
-        return Ok(Imported::Both);
+        return match imported_rows(xitdb) {
+            Ok(Some(_)) => Ok(Imported::Before { left: move_aside(sqlite) }),
+            Ok(None) => Err(format!(
+                "{} is here beside {}, but is not its import; move one of them away",
+                xitdb.display(),
+                sqlite.display()
+            )),
+            Err(error) => Err(format!("{}: {error}", xitdb.display())),
+        };
     }
-    let rows = read(sqlite).map_err(|error| format!("{}: {error}", sqlite.display()))?;
+    // What a failed import left, compacted copies included.
     let importing = with_suffix(xitdb, ".importing");
-    let _ = fs::remove_file(&importing);
-    let written = write(&importing, &rows);
+    remove_starting_with(&importing);
+    let rows = read(sqlite)?;
+    let written = write(&importing, &rows).and_then(|()| check(&importing, &rows));
     if let Err(error) = written {
-        let _ = fs::remove_file(&importing);
+        remove_starting_with(&importing);
         return Err(error);
     }
     fs::rename(&importing, xitdb).map_err(|error| format!("{}: {error}", xitdb.display()))?;
-    // The rollback journal goes with it: on its own it would be applied to no database.
+    // Its lock file.
+    remove_starting_with(&importing);
+    Ok(Imported::Rows { rows: rows.count(), left: move_aside(sqlite) })
+}
+
+// Moves `sqlite` and its rollback journal aside, to names no earlier import took. Returns why it
+// could not, if it could not.
+fn move_aside(sqlite: &Path) -> Option<String> {
     for suffix in ["", "-journal", "-wal", "-shm"] {
         let file = with_suffix(sqlite, suffix);
-        if file.exists() {
-            let aside = with_suffix(&file, ".imported");
-            fs::rename(&file, &aside).map_err(|error| format!("{}: {error}", file.display()))?;
+        if !file.exists() {
+            continue;
+        }
+        let mut aside = with_suffix(&file, ".imported");
+        let mut n = 1;
+        while aside.exists() {
+            n += 1;
+            aside = with_suffix(&file, &format!(".imported-{n}"));
+        }
+        if let Err(error) = fs::rename(&file, &aside) {
+            return Some(format!("{}: {error}", file.display()));
         }
     }
-    Ok(Imported::Rows(rows.count()))
+    None
 }
 
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -126,77 +161,107 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     name.into()
 }
 
-fn read(path: &Path) -> rusqlite::Result<Rows> {
-    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    // A table an older server never made has no rows.
-    let has = |table: &str| -> rusqlite::Result<bool> {
-        let sql = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1";
-        Ok(db.query_row(sql, [table], |_| Ok(())).optional()?.is_some())
+// Removes the files whose names start with `path`'s.
+fn remove_starting_with(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return;
     };
+    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let name = name.to_string_lossy();
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&*name) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+// How many rows `xitdb` imported, or None if it is not an import.
+fn imported_rows(xitdb: &Path) -> gem_db::Result<Option<u64>> {
+    let db = Database::open_read_only(xitdb)?;
+    History::new(&db)?.latest()?.get_uint(IMPORTED)
+}
+
+fn read(path: &Path) -> Result<Rows, String> {
+    let read = || -> Result<Rows, String> {
+        // Read-write, so SQLite rolls back what a server killed while writing left in its journal.
+        let mut db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|error| error.to_string())?;
+        let has = |sql: &str, name: &str| -> rusqlite::Result<bool> {
+            Ok(db.query_row(sql, [name], |_| Ok(())).optional()?.is_some())
+        };
+        let table = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1";
+        let ran = "SELECT 1 FROM schema_migrations WHERE name = ?1";
+        let migrated = has(table, "schema_migrations").and_then(|has_table| {
+            Ok(has_table && has(ran, LAST_MIGRATION)?)
+        });
+        if !migrated.map_err(|error| error.to_string())? {
+            return Err(format!(
+                "a server older than the last that kept it wrote it, before {LAST_MIGRATION}: \
+                 start that build once first"
+            ));
+        }
+        // One read transaction, so the rows are all from one moment.
+        let tx = db.transaction().map_err(|error| error.to_string())?;
+        rows(&tx).map_err(|error| error.to_string())
+    };
+    read().map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn rows(db: &Connection) -> rusqlite::Result<Rows> {
     let mut texts = Vec::new();
-    for (name, table, sql) in TEXTS {
+    for (name, sql) in TEXTS {
         let mut rows = Vec::new();
-        if has(table)? {
-            let mut statement = db.prepare(sql)?;
-            for row in statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))? {
-                rows.push(row?);
-            }
+        let mut statement = db.prepare(sql)?;
+        for row in statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))? {
+            rows.push(row?);
         }
         texts.push((*name, rows));
     }
     let mut started = Vec::new();
-    if has("started_conversations")? {
-        let mut statement = db.prepare("SELECT id FROM started_conversations")?;
-        for id in statement.query_map([], |row| row.get(0))? {
-            started.push(id?);
-        }
+    let mut statement = db.prepare("SELECT id FROM started_conversations")?;
+    for id in statement.query_map([], |row| row.get(0))? {
+        started.push(id?);
     }
-    let snapshot = match has("snapshot")? {
-        true => db.query_row("SELECT response FROM snapshot", [], |row| row.get(0)).optional()?,
-        false => None,
-    };
+    let snapshot =
+        db.query_row("SELECT response FROM snapshot", [], |row| row.get(0)).optional()?;
     let mut merges = Vec::new();
-    if has("merges")? {
-        let sql = "SELECT url, thread_id, question, title, started_at FROM merges";
-        let mut statement = db.prepare(sql)?;
-        let rows = statement.query_map([], |row| {
-            Ok(Agent {
-                url: row.get(0)?,
-                head: None,
-                thread_id: row.get(1)?,
-                question: row.get(2)?,
-                title: row.get(3)?,
-                started_at: row.get(4)?,
-                pushed: None,
-            })
-        })?;
-        for merge in rows {
-            merges.push(merge?);
-        }
+    let sql = "SELECT url, thread_id, question, title, started_at FROM merges";
+    let mut statement = db.prepare(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok(Agent {
+            url: row.get(0)?,
+            head: None,
+            thread_id: row.get(1)?,
+            question: row.get(2)?,
+            title: row.get(3)?,
+            started_at: row.get(4)?,
+            pushed: None,
+        })
+    })?;
+    for merge in rows {
+        merges.push(merge?);
     }
     let mut rebases = Vec::new();
-    if has("rebases")? {
-        let sql = "SELECT url, head, thread_id, question, pushed, title, started_at FROM rebases";
-        let mut statement = db.prepare(sql)?;
-        let rows = statement.query_map([], |row| {
-            Ok(Agent {
-                url: row.get(0)?,
-                head: Some(row.get(1)?),
-                thread_id: row.get(2)?,
-                question: row.get(3)?,
-                pushed: Some(row.get(4)?),
-                title: row.get(5)?,
-                started_at: row.get(6)?,
-            })
-        })?;
-        for rebase in rows {
-            rebases.push(rebase?);
-        }
+    let sql = "SELECT url, head, thread_id, question, pushed, title, started_at FROM rebases";
+    let mut statement = db.prepare(sql)?;
+    let rows = statement.query_map([], |row| {
+        Ok(Agent {
+            url: row.get(0)?,
+            head: Some(row.get(1)?),
+            thread_id: row.get(2)?,
+            question: row.get(3)?,
+            pushed: Some(row.get(4)?),
+            title: row.get(5)?,
+            started_at: row.get(6)?,
+        })
+    })?;
+    for rebase in rows {
+        rebases.push(rebase?);
     }
     Ok(Rows { texts, started, snapshot, merges, rebases })
 }
 
-// Writes `rows` into a new xitdb file at `path` in one transaction, then reads them back.
+// Writes `rows` into a new xitdb file at `path` in one transaction.
 fn write(path: &Path, rows: &Rows) -> Result<(), String> {
     let no_migrations = Migrations::new([]).map_err(|error| error.to_string())?;
     let (db, _) = Db::open(path, &no_migrations)?;
@@ -233,68 +298,98 @@ fn write(path: &Path, rows: &Rows) -> Result<(), String> {
                 }
             }
         }
-        Ok(())
-    })?;
-    check(&db, rows).map_err(|error| format!("{}: {error}", path.display()))
+        moment.put(IMPORTED, rows.count() as u64)
+    })
 }
 
-// Reads back what `write` wrote, and compares it with `rows`.
-fn check(db: &Db, rows: &Rows) -> Result<(), String> {
-    let wrong = |what: &str| Err(format!("{what} did not import whole"));
-    for (name, texts) in &rows.texts {
-        let map: Map<str, String> = Map::new(name);
-        for (key, text) in texts {
-            if db.read(|moment| map.get(moment, key))?.as_ref() != Some(text) {
-                return wrong(name);
+// Reads the file at `path` again, as a server would, and compares it with `rows`. Returns the
+// first part that differs.
+fn check(path: &Path, rows: &Rows) -> Result<(), String> {
+    let no_migrations = Migrations::new([]).map_err(|error| error.to_string())?;
+    let db = Db::open_reader(path, no_migrations);
+    let differs = db.read(|moment| {
+        for (name, texts) in &rows.texts {
+            let map: Map<str, String> = Map::new(name);
+            for (key, text) in texts {
+                if map.get(moment, key)?.as_ref() != Some(text) {
+                    return Ok(Some(*name));
+                }
+            }
+            if map.iter(moment)?.count() != texts.len() {
+                return Ok(Some(*name));
             }
         }
-        if db.read(|moment| Ok(map.iter(moment)?.count()))? != texts.len() {
-            return wrong(name);
+        for id in &rows.started {
+            if !STARTED.contains(moment, id)? {
+                return Ok(Some(STARTED.name()));
+            }
         }
-    }
-    if db.read(|moment| Ok(STARTED.iter(moment)?.count()))? != rows.started.len() {
-        return wrong(STARTED.name());
-    }
-    if db.read(|moment| moment.get_string("snapshot", None))? != rows.snapshot {
-        return wrong("snapshot");
-    }
-    for (name, agents) in [("merges", &rows.merges), ("rebases", &rows.rebases)] {
-        let count = db.read(|moment| match moment.get_map(name)? {
-            Some(map) => Ok(map.entries()?.count()),
-            None => Ok(0),
-        })?;
-        if count != agents.len() {
-            return wrong(name);
+        if STARTED.iter(moment)?.count() != rows.started.len() {
+            return Ok(Some(STARTED.name()));
         }
+        if moment.get_string("snapshot", None)? != rows.snapshot {
+            return Ok(Some("snapshot"));
+        }
+        for (name, agents) in [("merges", &rows.merges), ("rebases", &rows.rebases)] {
+            let Some(map) = moment.get_map(name)? else {
+                return Ok(Some(name));
+            };
+            if map.entries()?.count() != agents.len() {
+                return Ok(Some(name));
+            }
+            for agent in agents {
+                let Some(fields) = map.get_map(&agent.url)? else {
+                    return Ok(Some(name));
+                };
+                let same = fields.get_string("head", None)? == agent.head
+                    && fields.get_string("thread", None)? == agent.thread_id
+                    && fields.get_string("title", None)?.as_ref() == Some(&agent.title)
+                    && fields.get_int("started-at")? == Some(agent.started_at)
+                    && fields.get_uint("question")? == Some(u64::from(agent.question))
+                    && fields.get_uint("pushed")? == agent.pushed.map(u64::from);
+                if !same {
+                    return Ok(Some(name));
+                }
+            }
+        }
+        Ok(None)
+    })?;
+    match differs {
+        None => Ok(()),
+        Some(name) => Err(format!("{}: {name} did not import whole", path.display())),
     }
-    Ok(())
 }
+
+// gem.sqlite's tables as the last server that kept it made them, with its migrations run, for
+// tests that make one.
+pub const SCHEMA: &str = "
+    CREATE TABLE schema_migrations (name TEXT PRIMARY KEY);
+    INSERT INTO schema_migrations VALUES ('20261030120000_create_cluster_agents');
+    CREATE TABLE rebases (url TEXT PRIMARY KEY, head TEXT NOT NULL, thread_id TEXT,
+        question INTEGER NOT NULL DEFAULT 0, pushed INTEGER NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE merges (url TEXT PRIMARY KEY, thread_id TEXT,
+        question INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '',
+        started_at INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE cluster_names (key TEXT PRIMARY KEY, name TEXT NOT NULL);
+    CREATE TABLE started_conversations (id TEXT PRIMARY KEY);
+    CREATE TABLE no_proposal_reasons (id TEXT PRIMARY KEY, reason TEXT NOT NULL);
+    CREATE TABLE proposals (id TEXT PRIMARY KEY, proposal TEXT NOT NULL);
+    CREATE TABLE investigations (id TEXT PRIMARY KEY, investigation TEXT NOT NULL,
+        closed INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE agent_tokens (token TEXT PRIMARY KEY, subject TEXT NOT NULL);
+    CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK (id = 0), response TEXT NOT NULL);
+    CREATE TABLE cluster_agents (pr TEXT PRIMARY KEY, thread_id TEXT NOT NULL);
+";
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // gem.sqlite's tables as the last server that kept it made them.
-    const SCHEMA: &str = "
-        CREATE TABLE rebases (url TEXT PRIMARY KEY, head TEXT NOT NULL, thread_id TEXT,
-            question INTEGER NOT NULL DEFAULT 0, pushed INTEGER NOT NULL DEFAULT 0,
-            title TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE merges (url TEXT PRIMARY KEY, thread_id TEXT,
-            question INTEGER NOT NULL DEFAULT 0, title TEXT NOT NULL DEFAULT '',
-            started_at INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE cluster_names (key TEXT PRIMARY KEY, name TEXT NOT NULL);
-        CREATE TABLE started_conversations (id TEXT PRIMARY KEY);
-        CREATE TABLE no_proposal_reasons (id TEXT PRIMARY KEY, reason TEXT NOT NULL);
-        CREATE TABLE proposals (id TEXT PRIMARY KEY, proposal TEXT NOT NULL);
-        CREATE TABLE investigations (id TEXT PRIMARY KEY, investigation TEXT NOT NULL,
-            closed INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE agent_tokens (token TEXT PRIMARY KEY, subject TEXT NOT NULL);
-        CREATE TABLE snapshot (id INTEGER PRIMARY KEY CHECK (id = 0), response TEXT NOT NULL);
-        CREATE TABLE cluster_agents (pr TEXT PRIMARY KEY, thread_id TEXT NOT NULL);
-    ";
 
     fn dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gem-sqlite-import-{name}-{}", std::process::id()));
+        let id = std::process::id();
+        let dir = std::env::temp_dir().join(format!("gem-sqlite-import-{name}-{id}"));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -304,6 +399,13 @@ mod tests {
         let path = dir.join("gem.sqlite");
         Connection::open(&path).unwrap().execute_batch(sql).unwrap();
         path
+    }
+
+    fn rows(imported: Imported) -> usize {
+        match imported {
+            Imported::Rows { rows, left: None } => rows,
+            _ => panic!("not imported whole"),
+        }
     }
 
     #[test]
@@ -327,8 +429,7 @@ mod tests {
             ),
         );
         let xitdb = dir.join("gem.xitdb");
-        let Imported::Rows(rows) = import(&sqlite, &xitdb).unwrap() else { panic!() };
-        assert_eq!(rows, 12);
+        assert_eq!(rows(import(&sqlite, &xitdb).unwrap()), 12);
         assert!(!sqlite.exists() && dir.join("gem.sqlite.imported").exists());
         assert!(!dir.join("gem.xitdb.importing").exists());
 
@@ -339,10 +440,12 @@ mod tests {
             assert!(STARTED.contains(moment, "c2")?);
             let closed: Map<str, String> = Map::new("closed-investigations");
             assert!(closed.contains(moment, "i2")? && !closed.contains(moment, "i1")?);
-            assert_eq!(moment.get_string("snapshot", None)?.as_deref(), Some("{\"clusters\":[]}"));
+            let snapshot = moment.get_string("snapshot", None)?;
+            assert_eq!(snapshot.as_deref(), Some("{\"clusters\":[]}"));
             let merge = moment.get_map("merges")?.unwrap().get_map("m")?.unwrap();
             assert_eq!(merge.get_string("thread", None)?.as_deref(), Some("thread-m"));
-            assert_eq!((merge.get_int("started-at")?, merge.get_uint("question")?), (Some(7), Some(1)));
+            assert_eq!(merge.get_int("started-at")?, Some(7));
+            assert_eq!(merge.get_uint("question")?, Some(1));
             let rebase = moment.get_map("rebases")?.unwrap().get_map("r")?.unwrap();
             assert_eq!(rebase.get_string("head", None)?.as_deref(), Some("abc"));
             assert_eq!(rebase.get_string("thread", None)?, None);
@@ -357,24 +460,42 @@ mod tests {
     }
 
     #[test]
-    fn leaves_both_files_when_there_already_is_an_xitdb_file() {
-        let dir = dir("both");
+    fn moves_the_sqlite_file_aside_later_without_replacing_an_earlier_one() {
+        let dir = dir("later");
         let sqlite = sqlite(&dir, SCHEMA);
         let xitdb = dir.join("gem.xitdb");
-        fs::write(&xitdb, b"not empty").unwrap();
-        assert!(matches!(import(&sqlite, &xitdb).unwrap(), Imported::Both));
-        assert!(sqlite.exists());
-        assert_eq!(fs::read(&xitdb).unwrap(), b"not empty");
+        rows(import(&sqlite, &xitdb).unwrap());
+        // As if moving it aside had failed, or something made it again.
+        fs::copy(dir.join("gem.sqlite.imported"), &sqlite).unwrap();
+        assert!(matches!(import(&sqlite, &xitdb).unwrap(), Imported::Before { left: None }));
+        assert!(!sqlite.exists());
+        let aside = ["gem.sqlite.imported", "gem.sqlite.imported-2"];
+        assert!(aside.iter().all(|name| dir.join(name).exists()));
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn imports_a_database_from_before_some_tables() {
+    fn refuses_an_xitdb_file_that_is_not_its_import() {
+        let dir = dir("both");
+        let sqlite = sqlite(&dir, SCHEMA);
+        let xitdb = dir.join("gem.xitdb");
+        let (db, _) = Db::open(&xitdb, &Migrations::new([]).unwrap()).unwrap();
+        drop(db);
+        let before = fs::read(&xitdb).unwrap();
+        assert!(import(&sqlite, &xitdb).is_err());
+        assert!(sqlite.exists());
+        assert_eq!(fs::read(&xitdb).unwrap(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refuses_a_database_without_the_last_migration() {
         let dir = dir("older");
-        let sqlite = sqlite(&dir, "CREATE TABLE cluster_names (key TEXT PRIMARY KEY, name TEXT NOT NULL);
-            INSERT INTO cluster_names VALUES ('k', 'Renames');");
-        let Imported::Rows(rows) = import(&sqlite, &dir.join("gem.xitdb")).unwrap() else { panic!() };
-        assert_eq!(rows, 1);
+        let sqlite = sqlite(&dir, &SCHEMA.replace("20261030120000_create_cluster_agents", "older"));
+        let xitdb = dir.join("gem.xitdb");
+        let error = import(&sqlite, &xitdb).err().unwrap();
+        assert!(error.contains("start that build once first"), "{error}");
+        assert!(sqlite.exists() && !xitdb.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -383,9 +504,13 @@ mod tests {
         let dir = dir("failed");
         let sqlite = dir.join("gem.sqlite");
         fs::write(&sqlite, b"not a database").unwrap();
+        // Left by an import that failed before.
+        fs::write(dir.join("gem.xitdb.importing.compacting-0"), b"").unwrap();
         let xitdb = dir.join("gem.xitdb");
         assert!(import(&sqlite, &xitdb).is_err());
-        assert!(sqlite.exists() && !xitdb.exists() && !dir.join("gem.xitdb.importing").exists());
+        assert!(sqlite.exists() && !xitdb.exists());
+        let left = fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name());
+        assert_eq!(left.collect::<Vec<_>>(), ["gem.sqlite"]);
         let _ = fs::remove_dir_all(&dir);
     }
 }

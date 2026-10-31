@@ -116,8 +116,8 @@ pub trait Host: Send + Sync + 'static {
 pub struct Rebases<H> {
     db: Db,
     host: Arc<H>,
-    // Held for the whole of a start, so two presses of Rebase start one agent, and the rebases whose
-    // thread is starting are that start's.
+    // Held for the whole of a start, so two presses of Rebase start one agent, and the rebases
+    // whose thread is starting are that start's.
     starting: Arc<Mutex<()>>,
 }
 
