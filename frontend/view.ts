@@ -1,4 +1,5 @@
 import type { JsonValue } from '@bufbuild/protobuf';
+import { sha1 } from '@noble/hashes/legacy.js';
 import { CoreMemory, Database, Hasher, ReadArrayList, type ReadCursor, ReadHashMap } from 'xitdb';
 
 // A replica of the server's view database (server/src/view.rs), the clusters as gem shows them.
@@ -17,10 +18,18 @@ export type ReplicaState = { committedSize: number; checksum: string } | null;
 // from it, so it must ask the server for the bytes it lacks.
 export type Applied = 'applied' | 'had' | 'gap';
 
-// The server's view database hashes with SHA-1. xitdb's hasher hashes with node's crypto, which
-// Metro resolves to an empty module on the web, so the replica must never hash: it only reads, and
-// walks its maps rather than looking keys up.
-const hasher = () => new Hasher('SHA-1');
+// The server's view database hashes keys with SHA-1. xitdb's own `Hasher` hashes with node's
+// crypto, which Metro resolves to an empty module on the web, so its `digest` is replaced with a
+// synchronous one in plain JavaScript. Everything in xitdb that hashes calls `db.hasher.digest`.
+export class BrowserSha1 extends Hasher {
+  constructor() {
+    super('SHA-1');
+  }
+
+  override digest(data: Uint8Array): Uint8Array {
+    return sha1(data);
+  }
+}
 
 export class Replica {
   private db?: Database;
@@ -64,7 +73,7 @@ export class Replica {
   }
 
   private replace(bytes: Uint8Array): Applied {
-    const db = new Database(new CoreMemory(), hasher());
+    const db = new Database(new CoreMemory(), new BrowserSha1());
     try {
       const writer = db.openReplicated(0, bytes.length);
       writer.write(bytes);
@@ -89,18 +98,21 @@ export class Replica {
   response(): JsonValue | undefined {
     const moment = this.latest();
     if (!moment) return undefined;
-    const top = entries(moment);
     const text = (cursor: ReadCursor) => decoder.decode(cursor.readBytes());
-    const json = (key: string): JsonValue | undefined => {
-      const cursor = top.get(key);
-      return cursor ? JSON.parse(text(cursor)) : undefined;
+    const string = (key: string) => {
+      const cursor = moment.getCursor(key);
+      return cursor ? text(cursor) : undefined;
     };
-    const clusters = top.get('clusters');
-    const byKey = clusters ? entries(new ReadHashMap(clusters)) : new Map<string, ReadCursor>();
+    const json = (key: string): JsonValue | undefined => {
+      const value = string(key);
+      return value === undefined ? undefined : JSON.parse(value);
+    };
+    const map = moment.getCursor('clusters');
+    const clusters = map ? new ReadHashMap(map) : undefined;
     const parsed = new Map<string, JsonValue>();
     const order = (json('order') ?? []) as string[];
     const shown = order.flatMap((key) => {
-      const cursor = byKey.get(key);
+      const cursor = clusters?.getCursor(key);
       if (!cursor) return [];
       const slot = cursor.slot();
       const at = `${slot.tag}:${slot.value}`;
@@ -112,24 +124,14 @@ export class Replica {
     this.parsed = parsed;
     return {
       clusters: shown,
-      login: top.has('login') ? text(top.get('login')!) : '',
-      search: top.has('search') ? text(top.get('search')!) : '',
+      login: string('login') ?? '',
+      search: string('search') ?? '',
       agents: json('agents') ?? [],
     };
   }
 }
 
 const decoder = new TextDecoder();
-
-// A map's values by their keys, read as UTF-8.
-function entries(map: ReadHashMap): Map<string, ReadCursor> {
-  const all = new Map<string, ReadCursor>();
-  for (const cursor of map) {
-    const pair = cursor.readKeyValuePair();
-    all.set(decoder.decode(pair.keyCursor.readBytes()), pair.valueCursor);
-  }
-  return all;
-}
 
 // The attributes the server sends bytes with, or undefined when they are not that.
 export function viewBytes(attributes: Record<string, string> | undefined): ViewBytes | undefined {

@@ -4,18 +4,26 @@
 //   cd server && GEM_VIEW_FIXTURE=<dir> cargo test writes_a_fixture_for_the_frontend
 //   cd frontend && GEM_VIEW_FIXTURE=<dir> npx tsx --test view.test.ts
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Hasher } from 'xitdb';
 
-import { Replica, viewBytes } from './view';
+import { BrowserSha1, Replica, viewBytes } from './view';
 
-// On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, so the
-// replica must never hash.
+// On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, as here:
+// the replica looks keys up with its own SHA-1 alone.
 Hasher.prototype.digest = () => {
-  throw new Error('the replica hashed');
+  throw new Error("the replica hashed with node's crypto");
 };
+
+test('the browser SHA-1 is SHA-1', () => {
+  for (const text of ['', 'abc', 'clusters', 'https://github.com/u9g/gem/pull/125', 'x'.repeat(1000)]) {
+    const bytes = new TextEncoder().encode(text);
+    assert.deepEqual(new BrowserSha1().digest(bytes), new Uint8Array(createHash('sha1').update(bytes).digest()));
+  }
+});
 
 const dir = process.env.GEM_VIEW_FIXTURE;
 
@@ -38,6 +46,10 @@ test('a replica shows what the server wrote', { skip: !dir && 'GEM_VIEW_FIXTURE 
   assert.equal(replica.apply(delta, read('delta.bin')), 'gap');
   assert.equal(replica.apply(full, read('full.bin')), 'applied');
   assert.deepEqual(replica.response(), shown(fixture.first));
+  // A key is looked up by its hash, as the server's view wrote it.
+  const login = replica.latest()!.getCursor('login');
+  assert.equal(new TextDecoder().decode(login!.readBytes()), fixture.first.login);
+  assert.equal(replica.latest()!.getCursor('missing'), null);
   assert.equal(replica.state()?.committedSize, full.end);
   assert.equal(replica.fileId, full.fileId);
 
