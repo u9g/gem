@@ -48,16 +48,16 @@ export function ClusterView({
   const restarting = busy?.has(key);
   const merging = busy?.has(`merge ${key}`);
   const by = cluster.mergeBy;
-  const admin = by === 'MERGE_BY_ADMIN';
+  const admin = by === 'admin';
   const updatedAt = cluster.updatedAt;
   const pullRequests = cluster.pullRequests;
   return (
     <View style={styles.column}>
       <View style={styles.header}>
         <View style={styles.titleBlock}>
-          <Text style={[styles.title, phone && styles.phoneTitle, by === 'MERGE_BY_APPROVAL' && styles.ready, admin && styles.forceable]}>{cluster.name}</Text>
+          <Text style={[styles.title, phone && styles.phoneTitle, by === 'approval' && styles.ready, admin && styles.forceable]}>{cluster.name}</Text>
           <Text style={styles.meta}>
-            {updatedAt && timeAgo(updatedAt)}
+            {updatedAt !== undefined && timeAgo(new Date(updatedAt))}
           </Text>
         </View>
         <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
@@ -141,11 +141,11 @@ export function MergeBanner({
   const key = cluster.pullRequests[0].url;
   const restarting = busy?.has(key);
   const merging = busy?.has(`merge ${key}`);
-  const admin = cluster.mergeBy === 'MERGE_BY_ADMIN';
+  const admin = cluster.mergeBy === 'admin';
   const pullRequests = cluster.pullRequests;
-  const forced = pullRequests.filter((pr) => pr.mergeBy === 'MERGE_BY_ADMIN').length;
+  const forced = pullRequests.filter((pr) => pr.mergeBy === 'admin').length;
   const one = forced === 1;
-  if (cluster.mergeBy === 'MERGE_BY_UNSPECIFIED' || pullRequests.some((pr) => pr.merging)) return null;
+  if (cluster.mergeBy === 'unspecified' || pullRequests.some((pr) => pr.merging)) return null;
   return (
     <View style={[styles.merge, admin && styles.adminMerge, stacked && styles.mergeStacked]}>
       <Text style={[styles.mergeText, stacked && styles.mergeTextStacked]}>

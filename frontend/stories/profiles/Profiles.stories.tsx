@@ -4,30 +4,33 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from '../../Board';
 import { PhoneClusterRow } from '../../ClusterRow';
-import { DbContext, useDb, type Write } from '../../db';
+import { DbContext, useDb } from '../../db';
 import { MemoryDb } from '../../memory';
 import { ProfileChip, ProfileForm, ProfileSheet, ProfileTitle } from '../../Profiles';
 import { PullRequestList } from '../../PullRequestList';
 import { type Profile, type Project } from '../../server';
-import { Cluster, shown } from '../../shapes';
+import type { Cluster } from '../../shapes';
+import { shown } from '../../view';
 import { Login } from '../../surfaces';
 import { t3 } from '../../t3';
-import { clusterMergeBy, mergeBy, proposalInputs as proposals } from '../fixtures';
+import { blank, clusterMergeBy, mergeBy, proposalInputs as proposals } from '../fixtures';
 
 // Switching profiles connects to another gem server, so the whole cluster list changes: each
 // profile here has a database of its own.
-const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+const minutesAgo = (minutes: number) => Date.now() - minutes * 60_000;
 
 const cluster = (
   name: string,
   updated: number,
   prs: { owner: string; repo: string; number: number; title: string; waiting?: number; approved?: boolean; checksPassing?: boolean; checksFailing?: boolean }[],
-): Write<typeof Cluster> =>
+): Cluster =>
   ({
+    ...blank.cluster,
     name,
     updatedAt: minutesAgo(updated),
     mergeBy: clusterMergeBy(prs.map((pr) => ({ mergeBy: mergeBy(pr) }))),
     pullRequests: prs.map(({ owner, repo, number, title, waiting = 0, ...status }) => ({
+      ...blank.pullRequest,
       repository: { owner, name: repo },
       number,
       title,
@@ -40,7 +43,7 @@ const cluster = (
 
 // Made-up profiles: the same user's work split by organization, and a second GitHub account,
 // each with the clusters its server would list.
-const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: Write<typeof Cluster>[] })[] = [
+const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: Cluster[] })[] = [
   {
     id: 'livekit',
     name: 'LiveKit',

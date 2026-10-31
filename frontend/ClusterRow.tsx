@@ -46,7 +46,7 @@ export function section(cluster: Cluster): (typeof sections)[number] {
     (pr.checksFailing && !running(pr) && !answered(pr));
   if (agents.some((agent) => !active(agent) || agent.proposals.length > 0) || prs.some(needsYou)) return 'Needs you';
   if (working.length > 0 || prs.some((pr) => pr.rebased)) return 'Agents working';
-  if (cluster.mergeBy !== 'MERGE_BY_UNSPECIFIED') return 'Ready to merge';
+  if (cluster.mergeBy !== 'unspecified') return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';
   return 'Waiting on review';
 }
@@ -117,11 +117,11 @@ export const PhoneClusterRow = memo(function PhoneClusterRow({
       style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}
     >
       <View style={styles.cardTop}>
-        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, by === 'MERGE_BY_APPROVAL' && styles.ready, by === 'MERGE_BY_ADMIN' && styles.forceable]}>
+        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, by === 'approval' && styles.ready, by === 'admin' && styles.forceable]}>
           {cluster.name || cluster.pullRequests[0].title}
         </Text>
         <CopyCluster cluster={cluster} />
-        {updatedAt && <Text style={styles.rowTime}>{shortAgo(updatedAt)}</Text>}
+        {updatedAt !== undefined && <Text style={styles.rowTime}>{shortAgo(new Date(updatedAt))}</Text>}
       </View>
       {cluster.pullRequests.map((pr) => (
         <PullRequestPipe key={pr.url} pr={pr} board={board} />
@@ -153,8 +153,8 @@ const PullRequestPipe = memo(function PullRequestPipe({ pr, board }: { pr: PullR
 // user, so titles line up.
 function AgentMark({ agent }: { agent: Agent }) {
   const state = agent.state;
-  if (state === 'AGENT_STATE_WORKING') return <ActivityIndicator size={10} color="#8FA8F5" />;
-  if (state === 'AGENT_STATE_QUEUED') return <View style={[styles.mark, styles.queued]} />;
+  if (state === 'working') return <ActivityIndicator size={10} color="#8FA8F5" />;
+  if (state === 'queued') return <View style={[styles.mark, styles.queued]} />;
   return <View style={styles.mark} />;
 }
 
@@ -189,7 +189,7 @@ export const AgentRow = memo(function AgentRow({
         {agent.title}
       </Text>
       <ToReview agent={agent} />
-      {startedAt && <Text style={styles.rowTime}>{shortAgo(startedAt)}</Text>}
+      {startedAt !== undefined && <Text style={styles.rowTime}>{shortAgo(new Date(startedAt))}</Text>}
     </Pressable>
   );
 });
@@ -210,7 +210,7 @@ export const PhoneAgentRow = memo(function PhoneAgentRow({
         {agent.title}
       </Text>
       <ToReview agent={agent} />
-      {startedAt && <Text style={styles.rowTime}>{shortAgo(startedAt)}</Text>}
+      {startedAt !== undefined && <Text style={styles.rowTime}>{shortAgo(new Date(startedAt))}</Text>}
     </Pressable>
   );
 });

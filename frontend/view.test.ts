@@ -10,10 +10,11 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { Hasher } from 'xitdb';
 
-import { BrowserSha1, type Db, type Kept, same, select, shape, str, View } from './db';
+import { BrowserSha1, type Db, type Kept, same, select } from './db';
 import { MemoryDb } from './memory';
-import { type Moment, PullRequest, shown } from './shapes';
-import { Replica, type ViewBytes } from './view';
+import type { Cluster, Moment } from './shapes';
+import { blank } from './stories/fixtures';
+import { Replica, shown, type ViewBytes } from './view';
 
 // On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, as here:
 // the replica looks keys up with its own SHA-1 alone.
@@ -31,7 +32,7 @@ test('the browser SHA-1 is SHA-1', () => {
 const dir = process.env.GEM_VIEW_FIXTURE;
 const skip = !dir && 'GEM_VIEW_FIXTURE is not set';
 
-// The bytes the server wrote, and pbjson's JSON of the view before and after its change.
+// The bytes the server wrote, and the JSON of the view's structs before and after its change.
 function fixture() {
   const json = JSON.parse(readFileSync(join(dir!, 'fixture.json'), 'utf8'));
   return {
@@ -67,54 +68,52 @@ test('the replica follows the bytes the server sends', { skip }, () => {
   assert.equal(replica.apply({ ...full.sent, fileId: '1' }, full.bytes), 'applied');
 });
 
-test('views read every field kind as the server wrote it', { skip }, () => {
+// `value` as JSON reads it, with the nulls of the Rust structs' unset `Option`s left out, as the
+// view leaves them out.
+const json = (value: unknown) => JSON.parse(JSON.stringify(value, (_, field) => field ?? undefined));
+
+test('the reader reads every stored form as the server wrote it', { skip }, () => {
   const { full, first } = fixture();
-  const { clusters, agents, login, search } = shown(replicaOf(full).moment());
+  const moment = replicaOf(full).moment()!;
+  const { clusters, agents, login, search } = shown(moment);
   assert.equal(login, first.login);
   assert.equal(search, first.search);
-  assert.deepEqual(clusters.map((c) => c.pullRequests[0].url), first.clusters.map((c: any) => c.pullRequests[0].url));
+  // Each whole cluster, and the agents, as the server's structs serialize, read through the maps.
+  assert.deepEqual(json(clusters), json(first.clusters));
+  assert.deepEqual(json(agents), json(first.agents));
   const cluster = clusters[0];
-  const expected = first.clusters[0];
-  // Enums by name, and the first value when left out.
-  assert.equal(cluster.mergeBy, 'MERGE_BY_ADMIN');
   const [even, odd] = cluster.pullRequests;
-  assert.equal(even.mergeBy, 'MERGE_BY_APPROVAL');
-  assert.equal(cluster.agents[0].state, 'AGENT_STATE_WAITING');
-  assert.equal(agents[0].state, 'AGENT_STATE_WORKING');
-  // Timestamps.
-  assert.equal(cluster.updatedAt?.getTime(), Date.parse(expected.updatedAt));
-  assert.equal(odd.createdAt?.getTime(), Date.parse(expected.pullRequests[1].createdAt));
-  // `bl`-tagged bools, and false when left out.
+  // Enums by name, numbers, bools both ways, times in milliseconds, lists of strings.
+  assert.equal(cluster.mergeBy, 'admin');
+  assert.equal(even.mergeBy, 'approval');
+  assert.equal(cluster.agents[0].state, 'waiting');
+  assert.equal(agents[0].state, 'working');
+  assert.equal(odd.number, 101);
   assert.equal(even.approved, true);
   assert.equal(odd.approved, false);
-  assert.equal(odd.checksFailing, true);
-  // 32-bit integers, and 64-bit ones past 2^53.
-  assert.equal(odd.number, 101);
-  assert.equal(odd.checks?.failed, 1);
-  assert.equal(even.checks?.failed, 0);
-  const { workflowRunId } = odd.proposals[0].checkFailure!.checks[0];
-  assert.equal(workflowRunId, 1152921504606846977n);
-  // Nested messages, lists and lists of strings.
-  assert.equal(odd.repository?.name, 'gem');
+  assert.equal(odd.createdAt, first.clusters[0].pullRequests[1].createdAt);
+  assert.equal(odd.proposals[0].checkFailure!.checks[0].workflowRunId, Number(1152921504606846977n));
   assert.deepEqual(cluster.agents[0].pullRequestUrls, [cluster.pullRequests[0].url]);
-  assert.equal(odd.proposals[0].reply, expected.pullRequests[1].proposals[0].reply);
-  // Fields left out: their defaults, and no message.
-  assert.equal(odd.noProposalReason, '');
-  assert.equal(odd.rebasing, false);
+  // Nested maps, and lists that are empty rather than left out.
+  assert.equal(odd.repository?.name, 'gem');
   assert.deepEqual(odd.files, []);
+  // An unset `Option` is missing: undefined, and not among the map's keys.
   assert.equal(odd.proposals[0].comment, undefined);
-  assert.equal(agents[0].startedAt?.getTime(), Date.parse(first.agents[0].startedAt));
-  // They behave as plain objects: destructuring, mapping, spreading, and they can't be changed.
+  assert.ok(!('comment' in odd.proposals[0]));
+  assert.ok(!Object.keys(odd.proposals[0]).includes('comment'));
+  assert.ok(Object.keys(odd).includes('noProposalReason'));
+  // The clusters map is looked up by key.
+  assert.equal(moment.clusters[cluster.pullRequests[0].url], cluster);
+  assert.equal(moment.clusters['https://github.com/o/r/pull/9/0'], undefined);
+  // Read-only, as plain objects read.
   const { title, url } = odd;
-  assert.deepEqual([title, url], [expected.pullRequests[1].title, expected.pullRequests[1].url]);
-  assert.deepEqual({ ...odd.repository }, { owner: 'u9g', name: 'gem' });
+  assert.deepEqual([title, url], [first.clusters[0].pullRequests[1].title, first.clusters[0].pullRequests[1].url]);
   assert.throws(() => {
     (odd as { title: string }).title = 'changed';
   });
-  assert.throws(() => (cluster.pullRequests as PullRequest[]).push(odd));
-  // The same stored value is the same view, and the same list the same array.
+  assert.throws(() => (cluster.pullRequests as unknown[]).push(odd));
+  // The same stored value is the same object.
   assert.equal(cluster.pullRequests[1], odd);
-  assert.equal(shown(replicaOf(full).moment()).clusters[0].pullRequests.length, 3);
 });
 
 // What `useDb` gives a component: React re-renders it when this is another value.
@@ -128,10 +127,10 @@ test('a read changes only when what it read changed', { skip }, () => {
   const replica = replicaOf(full);
   let notified = 0;
   replica.subscribe(() => notified++);
-  const untouched = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/2/0'));
-  const renamed = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/1/0'));
+  const untouched = selecting(replica, (moment) => moment?.clusters['https://github.com/o/r/pull/2/0']);
+  const renamed = selecting(replica, (moment) => moment?.clusters['https://github.com/o/r/pull/1/0']);
   const order = selecting(replica, (moment) => moment?.order);
-  const name = selecting(replica, (moment) => moment?.clusters.get('https://github.com/o/r/pull/2/0')?.name);
+  const name = selecting(replica, (moment) => moment?.clusters['https://github.com/o/r/pull/2/0']?.name);
   const before = { untouched: untouched()!, renamed: renamed()!, order: order(), name: name() };
   // Asked again with nothing applied, each is what it was.
   assert.equal(untouched(), before.untouched);
@@ -139,14 +138,14 @@ test('a read changes only when what it read changed', { skip }, () => {
 
   assert.equal(replica.apply(delta.sent, delta.bytes), 'applied');
   assert.equal(notified, 1);
-  // The cluster the change didn't touch is the same view, as are its lists and nested messages,
+  // The cluster the change didn't touch is the same object, as are its lists and nested maps,
   // and what was read of it the same value, so a component that read it isn't rendered again.
   assert.equal(untouched(), before.untouched);
   assert.equal(untouched()!.pullRequests, before.untouched.pullRequests);
   assert.equal(untouched()!.pullRequests[1].repository, before.untouched.pullRequests[1].repository);
   assert.equal(name(), before.name);
   // The cluster it changed, its list of pull requests and the one it changed, and the order, are
-  // new; the pull request in it that didn't change is the same view.
+  // new; the pull request in it that didn't change is the same object.
   const changed = renamed()!;
   assert.notEqual(changed, before.renamed);
   assert.equal(changed.name, 'renamed');
@@ -171,81 +170,42 @@ test('reading one cluster reads nothing of the others', { skip }, () => {
   try {
     void clusters[0].name;
     void clusters[0].pullRequests[0].title;
-    // Read again, each is kept on its view.
+    // Read again, each is kept.
     void clusters[0].name;
   } finally {
     BrowserSha1.prototype.digest = digest;
   }
   // One key looked up for each field read, and nothing else.
   assert.equal(lookups, 3);
-  // The fields not read are still getters.
-  assert.ok(Object.getOwnPropertyDescriptor(clusters[0], 'agents')?.get);
-  assert.ok(Object.getOwnPropertyDescriptor(clusters[0].pullRequests[1], 'title')?.get);
-  for (const other of clusters.slice(1)) {
-    assert.ok(Object.getOwnPropertyDescriptor(other, 'name')?.get);
-    assert.ok(Object.getOwnPropertyDescriptor(other, 'pullRequests')?.get);
-  }
 });
 
-test('a fixture written in TypeScript reads like the server writes', () => {
-  const db = new MemoryDb({
-    clusters: [
-      {
-        name: 'Retry TTS',
-        updatedAt: new Date('2026-10-31T12:00:00Z'),
-        mergeBy: 'MERGE_BY_APPROVAL',
-        pullRequests: [
-          {
-            url: 'https://github.com/livekit/agents/pull/1',
-            number: 1,
-            approved: true,
-            repository: { owner: 'livekit', name: 'agents' },
-            proposals: [{ id: 'p', checkFailure: { checks: [{ workflowRunId: 1n << 60n }] } }],
-          },
-        ],
-      },
-    ],
-    login: 'u9g',
-  });
-  let notified = 0;
-  db.subscribe(() => notified++);
-  const { clusters, login } = shown(db.moment());
-  const [pr] = clusters[0].pullRequests;
-  assert.equal(login, 'u9g');
-  assert.equal(clusters[0].mergeBy, 'MERGE_BY_APPROVAL');
-  assert.equal(clusters[0].updatedAt?.toISOString(), '2026-10-31T12:00:00.000Z');
-  assert.equal(pr.approved, true);
-  assert.equal(pr.number, 1);
-  assert.equal(pr.repository?.owner, 'livekit');
-  assert.equal(pr.proposals[0].checkFailure?.checks[0].workflowRunId, 1n << 60n);
-  assert.equal(pr.merging, false);
-  assert.ok(pr instanceof View);
-  db.show({ login: 'other' });
-  assert.equal(notified, 1);
-  assert.equal(shown(db.moment()).login, 'other');
-  // A value stored alone, as stories use one.
-  assert.equal(new MemoryDb().put(shape({ title: str }), { title: 't' }).title, 't');
+test('the fixture writer writes what the reader reads', () => {
+  const value = { text: 'a', yes: true, no: false, count: 3, below: -2, ratio: 0.5, empty: [], left: undefined, nested: { list: ['x', 1] } };
+  const read = new MemoryDb().put(value);
+  assert.deepEqual(json(read), json(value));
+  assert.equal(read.left, undefined);
+  assert.ok(Object.isFrozen(read.nested.list));
+  assert.ok(!Object.keys(read).includes('left'));
 });
 
 test('an action going pending, and done, changes what reads it', () => {
-  const db = new MemoryDb({ clusters: [{ pullRequests: [{ url: 'u' }] }] });
-  const approving = selecting(db, (moment) => moment?.pending.has('p1'));
-  const keys = selecting(db, (moment) => moment?.pending.keys().sort());
-  const cluster = selecting(db, (moment) => moment?.clusters.get('u'));
+  const clusters: Cluster[] = [{ ...blank.cluster, pullRequests: [{ ...blank.pullRequest, url: 'u' }] }];
+  const db = new MemoryDb({ clusters });
+  const approving = selecting(db, (moment) => moment !== undefined && 'p1' in moment.pending);
+  const keys = selecting(db, (moment) => Object.keys(moment?.pending ?? {}).sort());
   assert.equal(approving(), false);
-  const before = { keys: keys(), cluster: cluster() };
-  db.show({ clusters: [{ pullRequests: [{ url: 'u' }] }], pending: ['p1', 'merge u'] });
+  const before = keys();
+  db.show({ clusters, pending: ['p1', 'merge u'] });
   assert.equal(approving(), true);
   assert.deepEqual(keys(), ['merge u', 'p1']);
-  assert.notEqual(keys(), before.keys);
-  db.show({ clusters: [{ pullRequests: [{ url: 'u' }] }] });
+  assert.notEqual(keys(), before);
+  db.show({ clusters });
   assert.equal(approving(), false);
   assert.deepEqual(keys(), []);
 });
 
 test('same compares what reads return', () => {
   assert.ok(same([1, 'a', { b: [true] }], [1, 'a', { b: [true] }]));
-  assert.ok(same(new Date(5), new Date(5)));
   assert.ok(!same({ a: 1 }, { a: 1, b: 2 }));
   assert.ok(!same([1], [2]));
 });

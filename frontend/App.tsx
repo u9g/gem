@@ -14,7 +14,8 @@ import { DbContext, emptyDb, useDb, usePending } from './db';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { type Profile, useServer } from './server';
-import { type Cluster, type Repository, shown } from './shapes';
+import { shown } from './view';
+import type { Cluster, Repository } from './shapes';
 import { Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {

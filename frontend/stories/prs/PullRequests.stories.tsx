@@ -1,4 +1,3 @@
-import type { Write } from '../../db';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { Check, CircleCheck, CircleDashed, CircleX } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
@@ -6,12 +5,12 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import { PullRequestList } from '../../PullRequestList';
-import { Agent, AgentState, PullRequest } from '../../shapes';
+import type { Agent, AgentState, PullRequest } from '../../shapes';
 import { Icon, t3 } from '../../t3';
-import { mergeBy, proposalInputs as proposals, stored } from '../fixtures';
+import { blank, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // A pull request being made up, before it's stored.
-type Row = { -readonly [K in keyof Write<typeof PullRequest>]: Write<typeof PullRequest>[K] };
+type Row = { -readonly [K in keyof PullRequest]: PullRequest[K] };
 
 // Made-up cluster: one change across three repositories.
 const pullRequest = (
@@ -20,6 +19,7 @@ const pullRequest = (
   title: string,
   status: { approved?: boolean; checksPassing?: boolean; checksFailing?: boolean },
 ): Row => ({
+  ...blank.pullRequest,
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -45,7 +45,7 @@ agents.proposals = proposals.filter((p) => !['quote-reply', 'failed'].includes(p
 agentsJs.proposals = [moved('quote-reply', agentsJs)];
 pending.proposals = [moved('failed', pending)];
 // The rows as the components read them.
-const cluster = [agents, agentsJs, protocol, pending].map((row) => stored(PullRequest, row));
+const cluster = [agents, agentsJs, protocol, pending].map((row) => stored(row));
 
 function ref(pr: PullRequest) {
   return `${pr.repository?.name}#${pr.number}`;
@@ -189,7 +189,7 @@ const rebasing = [
   { ...agentsJs, behind: true, rebasing: true },
   { ...protocol, behind: true, rebasing: true },
   pending,
-].map((row) => stored(PullRequest, row));
+].map((row) => stored(row));
 export const DRebase: StoryObj = {
   name: 'D · Rebase',
   render: () => (
@@ -198,7 +198,7 @@ export const DRebase: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={rebasing} agents={rebasingAgents.map((row) => stored(Agent, row))} onRebase={() => {}} />
+          <PullRequestList pullRequests={rebasing} agents={rebasingAgents.map((row) => stored(row))} onRebase={() => {}} />
         </View>
       }
     />
@@ -206,7 +206,9 @@ export const DRebase: StoryObj = {
 };
 
 // One PR through a rebase, its checks, and the agent answering the checks that failed.
-const step = (title: string, status: Row): Row => ({
+const step = (title: string, status: Partial<Row>): Row => ({
+  ...blank.pullRequest,
+  ...blank.pullRequest,
     repository: { owner: 'livekit', name: 'agents' },
     number: 4821,
     title,
@@ -245,7 +247,8 @@ const restarted = [
 ];
 
 // The agents on the rows above, as the server lists them.
-const agent = (id: string, title: string, url: string, state: AgentState = 'AGENT_STATE_WORKING'): Write<typeof Agent> => ({
+const agent = (id: string, title: string, url: string, state: AgentState = 'working'): Agent => ({
+  ...blank.agent,
   id,
   title,
   pullRequestUrls: [url],
@@ -255,15 +258,15 @@ const urlOf = (rows: Row[], title: string) => rows.find((pr) => pr.title === tit
 const rebasingAgents = [agent('rebase:r', 'Rebase agents-js#1290 and protocol#1147', agentsJs.url!), agent('rebase:r2', 'Rebase agents-js#1290 and protocol#1147', protocol.url!)];
 const stepAgents = [
   agent('rebase:s', 'Rebase agents#4821', urlOf(steps, 'Rebasing')),
-  agent('answer:q', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent queued'), 'AGENT_STATE_QUEUED'),
+  agent('answer:q', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent queued'), 'queued'),
   agent('answer:l', 'Fix checks on livekit/agents#4821', urlOf(steps, 'Agent looking')),
 ];
 const restartedAgents = [
-  agent('answer:1', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), 'AGENT_STATE_QUEUED'),
-  agent('answer:2', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), 'AGENT_STATE_QUEUED'),
+  agent('answer:1', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), 'queued'),
+  agent('answer:2', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Queued behind other agents'), 'queued'),
   agent('answer:3', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Answering comments')),
   agent('answer:4', 'Answer theomonnom on livekit/agents#4821', urlOf(restarted, 'Answering comments')),
-  agent('answer:5', 'Answer longcw on livekit/agents#4821', urlOf(restarted, 'Answering comments'), 'AGENT_STATE_QUEUED'),
+  agent('answer:5', 'Answer longcw on livekit/agents#4821', urlOf(restarted, 'Answering comments'), 'queued'),
   agent('answer:6', 'Answer davidzhao on livekit/agents#4821', urlOf(restarted, 'Answering a comment and failed checks')),
   agent('answer:7', 'Fix checks on livekit/agents#4821', urlOf(restarted, 'Answering a comment and failed checks')),
 ];
@@ -275,7 +278,7 @@ export const FRestarted: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={restarted.map((row) => stored(PullRequest, row))} agents={restartedAgents.map((row) => stored(Agent, row))} />
+          <PullRequestList pullRequests={restarted.map((row) => stored(row))} agents={restartedAgents.map((row) => stored(row))} />
         </View>
       }
     />
@@ -290,7 +293,7 @@ export const EStatus: StoryObj = {
       header={
         <View style={{ gap: 16 }}>
           <Title />
-          <PullRequestList pullRequests={steps.map((row) => stored(PullRequest, row))} agents={stepAgents.map((row) => stored(Agent, row))} onRebase={() => {}} />
+          <PullRequestList pullRequests={steps.map((row) => stored(row))} agents={stepAgents.map((row) => stored(row))} onRebase={() => {}} />
         </View>
       }
     />

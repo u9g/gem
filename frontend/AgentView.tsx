@@ -39,24 +39,24 @@ export function AgentView({
           <Text style={styles.title}>{agent.title}</Text>
           <Text style={styles.meta}>
             {on.length > 0 && `on ${on.join(', ')}`}
-            {startedAt && ` · ${ago(startedAt)}`}
+            {startedAt !== undefined && ` · ${ago(new Date(startedAt))}`}
           </Text>
         </View>
         <Button label="Done" disabled={busy?.has(agent.id)} onPress={onClose} />
       </View>
       {agent.reply !== '' && <Html html={agent.replyHtml} />}
-      {state === 'AGENT_STATE_WORKING' && (
+      {state === 'working' && (
         <View style={styles.working}>
           <ActivityIndicator size={12} color="#8FA8F5" />
           <Text style={styles.meta}>Working…</Text>
         </View>
       )}
-      {state === 'AGENT_STATE_QUEUED' && <Text style={styles.meta}>Queued behind other agents…</Text>}
+      {state === 'queued' && <Text style={styles.meta}>Queued behind other agents…</Text>}
       {/* Alternatives, answering the same comment or the same failed checks, are one card. */}
       {bySubject(agent.proposals).map((group) => (
         <ProposalGroup key={group[0].id} proposals={group} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
       ))}
-      {state !== 'AGENT_STATE_QUEUED' && <Composer placeholder="Message the agent…" onSend={onMessage} />}
+      {state !== 'queued' && <Composer placeholder="Message the agent…" onSend={onMessage} />}
     </View>
   );
 }

@@ -49,7 +49,7 @@ export function PullRequestList({
                   {approved ? 'Approved' : 'Review required'}
                 </Text>
               )}
-              {on(pr, agents).some((agent) => agent.state === 'AGENT_STATE_WORKING') && (
+              {on(pr, agents).some((agent) => agent.state === 'working') && (
                 <ActivityIndicator size={12} color="#8FA8F5" />
               )}
               {onRebase && (pr.behind || pr.rebasing || pr.rebased) && (
@@ -83,7 +83,7 @@ function status(pr: PullRequest, agents: readonly Agent[]): Status | undefined {
   const running = checks.total - checks.done;
   const checksFailed = `${checks.failed} ${checks.failed === 1 ? 'check' : 'checks'} failed`;
   const acting = on(pr, agents).filter(active);
-  const working = acting.filter((agent) => agent.state === 'AGENT_STATE_WORKING');
+  const working = acting.filter((agent) => agent.state === 'working');
   const proposals = pr.proposals.length;
   const base = pr.base;
   if (pr.rebased) return { doing: 'Rebased', waiting: 'waiting on GitHub to list the new commit' };
@@ -109,8 +109,8 @@ function status(pr: PullRequest, agents: readonly Agent[]): Status | undefined {
   if (checks.failed > 0) return { doing: checksFailed, waiting: pr.noProposalReason || 'no proposal for them' };
   if (pr.conflicts) return { doing: `Conflicts with ${base}`, waiting: 'waiting on you to rebase' };
   if (pr.behind) return { doing: `${base} requires it up to date`, waiting: 'waiting on you to rebase' };
-  if (pr.mergeBy === 'MERGE_BY_APPROVAL') return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
-  if (pr.mergeBy === 'MERGE_BY_ADMIN') return { doing: 'Not approved', waiting: 'you can force it in as an admin', forceable: true };
+  if (pr.mergeBy === 'approval') return { doing: 'Ready to merge', waiting: 'waiting on you', ready: true };
+  if (pr.mergeBy === 'admin') return { doing: 'Not approved', waiting: 'you can force it in as an admin', forceable: true };
   return undefined;
 }
 

@@ -4,15 +4,16 @@ import { ScrollView, StyleSheet, View } from 'react-native';
 
 import { ClusterView } from '../../ClusterView';
 import { Legend, PhoneClusterRow, section, sections, SectionTitle } from '../../ClusterRow';
-import { DbContext, useDb, type Write } from '../../db';
+import { DbContext, useDb } from '../../db';
 import { MemoryDb } from '../../memory';
-import { Agent, Cluster as ClusterShape, Proposal, PullRequest, shown } from '../../shapes';
-import { clusterMergeBy, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
+import type { Agent, Cluster as ClusterShape, Proposal, PullRequest } from '../../shapes';
+import { shown } from '../../view';
+import { blank, clusterMergeBy, mergeBy, proposalInputs as proposals, stored } from '../fixtures';
 
 // Made-up clusters, one in each place a phone lists them. Stories render at the window's width,
 // so view them at a phone's.
 
-const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+const minutesAgo = (minutes: number) => Date.now() - minutes * 60_000;
 
 type Fields = {
   approved?: boolean;
@@ -21,11 +22,12 @@ type Fields = {
   checksPassing?: boolean;
   checksFailing?: boolean;
   checks?: { total: number; done: number; failed: number };
-  proposals?: Write<typeof Proposal>[];
+  proposals?: Proposal[];
   merging?: boolean;
 };
 
-const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields): Write<typeof PullRequest> => ({
+const pullRequest = (name: string, number: number, title: string, { admin, ...fields }: Fields): PullRequest => ({
+    ...blank.pullRequest,
     repository: { owner: 'livekit', name },
     number,
     title,
@@ -38,9 +40,10 @@ const pullRequest = (name: string, number: number, title: string, { admin, ...fi
 const cluster = (
   name: string,
   minutes: number,
-  pullRequests: Write<typeof PullRequest>[],
-  agents: Write<typeof Agent>[] = [],
-): Write<typeof ClusterShape> => ({
+  pullRequests: PullRequest[],
+  agents: Agent[] = [],
+): ClusterShape => ({
+  ...blank.cluster,
   name,
   updatedAt: minutesAgo(minutes),
   pullRequests,
@@ -76,6 +79,7 @@ const merging = cluster(
   ],
   [
     {
+      ...blank.agent,
       id: 'merge:m',
       title: 'Merge Respect the configured S3 region',
       pullRequestUrls: ['https://github.com/livekit/protocol/pull/1103', 'https://github.com/livekit/egress/pull/902'],
@@ -88,6 +92,7 @@ const working = cluster(
   [pullRequest('agent-gateway', 388, 'Hedge requests after the p95', { checks: { total: 14, done: 9, failed: 0 } })],
   [
     {
+      ...blank.agent,
       id: 'answer:c',
       title: 'Answer davidzhao on livekit/agent-gateway#388',
       pullRequestUrls: ['https://github.com/livekit/agent-gateway/pull/388'],
@@ -102,7 +107,7 @@ const reviewing = cluster('Pin agent version on dispatch', 22, [
 ]);
 
 // The list as the app shows it, read from a database holding `clusters`.
-function Home({ clusters }: { clusters: Write<typeof ClusterShape>[] }) {
+function Home({ clusters }: { clusters: ClusterShape[] }) {
   const db = useMemo(() => new MemoryDb({ clusters }), [clusters]);
   return (
     <DbContext value={db}>
@@ -129,11 +134,11 @@ function List() {
   );
 }
 
-function Cluster({ cluster }: { cluster: Write<typeof ClusterShape> }) {
+function Cluster({ cluster }: { cluster: ClusterShape }) {
   return (
     <ScrollView style={styles.page} contentContainerStyle={styles.content}>
       <ClusterView
-        cluster={stored(ClusterShape, cluster)}
+        cluster={stored(cluster)}
         onOpenAgent={() => {}}
         onApprove={() => {}}
         onDismiss={() => {}}

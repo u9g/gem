@@ -1,7 +1,7 @@
 import { CoreMemory, Database, ReadArrayList } from 'xitdb';
 
 import { BrowserSha1, type Db, Views } from './db';
-import { Moment } from './shapes';
+import type { Moment } from './shapes';
 
 // A replica of the server's view database (server/src/view.rs), the clusters as gem shows them,
 // which components read through `useDb`. The server's file only grows, so the replica is sent the
@@ -22,7 +22,7 @@ export type Applied = 'applied' | 'had' | 'gap';
 
 export class Replica implements Db {
   private db?: Database;
-  // The messages read from the replica's file.
+  // The values read from the replica's file.
   private views = new Views();
   private changes = 0;
   private listeners = new Set<() => void>();
@@ -38,7 +38,7 @@ export class Replica implements Db {
   moment = (): Moment | undefined => {
     if (!this.db) return undefined;
     const cursor = new ReadArrayList(this.db.rootCursor()).getCursor(-1);
-    return cursor ? Moment.read(cursor, this.views) : undefined;
+    return this.views.read(cursor) as Moment | undefined;
   };
 
   private changed() {
@@ -95,4 +95,17 @@ export class Replica implements Db {
     this.changed();
     return 'applied';
   }
+}
+
+// What the UI shows of a moment: the clusters in order, and the rest. A cluster's key, which
+// links to it, is the URL of its oldest pull request. `useDb` keeps what a read returned by the
+// read function, so it's one function rather than a new one each render.
+export function shown(moment: Moment | undefined) {
+  if (!moment) return { clusters: [], agents: [], login: '', search: '' };
+  return {
+    clusters: moment.order.flatMap((key) => moment.clusters[key] ?? []),
+    agents: moment.agents,
+    login: moment.login,
+    search: moment.search,
+  };
 }

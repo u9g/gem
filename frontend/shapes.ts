@@ -1,175 +1,148 @@
-import { bool, enumOf, type Infer, int64, keyed, list, num, optional, shape, str, time } from './db';
+// What the server's view database holds: the structs of server/src/view/types.rs, as the reader in
+// db.ts reads them. Every field is stored, so each is here as it is there; only an `Option` can be
+// missing, which is an optional property. Times are milliseconds since the epoch.
 
-// The shapes of what the server's view database holds (server/src/view.rs): each message's fields
-// as protocol/gem.proto has them, in its order, under pbjson's camelCase names. Each `shape` is
-// both the message's type, through `Infer`, and how it's read and written. Enums are their names.
-
-export type MergeBy = 'MERGE_BY_UNSPECIFIED' | 'MERGE_BY_APPROVAL' | 'MERGE_BY_ADMIN';
-export type AgentState = 'AGENT_STATE_WORKING' | 'AGENT_STATE_QUEUED' | 'AGENT_STATE_WAITING';
-
-export const Repository = shape({
-  owner: str,
-  name: str,
-});
-export type Repository = Infer<typeof Repository>;
-
-export const Checks = shape({
-  total: num,
-  done: num,
-  failed: num,
-});
-export type Checks = Infer<typeof Checks>;
-
-export const Comment = shape({
-  id: str,
-  author: str,
-  body: str,
-  url: str,
-  bodyHtml: str,
-  path: str,
-  line: num,
-  diffHunk: str,
-});
-export type Comment = Infer<typeof Comment>;
-
-export const FileDiff = shape({
-  path: str,
-  patch: str,
-});
-export type FileDiff = Infer<typeof FileDiff>;
-
-export const Patch = shape({
-  diff: str,
-  commitMessage: str,
-  headOid: str,
-  pullRequestUrl: str,
-});
-export type Patch = Infer<typeof Patch>;
-
-export const FailedCheck = shape({
-  id: str,
-  name: str,
-  conclusion: str,
-  url: str,
-  workflowRunId: int64,
-  excerpt: str,
-});
-export type FailedCheck = Infer<typeof FailedCheck>;
-
-export const CheckFailure = shape({
-  id: str,
-  headOid: str,
-  checks: list(FailedCheck),
-});
-export type CheckFailure = Infer<typeof CheckFailure>;
-
-export const NewPullRequest = shape({
-  repository: str,
-  base: str,
-  branch: str,
-  title: str,
-  body: str,
-  bodyHtml: str,
-  patch: optional(Patch),
-});
-export type NewPullRequest = Infer<typeof NewPullRequest>;
-
-export const Proposal = shape({
-  id: str,
-  summary: str,
-  pullRequestUrl: str,
-  comment: optional(Comment),
-  threadId: str,
-  patch: optional(Patch),
-  reply: str,
-  resolveThread: bool,
-  error: str,
-  requestedTool: str,
-  earlierComments: list(Comment),
-  replyHtml: str,
-  followUp: str,
-  followUpHtml: str,
-  closePullRequest: bool,
-  checkFailure: optional(CheckFailure),
-  rerun: bool,
-  summaryHtml: str,
-  investigationId: str,
-  otherPatches: list(Patch),
-  openPullRequest: optional(NewPullRequest),
-});
-export type Proposal = Infer<typeof Proposal>;
-
-export const PullRequest = shape({
-  repository: optional(Repository),
-  number: num,
-  title: str,
-  url: str,
-  approved: bool,
-  checksPassing: bool,
-  checksFailing: bool,
-  proposals: list(Proposal),
-  behind: bool,
-  checks: optional(Checks),
-  headOid: str,
-  mergeBy: enumOf<MergeBy>('MERGE_BY_UNSPECIFIED'),
-  files: list(FileDiff),
-  base: str,
-  conflicts: bool,
-  rebasing: bool,
-  rebased: bool,
-  merging: bool,
-  noProposalReason: str,
-  createdAt: time,
-});
-export type PullRequest = Infer<typeof PullRequest>;
-
-export const Agent = shape({
-  id: str,
-  title: str,
-  state: enumOf<AgentState>('AGENT_STATE_WORKING'),
-  pullRequestUrls: list(str),
-  reply: str,
-  replyHtml: str,
-  proposals: list(Proposal),
-  startedAt: time,
-});
-export type Agent = Infer<typeof Agent>;
-
-export const Cluster = shape({
-  // Oldest first.
-  pullRequests: list(PullRequest),
-  updatedAt: time,
-  name: str,
-  mergeBy: enumOf<MergeBy>('MERGE_BY_UNSPECIFIED'),
-  agents: list(Agent),
-});
-export type Cluster = Infer<typeof Cluster>;
+export type MergeBy = 'unspecified' | 'approval' | 'admin';
+export type AgentState = 'working' | 'queued' | 'waiting';
 
 // A moment of the view.
-export const Moment = shape({
+export interface Moment {
   // Each cluster by its key, the URL of its oldest pull request.
-  clusters: keyed(Cluster),
+  clusters: Readonly<Record<string, Cluster>>;
   // The clusters' keys, most recently updated first.
-  order: list(str),
-  login: str,
-  search: str,
+  order: readonly string[];
+  login: string;
+  search: string;
   // The agents acting on no open pull request.
-  agents: list(Agent),
+  agents: readonly Agent[];
   // The actions in progress, each by the key the frontend names it by (a proposal's ID, a
   // cluster's key, `merge` or `rebase` and a cluster's key, a pull request's URL, or an agent's
   // ID), with its route.
-  pending: keyed(str),
-});
-export type Moment = Infer<typeof Moment>;
+  pending: Readonly<Record<string, string>>;
+}
 
-// What the UI shows of a moment: the clusters in order, and the rest. A cluster's key, which
-// links to it, is the URL of its oldest pull request.
-export function shown(moment: Moment | undefined) {
-  if (!moment) return { clusters: [], agents: [], login: '', search: '' };
-  return {
-    clusters: moment.order.flatMap((key) => moment.clusters.get(key) ?? []),
-    agents: moment.agents,
-    login: moment.login,
-    search: moment.search,
-  };
+export interface Cluster {
+  // Oldest first.
+  readonly pullRequests: readonly PullRequest[];
+  readonly updatedAt?: number;
+  readonly name: string;
+  readonly mergeBy: MergeBy;
+  readonly agents: readonly Agent[];
+}
+
+export interface PullRequest {
+  readonly repository?: Repository;
+  readonly number: number;
+  readonly title: string;
+  readonly url: string;
+  readonly approved: boolean;
+  readonly checksPassing: boolean;
+  readonly checksFailing: boolean;
+  readonly proposals: readonly Proposal[];
+  readonly behind: boolean;
+  readonly checks?: Checks;
+  readonly headOid: string;
+  readonly mergeBy: MergeBy;
+  readonly files: readonly FileDiff[];
+  readonly base: string;
+  readonly conflicts: boolean;
+  readonly rebasing: boolean;
+  readonly rebased: boolean;
+  readonly merging: boolean;
+  readonly noProposalReason: string;
+  readonly createdAt?: number;
+}
+
+export interface Checks {
+  readonly total: number;
+  readonly done: number;
+  readonly failed: number;
+}
+
+export interface Repository {
+  readonly owner: string;
+  readonly name: string;
+}
+
+export interface Agent {
+  readonly id: string;
+  readonly title: string;
+  readonly state: AgentState;
+  readonly pullRequestUrls: readonly string[];
+  readonly reply: string;
+  readonly replyHtml: string;
+  readonly proposals: readonly Proposal[];
+  readonly startedAt?: number;
+}
+
+export interface Proposal {
+  readonly id: string;
+  readonly summary: string;
+  readonly pullRequestUrl: string;
+  readonly comment?: Comment;
+  readonly threadId: string;
+  readonly patch?: Patch;
+  readonly reply: string;
+  readonly resolveThread: boolean;
+  readonly error: string;
+  readonly requestedTool: string;
+  readonly earlierComments: readonly Comment[];
+  readonly replyHtml: string;
+  readonly followUp: string;
+  readonly followUpHtml: string;
+  readonly closePullRequest: boolean;
+  readonly checkFailure?: CheckFailure;
+  readonly rerun: boolean;
+  readonly summaryHtml: string;
+  readonly investigationId: string;
+  readonly otherPatches: readonly Patch[];
+  readonly openPullRequest?: NewPullRequest;
+}
+
+export interface NewPullRequest {
+  readonly repository: string;
+  readonly base: string;
+  readonly branch: string;
+  readonly title: string;
+  readonly body: string;
+  readonly bodyHtml: string;
+  readonly patch?: Patch;
+}
+
+export interface CheckFailure {
+  readonly id: string;
+  readonly headOid: string;
+  readonly checks: readonly FailedCheck[];
+}
+
+export interface FailedCheck {
+  readonly id: string;
+  readonly name: string;
+  readonly conclusion: string;
+  readonly url: string;
+  readonly workflowRunId: number;
+  readonly excerpt: string;
+}
+
+export interface Comment {
+  readonly id: string;
+  readonly author: string;
+  readonly body: string;
+  readonly url: string;
+  readonly bodyHtml: string;
+  readonly path: string;
+  readonly line: number;
+  readonly diffHunk: string;
+}
+
+export interface FileDiff {
+  readonly path: string;
+  readonly patch: string;
+}
+
+export interface Patch {
+  readonly diff: string;
+  readonly commitMessage: string;
+  readonly headOid: string;
+  readonly pullRequestUrl: string;
 }

@@ -68,14 +68,14 @@ export function ClusterReview(props: Props) {
         <Text
           style={[
             styles.title,
-            cluster.mergeBy === 'MERGE_BY_APPROVAL' && { color: '#4ADE80' },
-            cluster.mergeBy === 'MERGE_BY_ADMIN' && { color: t3.warning },
+            cluster.mergeBy === 'approval' && { color: '#4ADE80' },
+            cluster.mergeBy === 'admin' && { color: t3.warning },
           ]}
         >
           {cluster.name}
         </Text>
         <Text style={styles.meta}>
-          {updatedAt && timeAgo(updatedAt)}
+          {updatedAt !== undefined && timeAgo(new Date(updatedAt))}
         </Text>
         <View style={styles.row}>
           <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
