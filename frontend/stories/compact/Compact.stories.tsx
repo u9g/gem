@@ -3,7 +3,7 @@ import { CircleAlert, ExternalLink, MessageCircle } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Proposal } from '../../gen/gem_pb';
+import type { Node } from '../../db';
 import { bySubject, ProposalGroup } from '../../ProposalView';
 import {
   Bubble,
@@ -16,6 +16,7 @@ import {
   ToolRequestBanner,
 } from '../../surfaces';
 import { Button, Icon, proposalIcon, stepSentence, t3 } from '../../t3';
+import type { Proposal } from '../../shapes';
 import { proposals } from '../fixtures';
 import { long } from './long';
 
@@ -49,17 +50,17 @@ function Clamp({ max, children, align = 'left' }: { max: number; children: React
 }
 
 // Their comment as a message, cut to `max` pixels.
-function Comment({ proposal, max }: { proposal: Proposal; max: number }) {
-  const comment = proposal.comment!;
+function Comment({ proposal, max }: { proposal: Node<Proposal>; max: number }) {
+  const comment = proposal.node('comment')!;
   return (
     <View style={{ gap: 4 }}>
       <View style={styles.author}>
-        <Text style={styles.meta}>{comment.author}</Text>
+        <Text style={styles.meta}>{comment.str('author')}</Text>
         <Icon icon={ExternalLink} size={12} />
       </View>
       <Bubble side="left">
         <Clamp max={max}>
-          <Html html={comment.bodyHtml} />
+          <Html html={comment.str('bodyHtml')} />
         </Clamp>
       </Bubble>
     </View>
@@ -68,71 +69,71 @@ function Comment({ proposal, max }: { proposal: Proposal; max: number }) {
 
 // u9g's reply rendered as it will look on GitHub, cut to `max` pixels. Clicking it switches to the
 // editable text, and leaving the text renders it again.
-function Reply({ proposal, max }: { proposal: Proposal; max: number }) {
-  const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.reply, showing: 'suggested' });
-  if (!proposal.reply) return null;
+function Reply({ proposal, max }: { proposal: Node<Proposal>; max: number }) {
+  const [draft, setDraft] = useState<ReplyDraft>({ yours: proposal.str('reply'), showing: 'suggested' });
+  if (!proposal.str('reply')) return null;
   return (
     <View style={{ gap: 6 }}>
       <EditableReply
-        pr={proposal.pullRequestUrl}
-        suggested={proposal.reply}
-        html={proposal.replyHtml}
+        pr={proposal.str('pullRequestUrl')}
+        suggested={proposal.str('reply')}
+        html={proposal.str('replyHtml')}
         draft={draft}
         onChange={setDraft}
         max={max}
       />
-      {(proposal.resolveThread || proposal.closePullRequest) && (
+      {(proposal.bool('resolveThread') || proposal.bool('closePullRequest')) && (
         <View style={styles.rightRow}>
-          {proposal.resolveThread && <ResolvesTag />}
-          {proposal.closePullRequest && <ClosesTag />}
+          {proposal.bool('resolveThread') && <ResolvesTag />}
+          {proposal.bool('closePullRequest') && <ClosesTag />}
         </View>
       )}
     </View>
   );
 }
 
-function Change({ proposal, max }: { proposal: Proposal; max: number }) {
-  if (proposal.requestedTool) return <ToolRequestBanner proposal={proposal} />;
-  if (!proposal.patch) return null;
+function Change({ proposal, max }: { proposal: Node<Proposal>; max: number }) {
+  if (proposal.str('requestedTool')) return <ToolRequestBanner proposal={proposal} />;
+  if (!proposal.node('patch')) return null;
   return (
     <View style={{ gap: 6 }}>
-      <Text style={styles.meta}>{proposal.patch.commitMessage}</Text>
+      <Text style={styles.meta}>{proposal.node('patch')!.str('commitMessage')}</Text>
       <Clamp max={max}>
         <DiffSurface
-          diff={proposal.patch.diff}
-          header={proposal.error ? <Icon icon={CircleAlert} size={12} color={t3.deletion} /> : undefined}
+          diff={proposal.node('patch')!.str('diff')}
+          header={proposal.str('error') ? <Icon icon={CircleAlert} size={12} color={t3.deletion} /> : undefined}
         />
       </Clamp>
-      {proposal.error !== '' && <Text style={styles.error}>{proposal.error}</Text>}
+      {proposal.str('error') !== '' && <Text style={styles.error}>{proposal.str('error')}</Text>}
     </View>
   );
 }
 
-function Actions({ proposal }: { proposal: Proposal }) {
+function Actions({ proposal }: { proposal: Node<Proposal> }) {
   return (
     <View style={styles.buttons}>
       <Button label="Dismiss" />
-      {!proposal.requestedTool && <Button label={proposal.error ? 'Retry' : 'Approve'} variant="default" />}
+      {!proposal.str('requestedTool') && <Button label={proposal.str('error') ? 'Retry' : 'Approve'} variant="default" />}
     </View>
   );
 }
 
-function Summary({ proposal }: { proposal: Proposal }) {
+function Summary({ proposal }: { proposal: Node<Proposal> }) {
   return (
     <View style={styles.summaryRow}>
-      <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
-      <Text style={styles.summary}>{proposal.summary}</Text>
+      <Icon icon={proposalIcon(proposal)} color={proposal.str('error') ? t3.deletion : t3.muted} />
+      <Text style={styles.summary}>{proposal.str('summary')}</Text>
     </View>
   );
 }
 
 // The alternatives for one comment as a segmented control, labelled by what approving each does.
-function Options({ group, picked, onPick }: { group: Proposal[]; picked: number; onPick: (i: number) => void }) {
+function Options({ group, picked, onPick }: { group: Node<Proposal>[]; picked: number; onPick: (i: number) => void }) {
   if (group.length < 2) return null;
   return (
     <View style={styles.tabs}>
       {group.map((option, i) => (
-        <Pressable key={option.id} onPress={() => onPick(i)} style={[styles.tab, i === picked && styles.tabOn]}>
+        <Pressable key={option.str('id')} onPress={() => onPick(i)} style={[styles.tab, i === picked && styles.tabOn]}>
           <Text style={[styles.tabText, i === picked && { color: t3.foreground }]}>{stepSentence(option)}</Text>
         </Pressable>
       ))}
@@ -140,8 +141,8 @@ function Options({ group, picked, onPick }: { group: Proposal[]; picked: number;
   );
 }
 
-function Where({ proposal }: { proposal: Proposal }) {
-  return <Text style={styles.where}>agents#4821 · {proposal.threadId ? 'review thread' : 'conversation'}</Text>;
+function Where({ proposal }: { proposal: Node<Proposal> }) {
+  return <Text style={styles.where}>agents#4821 · {proposal.str('threadId') ? 'review thread' : 'conversation'}</Text>;
 }
 
 function Page({ children }: { children: ReactNode }) {
@@ -160,7 +161,7 @@ function Page({ children }: { children: ReactNode }) {
 // Today's layout with long parts cut: comments and replies to about eight lines, diffs to about
 // twelve, each with Show more. Replies render as GitHub will show them, so links are words, not
 // URLs; clicking one edits it. Alternatives are tabs instead of a stack.
-function ClampedGroup({ group }: { group: Proposal[] }) {
+function ClampedGroup({ group }: { group: Node<Proposal>[] }) {
   const [picked, setPicked] = useState(0);
   const proposal = group[picked];
   return (
@@ -171,11 +172,11 @@ function ClampedGroup({ group }: { group: Proposal[] }) {
           <Comment proposal={proposal} max={150} />
           <Options group={group} picked={picked} onPick={setPicked} />
           <Summary proposal={proposal} />
-          <Reply key={proposal.id} proposal={proposal} max={150} />
+          <Reply key={proposal.str('id')} proposal={proposal} max={150} />
           <Actions proposal={proposal} />
         </View>
         <View style={styles.right}>
-          {proposal.patch || proposal.requestedTool ? (
+          {proposal.node('patch') || proposal.str('requestedTool') ? (
             <Change proposal={proposal} max={230} />
           ) : (
             <View style={styles.noChange}>
@@ -193,7 +194,7 @@ function ClampedGroup({ group }: { group: Proposal[] }) {
 
 // Their side on the left, u9g's on the right: the reply moves next to the diff, so a reply-only
 // answer fills the right column instead of leaving it empty.
-function ThreadAnswerGroup({ group }: { group: Proposal[] }) {
+function ThreadAnswerGroup({ group }: { group: Node<Proposal>[] }) {
   const [picked, setPicked] = useState(0);
   const proposal = group[picked];
   return (
@@ -206,7 +207,7 @@ function ThreadAnswerGroup({ group }: { group: Proposal[] }) {
         <View style={styles.halfRight}>
           <Options group={group} picked={picked} onPick={setPicked} />
           <Summary proposal={proposal} />
-          <Reply key={proposal.id} proposal={proposal} max={150} />
+          <Reply key={proposal.str('id')} proposal={proposal} max={150} />
           <Change proposal={proposal} max={200} />
           <Actions proposal={proposal} />
         </View>
@@ -223,7 +224,7 @@ export const AClamped: StoryObj = {
   render: () => (
     <Page>
       {groups.map((group) => (
-        <ClampedGroup key={group[0].id} group={group} />
+        <ClampedGroup key={group[0].str('id')} group={group} />
       ))}
     </Page>
   ),
@@ -233,7 +234,7 @@ export const BThreadAnswer: StoryObj = {
   render: () => (
     <Page>
       {groups.map((group) => (
-        <ThreadAnswerGroup key={group[0].id} group={group} />
+        <ThreadAnswerGroup key={group[0].str('id')} group={group} />
       ))}
     </Page>
   ),
@@ -244,7 +245,7 @@ export const CDigest: StoryObj = {
   render: () => (
     <Page>
       {groups.map((group) => (
-        <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
+        <ProposalGroup key={group[0].str('id')} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
       ))}
     </Page>
   ),

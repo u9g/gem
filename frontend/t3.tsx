@@ -15,7 +15,8 @@ import {
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-import type { Proposal, PullRequest } from './gen/gem_pb';
+import type { Node } from './db';
+import type { Proposal, PullRequest } from './shapes';
 
 // T3 Code's dark-theme roles, over this app's background and text colors.
 export const t3 = {
@@ -54,23 +55,25 @@ export function visibleMarkdown(markdown: string): string {
 }
 
 // T3 Code's work-log grouping: one sentence for what approving does.
-export function stepSentence(proposal: Proposal): string {
+export function stepSentence(proposal: Node<Proposal>): string {
+  const patch = proposal.node('patch');
+  const others = proposal.list('otherPatches').length;
   const phrases: string[] = [];
-  if (proposal.followUp) phrases.push('start a follow-up agent');
-  if (proposal.patch) {
-    const n = diffFiles(proposal.patch.diff).length;
+  if (proposal.str('followUp')) phrases.push('start a follow-up agent');
+  if (patch) {
+    const n = diffFiles(patch.str('diff')).length;
     phrases.push(`change ${n} ${n === 1 ? 'file' : 'files'}`);
   }
-  if (proposal.otherPatches.length) {
-    const n = proposal.otherPatches.length;
+  if (others) {
+    const n = others;
     phrases.push(`change ${n} other ${n === 1 ? 'pull request' : 'pull requests'}`);
   }
-  if (proposal.openPullRequest) phrases.push('open a pull request');
-  if (proposal.reply) phrases.push(proposal.threadId ? 'reply in thread' : 'quote reply');
-  if (proposal.resolveThread) phrases.push('resolve');
-  if (proposal.rerun) phrases.push('rerun failed jobs');
-  if (proposal.closePullRequest) phrases.push('close the pull request');
-  if (proposal.requestedTool) phrases.push('needs a new tool');
+  if (proposal.has('openPullRequest')) phrases.push('open a pull request');
+  if (proposal.str('reply')) phrases.push(proposal.str('threadId') ? 'reply in thread' : 'quote reply');
+  if (proposal.bool('resolveThread')) phrases.push('resolve');
+  if (proposal.bool('rerun')) phrases.push('rerun failed jobs');
+  if (proposal.bool('closePullRequest')) phrases.push('close the pull request');
+  if (proposal.str('requestedTool')) phrases.push('needs a new tool');
   const sentence =
     phrases.length > 1 ? `${phrases.slice(0, -1).join(', ')} and ${phrases[phrases.length - 1]}` : phrases[0] ?? '';
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
@@ -207,70 +210,72 @@ export function firstLine(markdown: string): string {
 }
 
 // Each step as its own expandable row, the way T3 Code lists a turn's tool calls.
-export function Steps({ proposal }: { proposal: Proposal }) {
+export function Steps({ proposal }: { proposal: Node<Proposal> }) {
+  const patch = proposal.node('patch');
+  const reply = proposal.str('reply');
+  const threadId = proposal.str('threadId');
+  const requestedTool = proposal.str('requestedTool');
   return (
     <>
-      {proposal.patch &&
-        diffFiles(proposal.patch.diff).map((file) => (
+      {patch &&
+        diffFiles(patch.str('diff')).map((file) => (
           <Row
             key={file.path}
             icon={SquarePen}
             label={basename(file.path)}
             trailing={<DiffStat added={file.added} removed={file.removed} />}
           >
-            <Text style={styles.meta}>{proposal.patch!.commitMessage}</Text>
-            <Code>{proposal.patch!.diff}</Code>
+            <Text style={styles.meta}>{patch.str('commitMessage')}</Text>
+            <Code>{patch.str('diff')}</Code>
           </Row>
         ))}
-      {proposal.otherPatches.flatMap((patch) =>
-        diffFiles(patch.diff).map((file) => (
+      {proposal.list('otherPatches').flatMap((other) =>
+        diffFiles(other.str('diff')).map((file) => (
           <Row
-            key={`${patch.pullRequestUrl} ${file.path}`}
+            key={`${other.str('pullRequestUrl')} ${file.path}`}
             icon={SquarePen}
             label={basename(file.path)}
             trailing={<DiffStat added={file.added} removed={file.removed} />}
           >
             <Text style={styles.meta}>
-              {patch.pullRequestUrl} · {patch.commitMessage}
+              {other.str('pullRequestUrl')} · {other.str('commitMessage')}
             </Text>
-            <Code>{patch.diff}</Code>
+            <Code>{other.str('diff')}</Code>
           </Row>
         )),
       )}
-      {proposal.reply !== '' && (
-        <Row
-          icon={proposal.threadId ? MessageCircle : MessageSquareQuote}
-          label={proposal.threadId ? 'Reply in thread' : 'Quote reply'}
-        >
-          <Markdown>{proposal.reply}</Markdown>
+      {reply !== '' && (
+        <Row icon={threadId ? MessageCircle : MessageSquareQuote} label={threadId ? 'Reply in thread' : 'Quote reply'}>
+          <Markdown>{reply}</Markdown>
         </Row>
       )}
-      {proposal.resolveThread && <Row icon={CheckCheck} label="Resolve thread" />}
-      {proposal.closePullRequest && <Row icon={GitPullRequestClosed} label="Close pull request" />}
-      {proposal.requestedTool !== '' && (
+      {proposal.bool('resolveThread') && <Row icon={CheckCheck} label="Resolve thread" />}
+      {proposal.bool('closePullRequest') && <Row icon={GitPullRequestClosed} label="Close pull request" />}
+      {requestedTool !== '' && (
         <Row icon={Hammer} label="Needs a tool">
-          <Markdown>{proposal.requestedTool}</Markdown>
+          <Markdown>{requestedTool}</Markdown>
         </Row>
       )}
     </>
   );
 }
 
-export function proposalIcon(proposal: Proposal) {
-  if (proposal.error) return CircleAlert;
-  if (proposal.requestedTool) return Hammer;
-  if (proposal.patch || proposal.otherPatches.length) return SquarePen;
-  if (proposal.openPullRequest) return GitPullRequestCreate;
-  if (proposal.followUp) return Bot;
-  if (proposal.rerun) return RotateCcw;
+export function proposalIcon(proposal: Node<Proposal>) {
+  if (proposal.str('error')) return CircleAlert;
+  if (proposal.str('requestedTool')) return Hammer;
+  if (proposal.has('patch') || proposal.list('otherPatches').length) return SquarePen;
+  if (proposal.has('openPullRequest')) return GitPullRequestCreate;
+  if (proposal.str('followUp')) return Bot;
+  if (proposal.bool('rerun')) return RotateCcw;
   return MessageCircle;
 }
 
-export function ErrorLine({ proposal }: { proposal: Proposal }) {
-  if (!proposal.error) return null;
+export function ErrorLine({ proposal }: { proposal: Node<Proposal> }) {
+  const error = proposal.str('error');
+  if (!error) return null;
   return (
     <Row icon={CircleAlert} label="Approval failed" labelColor={t3.deletion}>
-      <Code>{proposal.error}</Code>
+      <Code>{error}</Code>
     </Row>
   );
 }
@@ -279,20 +284,21 @@ export function CommentRow({
   item,
   trailing,
 }: {
-  item: { pr: PullRequest; proposal: Proposal };
+  item: { pr: Node<PullRequest>; proposal: Node<Proposal> };
   trailing?: ReactNode;
 }) {
-  const comment = item.proposal.comment!;
+  const comment = item.proposal.node('comment')!;
+  const body = comment.str('body');
   return (
     <Row
       trailing={trailing}
       label={
         <>
-          <Text style={{ color: t3.foreground }}>{comment.author}</Text> {firstLine(comment.body)}
+          <Text style={{ color: t3.foreground }}>{comment.str('author')}</Text> {firstLine(body)}
         </>
       }
     >
-      <Markdown>{visibleMarkdown(comment.body)}</Markdown>
+      <Markdown>{visibleMarkdown(body)}</Markdown>
     </Row>
   );
 }

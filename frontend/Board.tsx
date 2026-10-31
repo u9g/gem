@@ -3,7 +3,8 @@ import { type ReactNode, useEffect } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AgentRow, PhoneClusterRow, section, sections } from './ClusterRow';
-import type { Agent, PullRequestCluster } from './gen/gem_pb';
+import type { Node } from './db';
+import { type Agent, type Cluster, clusterKey } from './shapes';
 import { Icon, t3 } from './t3';
 
 const COLUMN_MIN_WIDTH = 220;
@@ -25,13 +26,14 @@ export function Board({
   children,
 }: {
   // The clusters shown, after filters.
-  clusters: PullRequestCluster[];
+  clusters: Node<Cluster>[];
   // The agents acting on no open pull request.
-  agents: Agent[];
-  // The oldest PR's URL of the open cluster.
+  agents: Node<Agent>[];
+  // The key, the oldest PR's URL, of the open cluster.
   openUrl?: string;
   openAgent?: string;
-  onOpenCluster: (cluster: PullRequestCluster) => void;
+  // Called with the cluster's key.
+  onOpenCluster: (key: string) => void;
   onOpenAgent: (id: string) => void;
   onClose: () => void;
   wide?: boolean;
@@ -51,10 +53,10 @@ export function Board({
           <Column name="Agents" count={agents.length}>
             {agents.map((agent) => (
               <AgentRow
-                key={agent.id}
+                key={agent.str('id')}
                 agent={agent}
-                selected={agent.id === openAgent}
-                onPress={() => onOpenAgent(agent.id)}
+                selected={agent.str('id') === openAgent}
+                onPress={onOpenAgent}
               />
             ))}
           </Column>
@@ -65,11 +67,11 @@ export function Board({
             <Column key={name} name={name} count={listed.length} urgent={name === 'Needs you'}>
               {listed.map((cluster) => (
                 <PhoneClusterRow
-                  key={cluster.pullRequests[0].url}
+                  key={clusterKey(cluster)}
                   cluster={cluster}
                   board
-                  selected={cluster.pullRequests[0].url === openUrl}
-                  onPress={() => onOpenCluster(cluster)}
+                  selected={clusterKey(cluster) === openUrl}
+                  onPress={onOpenCluster}
                 />
               ))}
             </Column>

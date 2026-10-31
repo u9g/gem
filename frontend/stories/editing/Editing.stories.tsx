@@ -36,7 +36,7 @@ function GhostIcon({ icon, label, onPress }: { icon: typeof Copy; label: string;
 
 function Conversation({ quote, children }: { quote?: boolean; children: ReactNode }) {
   const proposal = quote ? quoteReply : threadReply;
-  const comment = proposal.comment!;
+  const comment = proposal.node('comment')!;
   return (
     <View style={styles.conversation}>
       {!quote && <Theirs comment={comment} />}
@@ -51,7 +51,7 @@ function Conversation({ quote, children }: { quote?: boolean; children: ReactNod
 // the text differs from the suggestion, and an "Edited" label says so even without hovering.
 function InPlace({ quote = false, edited }: { quote?: boolean; edited?: string }) {
   const proposal = quote ? quoteReply : threadReply;
-  const draft = useDraft(proposal.reply, edited);
+  const draft = useDraft(proposal.str('reply'), edited);
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
   return (
@@ -84,7 +84,7 @@ function InPlace({ quote = false, edited }: { quote?: boolean; edited?: string }
 // the bubble being edited is highlighted, and Save or Cancel closes it.
 function Composer({ quote = false, edited, editing: startEditing = false }: { quote?: boolean; edited?: string; editing?: boolean }) {
   const proposal = quote ? quoteReply : threadReply;
-  const draft = useDraft(proposal.reply, edited);
+  const draft = useDraft(proposal.str('reply'), edited);
   const [editing, setEditing] = useState(startEditing ? draft.text : undefined);
   const [hovered, setHovered] = useState(false);
   return (
@@ -134,14 +134,14 @@ function Composer({ quote = false, edited, editing: startEditing = false }: { qu
 function TwoVersions({ quote = false, edited }: { quote?: boolean; edited?: string }) {
   const proposal = quote ? quoteReply : threadReply;
   const [draft, setDraft] = useState<ReplyDraft>(
-    edited ? { yours: edited, showing: 'yours' } : { yours: proposal.reply, showing: 'suggested' },
+    edited ? { yours: edited, showing: 'yours' } : { yours: proposal.str('reply'), showing: 'suggested' },
   );
   return (
     <Conversation quote={quote}>
       <EditableReply
-        pr={proposal.pullRequestUrl}
-        suggested={proposal.reply}
-        html={proposal.replyHtml}
+        pr={proposal.str('pullRequestUrl')}
+        suggested={proposal.str('reply')}
+        html={proposal.str('replyHtml')}
         draft={draft}
         onChange={setDraft}
       />

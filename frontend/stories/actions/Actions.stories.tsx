@@ -15,16 +15,19 @@ import {
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { Proposal } from '../../gen/gem_pb';
+import type { Node } from '../../db';
+import type { Proposal } from '../../shapes';
 import { Bubble, DiffSurface, Quote, ResolvesTag, Theirs, ToolRequestBanner } from '../../surfaces';
 import { basename, Button, Code, DiffStat, diffFiles, Icon, Markdown, Row, t3, visibleMarkdown } from '../../t3';
 import { proposals } from '../fixtures';
 
-const patchProposal = proposals[0];
-const threadReply = proposals[0];
-const quoteReply = proposals[3];
-const toolRequest = proposals[4];
-const failed = proposals[5];
+// By ID: the fixtures' order changes as proposals are added.
+const byId = (id: string) => proposals.find((p) => p.str('id') === id)!;
+const patchProposal = byId('patch-reply-resolve');
+const threadReply = byId('patch-reply-resolve');
+const quoteReply = byId('quote-reply');
+const toolRequest = byId('tool-request');
+const failed = byId('failed');
 
 // Lays the approaches for one action side by side, each in a sidebar-wide column.
 function Approaches({ children }: { children: ReactNode }) {
@@ -45,9 +48,9 @@ function Approach({ name, note, children }: { name: string; note: string; childr
 
 // T3 Code's end-of-turn changed-files card: a header with the totals and Open diff, then a
 // folder tree. The diff itself opens in a side panel.
-function ChangedFilesCard({ proposal }: { proposal: Proposal }) {
+function ChangedFilesCard({ proposal }: { proposal: Node<Proposal> }) {
   const [open, setOpen] = useState(false);
-  const files = diffFiles(proposal.patch!.diff);
+  const files = diffFiles(proposal.node('patch')!.str('diff'));
   const dirs = files[0].path.split('/').slice(0, -1);
   return (
     <View style={{ gap: 8 }}>
@@ -78,9 +81,9 @@ function ChangedFilesCard({ proposal }: { proposal: Proposal }) {
             <DiffStat added={file.added} removed={file.removed} />
           </View>
         ))}
-        <Text style={styles.commit}>{proposal.patch!.commitMessage}</Text>
+        <Text style={styles.commit}>{proposal.node('patch')!.str('commitMessage')}</Text>
       </View>
-      {open && <DiffSurface diff={proposal.patch!.diff} />}
+      {open && <DiffSurface diff={proposal.node('patch')!.str('diff')} />}
     </View>
   );
 }
@@ -89,7 +92,7 @@ function PatchStory() {
   return (
     <Approaches>
       <Approach name="A · File row" note="Today: one row per file, raw diff on click">
-        {diffFiles(patchProposal.patch!.diff).map((file) => (
+        {diffFiles(patchProposal.node('patch')!.str('diff')).map((file) => (
           <Row
             key={file.path}
             icon={SquarePen}
@@ -97,14 +100,14 @@ function PatchStory() {
             trailing={<DiffStat added={file.added} removed={file.removed} />}
             initiallyOpen
           >
-            <Text style={styles.meta}>{patchProposal.patch!.commitMessage}</Text>
-            <Code>{patchProposal.patch!.diff}</Code>
+            <Text style={styles.meta}>{patchProposal.node('patch')!.str('commitMessage')}</Text>
+            <Code>{patchProposal.node('patch')!.str('diff')}</Code>
           </Row>
         ))}
       </Approach>
       <Approach name="B · Diff surface" note="T3 Code's diff renderer: tinted lines, line numbers, scrolls sideways">
-        <Text style={[styles.meta, { marginBottom: 6 }]}>{patchProposal.patch!.commitMessage}</Text>
-        <DiffSurface diff={patchProposal.patch!.diff} />
+        <Text style={[styles.meta, { marginBottom: 6 }]}>{patchProposal.node('patch')!.str('commitMessage')}</Text>
+        <DiffSurface diff={patchProposal.node('patch')!.str('diff')} />
       </Approach>
       <Approach name="C · Changed-files card" note="T3 Code's end-of-turn card; Open diff shows the diff">
         <ChangedFilesCard proposal={patchProposal} />
@@ -116,18 +119,18 @@ function PatchStory() {
 // ---------- Replies ----------
 
 function ThreadReplyStory() {
-  const comment = threadReply.comment!;
+  const comment = threadReply.node('comment')!;
   return (
     <Approaches>
       <Approach name="A · Step row" note="Today: one row, the reply on click">
         <Row icon={MessageCircle} label="Reply in thread" initiallyOpen>
-          <Markdown>{threadReply.reply}</Markdown>
+          <Markdown>{threadReply.str('reply')}</Markdown>
         </Row>
       </Approach>
       <Approach name="B · Conversation" note="Their comment, then your reply as a T3 Code message bubble">
         <Theirs comment={comment} />
         <Bubble>
-          <Markdown>{threadReply.reply}</Markdown>
+          <Markdown>{threadReply.str('reply')}</Markdown>
         </Bubble>
       </Approach>
       <Approach name="C · One-line preview" note="The reply's first words in the row; click for the rest">
@@ -135,11 +138,11 @@ function ThreadReplyStory() {
           icon={CornerDownRight}
           label={
             <>
-              <Text style={{ color: t3.foreground }}>{comment.author}</Text> {`“${threadReply.reply.trim()}”`}
+              <Text style={{ color: t3.foreground }}>{comment.str('author')}</Text> {`“${threadReply.str('reply').trim()}”`}
             </>
           }
         >
-          <Markdown>{threadReply.reply}</Markdown>
+          <Markdown>{threadReply.str('reply')}</Markdown>
         </Row>
       </Approach>
     </Approaches>
@@ -147,10 +150,10 @@ function ThreadReplyStory() {
 }
 
 function QuoteReplyStory() {
-  const comment = quoteReply.comment!;
-  const firstParagraph = visibleMarkdown(comment.body).split('\n\n')[0].replace(/[#*]/g, '').trim();
+  const comment = quoteReply.node('comment')!;
+  const firstParagraph = visibleMarkdown(comment.str('body')).split('\n\n')[0].replace(/[#*]/g, '').trim();
   // The reply after the quote it opens with.
-  const answer = quoteReply.reply.replace(/^(>.*\n)+\n/, '');
+  const answer = quoteReply.str('reply').replace(/^(>.*\n)+\n/, '');
   return (
     <Approaches>
       <Approach name="A · Step row" note="Today: one row, the reply on click">
@@ -168,7 +171,7 @@ function QuoteReplyStory() {
         <View style={styles.chip}>
           <Icon icon={MessageSquareQuote} size={12} />
           <Text numberOfLines={1} style={styles.chipText}>
-            {comment.author}: {firstParagraph}
+            {comment.str('author')}: {firstParagraph}
           </Text>
         </View>
         <Markdown>{answer}</Markdown>
@@ -195,7 +198,7 @@ function ResolveStory() {
       </Approach>
       <Approach name="C · Outcome line" note="A muted line under the reply bubble, like a status under a message">
         <Bubble>
-          <Markdown>{threadReply.reply}</Markdown>
+          <Markdown>{threadReply.str('reply')}</Markdown>
         </Bubble>
         <View style={styles.outcome}>
           <Icon icon={CircleCheck} size={12} color={t3.addition} />
@@ -209,12 +212,12 @@ function ResolveStory() {
 // ---------- Tool request ----------
 
 function ToolRequestStory() {
-  const [name, ...rest] = toolRequest.summary.split(':');
+  const [name, ...rest] = toolRequest.str('summary').split(':');
   return (
     <Approaches>
       <Approach name="A · Step row" note="Today: one row, the request on click">
         <Row icon={Hammer} label="Needs a tool" initiallyOpen>
-          <Markdown>{toolRequest.requestedTool}</Markdown>
+          <Markdown>{toolRequest.str('requestedTool')}</Markdown>
         </Row>
       </Approach>
       <Approach name="B · Warning banner" note="T3 Code's warning banner: amber label, tool name in mono, the why below">
@@ -228,7 +231,7 @@ function ToolRequestStory() {
             </>
           }
         >
-          <Markdown>{toolRequest.requestedTool}</Markdown>
+          <Markdown>{toolRequest.str('requestedTool')}</Markdown>
         </Row>
       </Approach>
     </Approaches>
@@ -238,12 +241,12 @@ function ToolRequestStory() {
 // ---------- Failed approval ----------
 
 function ErrorStory() {
-  const [command, ...output] = failed.error.split(': ');
+  const [command, ...output] = failed.str('error').split(': ');
   return (
     <Approaches>
       <Approach name="A · Red row" note="Today: a red row, the error on click">
         <Row icon={CircleAlert} label="Approval failed" labelColor={t3.deletion} initiallyOpen>
-          <Code>{failed.error}</Code>
+          <Code>{failed.str('error')}</Code>
         </Row>
       </Approach>
       <Approach name="B · Command block" note="T3 Code's command block for what failed, its output below in red">
@@ -258,7 +261,7 @@ function ErrorStory() {
       <Approach name="C · Failed step" note="The step that failed gets the error icon; the rest stay as they are">
         <Row
           icon={SquarePen}
-          label={basename(diffFiles(failed.patch!.diff)[0].path)}
+          label={basename(diffFiles(failed.node('patch')!.str('diff'))[0].path)}
           labelColor={t3.deletion}
           trailing={<Icon icon={CircleAlert} size={12} color={t3.deletion} />}
           initiallyOpen

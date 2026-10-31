@@ -1,7 +1,6 @@
-import { create } from '@bufbuild/protobuf';
-
-import { type Proposal, ProposalSchema } from '../../gen/gem_pb';
-import { pr } from '../fixtures';
+import type { Input } from '../../memory';
+import type { Proposal } from '../../shapes';
+import { pr, stored } from '../fixtures';
 
 // A made-up conversation as long as real ones get: a bot comment with a details block, badge and
 // footer, and a reply full of links. bodyHtml and replyHtml are what GitHub's markdown API renders.
@@ -14,8 +13,8 @@ const comment = {
   url: `${pr.url}#discussion_r9`,
 };
 
-export const long: Proposal[] = [
-  create(ProposalSchema, {
+const longInputs: Input<Proposal>[] = [
+  {
     id: 'long-reply',
     summary: 'Reply that awaiting retries misses the last frame and offer a StreamDropped event instead',
     summaryHtml: "<p dir=\"auto\">Reply that awaiting retries misses the last frame and offer a StreamDropped event instead</p>",
@@ -24,8 +23,8 @@ export const long: Proposal[] = [
     threadId: 'thread-9',
     reply: "I tried awaiting the retry in `_on_session_close`, but that doesn't catch the last frame either, because the retry isn't scheduled yet when the session closes. The stream only reports the drop after its read times out, which takes about 2s ([`_read_stream`](https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/tts/stream_adapter.py#L114-L142)). So when we await pending retries and then close, the retry starts after we've closed.\n\nIf \"await\" means keeping the room open until playout finishes (which [`_on_playout_finished`](https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/voice/agent_activity.py#L929-L935) already does), the two sides end up waiting on each other: playout waits for the retry and the retry waits for the stream timeout. That's why the close here is bounded at 3s.\n\nThe clean version is for the TTS stream to report the drop right away, which means a new `StreamDropped` event in `tts.SynthesizeStream`. It touches every TTS plugin, so I kept this PR to the retry itself. Happy to do that as a follow-up.\n",
     replyHtml: "<p dir=\"auto\">I tried awaiting the retry in <code class=\"notranslate\">_on_session_close</code>, but that doesn't catch the last frame either, because the retry isn't scheduled yet when the session closes. The stream only reports the drop after its read times out, which takes about 2s (<a href=\"https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/tts/stream_adapter.py#L114-L142\"><code class=\"notranslate\">_read_stream</code></a>). So when we await pending retries and then close, the retry starts after we've closed.</p>\n<p dir=\"auto\">If \"await\" means keeping the room open until playout finishes (which <a href=\"https://github.com/livekit/agents/blob/main/livekit-agents/livekit/agents/voice/agent_activity.py#L929-L935\"><code class=\"notranslate\">_on_playout_finished</code></a> already does), the two sides end up waiting on each other: playout waits for the retry and the retry waits for the stream timeout. That's why the close here is bounded at 3s.</p>\n<p dir=\"auto\">The clean version is for the TTS stream to report the drop right away, which means a new <code class=\"notranslate\">StreamDropped</code> event in <code class=\"notranslate\">tts.SynthesizeStream</code>. It touches every TTS plugin, so I kept this PR to the retry itself. Happy to do that as a follow-up.</p>",
-  }),
-  create(ProposalSchema, {
+  },
+  {
     id: 'long-patch',
     summary: 'Wait for pending TTS retries before closing the room, reply, and resolve',
     summaryHtml: "<p dir=\"auto\">Wait for pending TTS retries before closing the room, reply, and resolve</p>",
@@ -36,8 +35,8 @@ export const long: Proposal[] = [
     reply: "Good catch. `_on_session_close` now waits for pending TTS retries, bounded by `conn_options.timeout`, before closing the room.\n",
     replyHtml: "<p dir=\"auto\">Good catch. <code class=\"notranslate\">_on_session_close</code> now waits for pending TTS retries, bounded by <code class=\"notranslate\">conn_options.timeout</code>, before closing the room.</p>",
     resolveThread: true,
-  }),
-  create(ProposalSchema, {
+  },
+  {
     id: 'long-follow-up',
     summary: 'Hand the StreamDropped event to a follow-up agent, reply that it follows, and resolve',
     summaryHtml: "<p dir=\"auto\">Hand the StreamDropped event to a follow-up agent, reply that it follows, and resolve</p>",
@@ -49,5 +48,7 @@ export const long: Proposal[] = [
     resolveThread: true,
     followUp: "Add a `StreamDropped` event to `tts.SynthesizeStream` so a dropped TTS stream is reported right away instead of after the read timeout, then use it to retry before the session closes.\n\nRepositories, checked out under `~/code`:\n- **livekit/agents**: stack on the branch of [#4821](https://github.com/livekit/agents/pull/4821). Emit `StreamDropped` from `SynthesizeStream._read_stream` when the connection closes early, and have `synthesize_with_retry` retry on it.\n- **livekit/agents-js**: the same event and retry in `tts/stream_adapter.ts`, branching off `main`.\n\nVerify with `uv run pytest tests/test_tts.py -k retry` in agents and `pnpm test tts` in agents-js. Open one draft PR per repository that links back to #4821.\n",
     followUpHtml: "<p dir=\"auto\">Add a <code class=\"notranslate\">StreamDropped</code> event to <code class=\"notranslate\">tts.SynthesizeStream</code> so a dropped TTS stream is reported right away instead of after the read timeout, then use it to retry before the session closes.</p>\n<p dir=\"auto\">Repositories, checked out under <code class=\"notranslate\">~/code</code>:</p>\n<ul dir=\"auto\">\n<li><strong>livekit/agents</strong>: stack on the branch of <a href=\"https://github.com/livekit/agents/pull/4821\" data-hovercard-type=\"pull_request\" data-hovercard-url=\"/livekit/agents/pull/4821/hovercard\">#4821</a>. Emit <code class=\"notranslate\">StreamDropped</code> from <code class=\"notranslate\">SynthesizeStream._read_stream</code> when the connection closes early, and have <code class=\"notranslate\">synthesize_with_retry</code> retry on it.</li>\n<li><strong>livekit/agents-js</strong>: the same event and retry in <code class=\"notranslate\">tts/stream_adapter.ts</code>, branching off <code class=\"notranslate\">main</code>.</li>\n</ul>\n<p dir=\"auto\">Verify with <code class=\"notranslate\">uv run pytest tests/test_tts.py -k retry</code> in agents and <code class=\"notranslate\">pnpm test tts</code> in agents-js. Open one draft PR per repository that links back to <a class=\"issue-link js-issue-link\" data-error-text=\"Failed to load title\" data-id=\"3942855948\" data-permission-text=\"Title is private\" data-url=\"https://github.com/livekit/agents/issues/4821\" data-hovercard-type=\"pull_request\" data-hovercard-url=\"/livekit/agents/pull/4821/hovercard\" href=\"https://github.com/livekit/agents/pull/4821\">#4821</a>.</p>",
-  }),
+  },
 ];
+
+export const long = longInputs.map((proposal) => stored<Proposal>(proposal));

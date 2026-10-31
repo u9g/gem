@@ -1,28 +1,31 @@
-import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { FileCode, MessagesSquare } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { ClusterAgents, type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
-import { MergeBy, type Proposal, type PullRequest } from './gen/gem_pb';
+import type { Node } from './db';
 import { Composer } from './AgentView';
 import { bySubject, ProposalGroup } from './ProposalView';
-import { ChecksIcon, StatusLine } from './PullRequestList';
+import { ChecksIcon, rebasable, ref, StatusLine } from './PullRequestList';
+import { clusterKey, mergeBy, type Proposal, type PullRequest } from './shapes';
 import { parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
 // file: top-level comments and failed checks.
-export type Section = { pr: PullRequest; path: string; groups: Proposal[][] };
+export type Section = { pr: Node<PullRequest>; path: string; groups: Node<Proposal>[][] };
 
 // A review comment's file, else the first file its proposal changes.
-function pathOf(proposal: Proposal): string {
-  return proposal.comment?.path || diffFiles(proposal.patch?.diff ?? '')[0]?.path || '';
+function pathOf(proposal: Node<Proposal>): string {
+  return proposal.node('comment')?.str('path') || diffFiles(proposal.node('patch')?.str('diff') ?? '')[0]?.path || '';
 }
 
-export function sectionsOf(pr: PullRequest): Section[] {
-  const byPath = new Map<string, Proposal[][]>();
-  for (const group of bySubject(pr.proposals)) {
+// The line a proposal's review comment is on, or 0.
+const lineOf = (proposal: Node<Proposal>) => proposal.node('comment')?.num('line') ?? 0;
+
+export function sectionsOf(pr: Node<PullRequest>): Section[] {
+  const byPath = new Map<string, Node<Proposal>[][]>();
+  for (const group of bySubject(pr.list('proposals'))) {
     const path = pathOf(group[0]);
     byPath.set(path, [...(byPath.get(path) ?? []), group]);
   }
@@ -31,11 +34,11 @@ export function sectionsOf(pr: PullRequest): Section[] {
     .map(([path, groups]) => ({
       pr,
       path,
-      groups: groups.sort((a, b) => (a[0].comment?.line ?? 0) - (b[0].comment?.line ?? 0)),
+      groups: groups.sort((a, b) => lineOf(a[0]) - lineOf(b[0])),
     }));
 }
 
-export const anchor = (section: Section) => `${section.pr.url}:${section.path}`;
+export const anchor = (section: Section) => `${section.pr.str('url')}:${section.path}`;
 
 function label(path: string): string {
   return path ? path.split('/').slice(-2).join('/') : 'Conversation';
@@ -54,26 +57,29 @@ type Props = Parameters<typeof ClusterView>[0] & {
 // the line its review comment is on.
 export function ClusterReview(props: Props) {
   const { cluster, onOpenAgent, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
-  const sections = cluster.pullRequests.flatMap(sectionsOf);
+  const pullRequests = cluster.list('pullRequests');
+  const sections = pullRequests.flatMap(sectionsOf);
   const [chosen, setChosen] = useState<string>();
   // Approving or dismissing the last conversation on a file removes its section.
   const section = sections.find((s) => anchor(s) === chosen) ?? sections[0];
-  const restarting = busy?.has(cluster.pullRequests[0].url);
-  const merging = busy?.has(`merge ${cluster.pullRequests[0].url}`);
+  const key = clusterKey(cluster);
+  const restarting = busy?.has(key);
+  const merging = busy?.has(`merge ${key}`);
+  const updatedAt = cluster.time('updatedAt');
   return (
     <View style={styles.page}>
       <View style={styles.sidebar}>
         <Text
           style={[
             styles.title,
-            cluster.mergeBy === MergeBy.APPROVAL && { color: '#4ADE80' },
-            cluster.mergeBy === MergeBy.ADMIN && { color: t3.warning },
+            mergeBy(cluster) === 'MERGE_BY_APPROVAL' && { color: '#4ADE80' },
+            mergeBy(cluster) === 'MERGE_BY_ADMIN' && { color: t3.warning },
           ]}
         >
-          {cluster.name}
+          {cluster.str('name')}
         </Text>
         <Text style={styles.meta}>
-          {cluster.updatedAt && timeAgo(timestampDate(cluster.updatedAt))}
+          {updatedAt && timeAgo(updatedAt)}
         </Text>
         <View style={styles.row}>
           <RebaseClusterButton cluster={cluster} busy={busy} onRebaseCluster={onRebaseCluster} />
@@ -85,24 +91,28 @@ export function ClusterReview(props: Props) {
         </View>
         <MergeBanner cluster={cluster} busy={busy} onMerge={onMerge} stacked />
         <View style={styles.tree}>
-          {cluster.pullRequests.map((pr) => (
-            <View key={pr.url}>
-              <Pressable style={styles.pr} onPress={() => Linking.openURL(pr.url)}>
+          {pullRequests.map((pr) => {
+            const url = pr.str('url');
+            const failed = pr.node('checks')?.num('failed') ?? 0;
+            const proposals = pr.list('proposals').length;
+            return (
+            <View key={url}>
+              <Pressable style={styles.pr} onPress={() => Linking.openURL(url)}>
                 <ChecksIcon pr={pr} size={12} />
                 <Text numberOfLines={1} style={styles.ref}>
-                  {pr.repository?.name}#{pr.number}
+                  {ref(pr)}
                 </Text>
-                {pr.checks && pr.checks.failed > 0 && <Text style={styles.failed}>{pr.checks.failed} failed</Text>}
-                {(pr.behind || pr.rebasing || pr.rebased) && (
+                {failed > 0 && <Text style={styles.failed}>{failed} failed</Text>}
+                {rebasable(pr) && (
                   <Button
                     label="Rebase"
-                    disabled={pr.rebasing || pr.rebased || busy?.has(pr.url)}
-                    onPress={() => onRebase(pr.url)}
+                    disabled={pr.bool('rebasing') || pr.bool('rebased') || busy?.has(url)}
+                    onPress={() => onRebase(url)}
                   />
                 )}
-                {pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
+                {proposals > 0 && <Text style={styles.count}>{proposals}</Text>}
               </Pressable>
-              <StatusLine pr={pr} agents={cluster.agents} />
+              <StatusLine pr={pr} agents={cluster.list('agents')} />
               {sections.filter((s) => s.pr === pr).map((s) => (
                 <Pressable
                   key={s.path}
@@ -121,9 +131,10 @@ export function ClusterReview(props: Props) {
                 </Pressable>
               ))}
             </View>
-          ))}
+            );
+          })}
         </View>
-        <ClusterAgents agents={cluster.agents} onOpenAgent={onOpenAgent} />
+        <ClusterAgents agents={cluster.list('agents')} onOpenAgent={onOpenAgent} />
         {onMessage && <Composer placeholder="Ask an agent about this cluster…" onSend={onMessage} />}
       </View>
       <View nativeID={MAIN} style={styles.main}>
@@ -141,22 +152,24 @@ export function ClusterReview(props: Props) {
 // comment's own hunk ends on. Conversations on no line of the diff, or on a deleted one, come before
 // it; without a diff, they are all there is.
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
-  const patch = section.pr.files.find((f) => f.path === section.path)?.patch ?? '';
+  const file = section.pr.list('files').find((f) => f.str('path') === section.path);
+  const patch = file?.str('patch') ?? '';
   // GitHub's hunks for the file come without a file header.
   const lines = parseDiff(`--- a/${section.path}\n+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
-  const placed = new Map<number, Proposal[][]>();
-  const unplaced: Proposal[][] = [];
+  const placed = new Map<number, Node<Proposal>[][]>();
+  const unplaced: Node<Proposal>[][] = [];
   for (const group of section.groups) {
-    const comment = group[0].comment;
+    const comment = group[0].node('comment');
+    const line = comment?.num('line') ?? 0;
     // The commented line ends the hunk, after which only "\ No newline" markers can follow.
-    const last = comment?.diffHunk.split('\n').filter((l) => !l.startsWith('\\')).at(-1) ?? '';
-    const at = lines.findIndex((l) => l.kind !== 'del' && l.number === comment?.line && l.text === last.slice(1));
-    if (comment?.line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
+    const last = comment?.str('diffHunk').split('\n').filter((l) => !l.startsWith('\\')).at(-1) ?? '';
+    const at = lines.findIndex((l) => l.kind !== 'del' && l.number === line && l.text === last.slice(1));
+    if (line && !last.startsWith('-') && at >= 0) placed.set(at, [...(placed.get(at) ?? []), group]);
     else unplaced.push(group);
   }
-  const thread = (group: Proposal[], inline: boolean) => (
+  const thread = (group: Node<Proposal>[], inline: boolean) => (
     <ProposalGroup
-      key={group[0].id}
+      key={group[0].str('id')}
       proposals={group}
       inline={inline}
       anchored={!inline}
@@ -169,9 +182,7 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
   return (
     <View style={styles.fileView}>
       <View style={styles.bar}>
-        <Text style={styles.barRef}>
-          {section.pr.repository?.name}#{section.pr.number}
-        </Text>
+        <Text style={styles.barRef}>{ref(section.pr)}</Text>
         <Text numberOfLines={1} style={styles.barPath}>
           {section.path || 'Conversation'}
         </Text>

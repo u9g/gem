@@ -4,7 +4,8 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import './ProposalView.css';
 
-import type { Proposal } from './gen/gem_pb';
+import type { Node } from './db';
+import type { Proposal } from './shapes';
 import {
   Clamp,
   ClosesTag,
@@ -25,11 +26,11 @@ import { Button, DiffStat, diffFiles, Icon, proposalIcon, stepSentence, t3, useP
 
 // Proposals answering the same conversation, or the same failed checks, are alternatives: approving
 // one clears the rest.
-export function bySubject(list: Proposal[]): Proposal[][] {
-  const groups = new Map<string, Proposal[]>();
+export function bySubject(list: Node<Proposal>[]): Node<Proposal>[][] {
+  const groups = new Map<string, Node<Proposal>[]>();
   for (const proposal of list) {
-    const checks = proposal.checkFailure?.checks.map((c) => c.id).sort().join(',');
-    const id = proposal.comment?.id ?? checks ?? proposal.id;
+    const checks = proposal.node('checkFailure')?.list('checks').map((c) => c.str('id')).sort().join(',');
+    const id = proposal.node('comment')?.str('id') ?? checks ?? proposal.str('id');
     groups.set(id, [...(groups.get(id) ?? []), proposal]);
   }
   return [...groups.values()];
@@ -65,7 +66,7 @@ export function ProposalGroup({
   onDismiss,
   onInvestigate,
 }: {
-  proposals: Proposal[];
+  proposals: Node<Proposal>[];
   anchored?: boolean;
   inline?: boolean;
   // Proposals being approved or dismissed.
@@ -81,9 +82,10 @@ export function ProposalGroup({
   // Approving or dismissing an alternative removes it from the list.
   const index = Math.min(picked, proposals.length - 1);
   const proposal = proposals[index];
+  const id = proposal.str('id');
   return (
     <ProposalView
-      key={proposal.id}
+      key={id}
       proposal={proposal}
       anchored={anchored || inline}
       inline={inline}
@@ -105,12 +107,12 @@ export function ProposalGroup({
           </View>
         )
       }
-      busy={busy?.has(proposal.id) === true}
+      busy={busy?.has(id) === true}
       // Approving one alternative clears the others.
-      disabled={proposals.some((p) => busy?.has(p.id))}
-      onApprove={(reply, followUp, diff) => onApprove(proposal.id, reply, followUp, diff)}
-      onDismiss={() => onDismiss(proposal.id)}
-      onInvestigate={onInvestigate && (() => onInvestigate(proposal.id))}
+      disabled={proposals.some((p) => busy?.has(p.str('id')))}
+      onApprove={(reply, followUp, diff) => onApprove(id, reply, followUp, diff)}
+      onDismiss={() => onDismiss(id)}
+      onInvestigate={onInvestigate && (() => onInvestigate(id))}
     />
   );
 }
@@ -141,7 +143,7 @@ function ProposalView({
   onDismiss,
   onInvestigate,
 }: {
-  proposal: Proposal;
+  proposal: Node<Proposal>;
   anchored: boolean;
   inline: boolean;
   stepper: ReactNode;
@@ -153,32 +155,42 @@ function ProposalView({
 }) {
   const login = useContext(Login);
   const phone = usePhone();
-  const [draft, setDraft] = useDraft<ReplyDraft>(`${proposal.id} reply`, { yours: proposal.reply, showing: 'suggested' });
-  const [followUp, setFollowUp] = useDraft<ReplyDraft>(`${proposal.id} follow-up`, {
-    yours: proposal.followUp,
+  const id = proposal.str('id');
+  const reply = proposal.str('reply');
+  const suggestedFollowUp = proposal.str('followUp');
+  const patch = proposal.node('patch');
+  const otherPatches = proposal.list('otherPatches');
+  const openPullRequest = proposal.node('openPullRequest');
+  const checkFailure = proposal.node('checkFailure');
+  const error = proposal.str('error');
+  const requestedTool = proposal.str('requestedTool');
+  const pullRequestUrl = proposal.str('pullRequestUrl');
+  const [draft, setDraft] = useDraft<ReplyDraft>(`${id} reply`, { yours: reply, showing: 'suggested' });
+  const [followUp, setFollowUp] = useDraft<ReplyDraft>(`${id} follow-up`, {
+    yours: suggestedFollowUp,
     showing: 'suggested',
   });
-  const [diff, setDiff] = useDraft(`${proposal.id} diff`, proposal.patch?.diff ?? '');
+  const [diff, setDiff] = useDraft(`${id} diff`, patch?.str('diff') ?? '');
   const files = diffFiles(diff);
-  const [repository, number] = pullRequestName(proposal.pullRequestUrl);
-  const comment = proposal.comment;
+  const [repository, number] = pullRequestName(pullRequestUrl);
+  const comment = proposal.node('comment');
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
   const investigate = onInvestigate &&
-    proposal.rerun &&
-    !proposal.patch &&
-    !proposal.otherPatches.length &&
-    !proposal.openPullRequest &&
-    !proposal.followUp && (
+    proposal.bool('rerun') &&
+    !patch &&
+    !otherPatches.length &&
+    !openPullRequest &&
+    !suggestedFollowUp && (
       <Button label="Rerun & investigate" large={phone} disabled={disabled} onPress={onInvestigate} />
     );
   const actions = (
     <>
       <Button label="Dismiss" large={phone} disabled={disabled} onPress={onDismiss} />
       {!phone && investigate}
-      {!proposal.requestedTool && (
+      {!requestedTool && (
         <Button
-          label={busy ? 'Working…' : proposal.error ? 'Retry' : 'Approve'}
+          label={busy ? 'Working…' : error ? 'Retry' : 'Approve'}
           variant="default"
           large={phone}
           disabled={disabled}
@@ -186,7 +198,7 @@ function ProposalView({
             onApprove(
               draft.showing === 'yours' ? draft.yours : '',
               followUp.showing === 'yours' ? followUp.yours : '',
-              diff === proposal.patch?.diff ? '' : diff,
+              diff === patch?.str('diff') ? '' : diff,
             )
           }
         />
@@ -194,19 +206,19 @@ function ProposalView({
     </>
   );
   return (
-    <View style={[styles.band, inline && styles.bandInline, proposal.error !== '' && styles.bandError]}>
+    <View style={[styles.band, inline && styles.bandInline, error !== '' && styles.bandError]}>
       <View style={styles.header}>
-        <Icon icon={proposalIcon(proposal)} color={proposal.error ? t3.deletion : t3.muted} />
+        <Icon icon={proposalIcon(proposal)} color={error ? t3.deletion : t3.muted} />
         <View style={styles.summary}>
-          <Html html={proposal.summaryHtml} className={phone ? undefined : 'one-line'} style={summaryHtml} />
+          <Html html={proposal.str('summaryHtml')} className={phone ? undefined : 'one-line'} style={summaryHtml} />
         </View>
         {stepper}
         {!phone && actions}
       </View>
-      {proposal.error !== '' && (
+      {error !== '' && (
         <View style={styles.errorRow}>
           <Icon icon={CircleAlert} size={12} color={t3.deletion} />
-          <Text style={styles.error}>{proposal.error}</Text>
+          <Text style={styles.error}>{error}</Text>
         </View>
       )}
       <View style={[styles.columns, stacked && styles.stacked]}>
@@ -214,44 +226,44 @@ function ProposalView({
           <Text style={styles.where}>
             {repository}#{number} ·{' '}
             {comment
-              ? proposal.threadId
+              ? proposal.str('threadId')
                 ? 'review thread'
                 : 'conversation'
-              : proposal.checkFailure
+              : checkFailure
                 ? 'checks'
                 : 'investigation'}
           </Text>
-          {anchored && !inline && comment?.diffHunk && (
+          {anchored && !inline && comment?.str('diffHunk') && (
             <DiffSurface
-              diff={anchorDiff(comment.path, comment.diffHunk)}
-              header={<Text style={styles.meta}>{comment.line ? `line ${comment.line}` : 'outdated'}</Text>}
+              diff={anchorDiff(comment.str('path'), comment.str('diffHunk'))}
+              header={<Text style={styles.meta}>{comment.num('line') ? `line ${comment.num('line')}` : 'outdated'}</Text>}
             />
           )}
-          {proposal.earlierComments.map((earlier) => (
-            <Theirs key={earlier.id} comment={earlier} max={anchored ? undefined : 110} />
+          {proposal.list('earlierComments').map((earlier) => (
+            <Theirs key={earlier.str('id')} comment={earlier} max={anchored ? undefined : 110} />
           ))}
           {comment && (
             <Theirs
               comment={comment}
               max={anchored ? undefined : 110}
               trailing={
-                <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
+                <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.str('url'))}>
                   <Icon icon={ExternalLink} size={12} />
                 </Pressable>
               }
             />
           )}
-          {proposal.checkFailure && <FailedChecks failure={proposal.checkFailure} />}
+          {checkFailure && <FailedChecks failure={checkFailure} />}
         </View>
         {comment && (
           <View style={[styles.column, stacked && styles.columnStacked]}>
-            {proposal.reply ? (
+            {reply ? (
               <>
                 <Text style={[styles.meta, styles.author]}>{login}</Text>
                 <EditableReply
-                  pr={proposal.pullRequestUrl}
-                  suggested={proposal.reply}
-                  html={proposal.replyHtml}
+                  pr={pullRequestUrl}
+                  suggested={reply}
+                  html={proposal.str('replyHtml')}
                   draft={draft}
                   onChange={setDraft}
                   max={anchored ? undefined : 110}
@@ -260,68 +272,68 @@ function ProposalView({
             ) : (
               <Text style={styles.meta}>No reply</Text>
             )}
-            {(proposal.resolveThread || proposal.closePullRequest) && (
+            {(proposal.bool('resolveThread') || proposal.bool('closePullRequest')) && (
               <View style={styles.rightRow}>
-                {proposal.resolveThread && <ResolvesTag />}
-                {proposal.closePullRequest && <ClosesTag />}
+                {proposal.bool('resolveThread') && <ResolvesTag />}
+                {proposal.bool('closePullRequest') && <ClosesTag />}
               </View>
             )}
           </View>
         )}
         <View style={[styles.column, stacked && styles.columnStacked]}>
-          {proposal.followUp !== '' && (
+          {suggestedFollowUp !== '' && (
             <FollowUpCard
-              pr={proposal.pullRequestUrl}
-              suggested={proposal.followUp}
-              html={proposal.followUpHtml}
+              pr={pullRequestUrl}
+              suggested={suggestedFollowUp}
+              html={proposal.str('followUpHtml')}
               draft={followUp}
               onChange={setFollowUp}
             />
           )}
-          {proposal.patch ? (
+          {patch ? (
             <>
               <Text style={styles.meta}>
-                {proposal.patch.commitMessage}
+                {patch.str('commitMessage')}
                 {'  '}
                 <DiffStat
                   added={files.reduce((n, f) => n + f.added, 0)}
                   removed={files.reduce((n, f) => n + f.removed, 0)}
                 />
               </Text>
-              {clamp(130, <DiffSurface diff={diff} suggested={proposal.patch.diff} onChange={setDiff} />)}
+              {clamp(130, <DiffSurface diff={diff} suggested={patch.str('diff')} onChange={setDiff} />)}
             </>
-          ) : proposal.requestedTool ? (
+          ) : requestedTool ? (
             <ToolRequestBanner proposal={proposal} />
-          ) : proposal.rerun && proposal.checkFailure ? (
-            <RerunCard failure={proposal.checkFailure} />
+          ) : proposal.bool('rerun') && checkFailure ? (
+            <RerunCard failure={checkFailure} />
           ) : (
-            !proposal.followUp &&
-            !proposal.otherPatches.length &&
-            !proposal.openPullRequest && (
+            !suggestedFollowUp &&
+            !otherPatches.length &&
+            !openPullRequest && (
               <Text style={styles.meta}>No code change: {stepSentence(proposal).toLowerCase()}</Text>
             )
           )}
-          {proposal.otherPatches.map((patch) => {
-            const [repository, number] = pullRequestName(patch.pullRequestUrl);
-            const files = diffFiles(patch.diff);
+          {otherPatches.map((other) => {
+            const [repository, number] = pullRequestName(other.str('pullRequestUrl'));
+            const files = diffFiles(other.str('diff'));
             return (
-              <View key={patch.pullRequestUrl} style={styles.column}>
+              <View key={other.str('pullRequestUrl')} style={styles.column}>
                 <Text style={styles.where}>
                   {repository}#{number}
                 </Text>
                 <Text style={styles.meta}>
-                  {patch.commitMessage}
+                  {other.str('commitMessage')}
                   {'  '}
                   <DiffStat
                     added={files.reduce((n, f) => n + f.added, 0)}
                     removed={files.reduce((n, f) => n + f.removed, 0)}
                   />
                 </Text>
-                {clamp(130, <DiffSurface diff={patch.diff} />)}
+                {clamp(130, <DiffSurface diff={other.str('diff')} />)}
               </View>
             );
           })}
-          {proposal.openPullRequest && <NewPullRequestCard pullRequest={proposal.openPullRequest} />}
+          {openPullRequest && <NewPullRequestCard pullRequest={openPullRequest} />}
         </View>
       </View>
       {phone && <View style={styles.phoneActions}>{actions}</View>}

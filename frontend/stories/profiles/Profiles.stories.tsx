@@ -1,47 +1,46 @@
-import { create } from '@bufbuild/protobuf';
-import { timestampFromDate } from '@bufbuild/protobuf/wkt';
 import type { Meta, StoryObj } from '@storybook/react-native-web-vite';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Board } from '../../Board';
-import { PhoneClusterRow } from '../../ClusterRow';
-import { type PullRequestCluster, PullRequestClusterSchema, PullRequestSchema } from '../../gen/gem_pb';
+import { clusterName, PhoneClusterRow } from '../../ClusterRow';
+import { DbContext, useDb } from '../../db';
+import { type Input, MemoryDb } from '../../memory';
 import { ProfileChip, ProfileForm, ProfileSheet, ProfileTitle } from '../../Profiles';
 import { PullRequestList } from '../../PullRequestList';
 import { type Profile, type Project } from '../../server';
+import { type Cluster, clusterKey, view } from '../../shapes';
 import { Login } from '../../surfaces';
 import { t3 } from '../../t3';
-import { clusterMergeBy, mergeBy, proposals } from '../fixtures';
+import { clusterMergeBy, mergeBy, proposalInputs as proposals } from '../fixtures';
 
-// Switching profiles connects to another gem server, so the whole cluster list changes.
-const minutesAgo = (minutes: number) => timestampFromDate(new Date(Date.now() - minutes * 60_000));
+// Switching profiles connects to another gem server, so the whole cluster list changes: each
+// profile here has a database of its own.
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
 const cluster = (
   name: string,
   updated: number,
   prs: { owner: string; repo: string; number: number; title: string; waiting?: number; approved?: boolean; checksPassing?: boolean; checksFailing?: boolean }[],
-) =>
-  create(PullRequestClusterSchema, {
+): Input<Cluster> =>
+  ({
     name,
     updatedAt: minutesAgo(updated),
     mergeBy: clusterMergeBy(prs.map((pr) => ({ mergeBy: mergeBy(pr) }))),
-    pullRequests: prs.map(({ owner, repo, number, title, waiting = 0, ...status }) =>
-      create(PullRequestSchema, {
-        repository: { owner, name: repo },
-        number,
-        title,
-        url: `https://github.com/${owner}/${repo}/pull/${number}`,
-        proposals: proposals.slice(0, waiting),
-        mergeBy: mergeBy(status),
-        ...status,
-      }),
-    ),
+    pullRequests: prs.map(({ owner, repo, number, title, waiting = 0, ...status }) => ({
+      repository: { owner, name: repo },
+      number,
+      title,
+      url: `https://github.com/${owner}/${repo}/pull/${number}`,
+      proposals: proposals.slice(0, waiting),
+      mergeBy: mergeBy(status),
+      ...status,
+    })),
   });
 
 // Made-up profiles: the same user's work split by organization, and a second GitHub account,
 // each with the clusters its server would list.
-const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: PullRequestCluster[] })[] = [
+const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: Input<Cluster>[] })[] = [
   {
     id: 'livekit',
     name: 'LiveKit',
@@ -97,29 +96,33 @@ const fixtures: (Omit<Profile, keyof Project | 'room'> & { clusters: PullRequest
 
 const project: Project = { url: 'wss://example.livekit.cloud', apiKey: 'key', apiSecret: 'secret' };
 const profiles: Profile[] = fixtures.map(({ clusters, ...profile }) => ({ ...project, ...profile, room: 'gem' }));
-const clustersOf = (profile: Profile) => fixtures.find((f) => f.id === profile.id)!.clusters;
+const dbs = new Map(fixtures.map((f) => [f.id, new MemoryDb({ clusters: f.clusters, login: f.login })]));
 
 function useProfiles() {
   const [profile, setProfile] = useState(profiles[1]);
-  const [selectedUrl, setSelectedUrl] = useState<string>();
-  const clusters = clustersOf(profile);
   return {
     profile,
-    clusters,
-    selectedUrl,
-    selected: clusters.find((c) => c.pullRequests[0].url === selectedUrl),
-    select: (c?: PullRequestCluster) => setSelectedUrl(c?.pullRequests[0].url),
-    switchTo: (id: string) => {
-      setProfile(profiles.find((p) => p.id === id)!);
-      setSelectedUrl(undefined);
-    },
+    db: dbs.get(profile.id)!,
+    switchTo: (id: string) => setProfile(profiles.find((p) => p.id === id)!),
   };
 }
 
 // The desktop app: the `profile:` chip among the filters over the board, and the picked cluster's
 // PRs in the drawer.
 function Desktop() {
-  const { profile, clusters, selectedUrl, selected, select, switchTo } = useProfiles();
+  const { profile, db, switchTo } = useProfiles();
+  return (
+    <DbContext value={db}>
+      {/* Another profile's board starts with nothing picked. */}
+      <DesktopBoard key={profile.id} profile={profile} switchTo={switchTo} />
+    </DbContext>
+  );
+}
+
+function DesktopBoard({ profile, switchTo }: { profile: Profile; switchTo: (id: string) => void }) {
+  const { clusters } = useDb(view);
+  const [selectedUrl, setSelectedUrl] = useState<string>();
+  const selected = clusters.find((c) => clusterKey(c) === selectedUrl);
   return (
     <Login value={profile.login!}>
       <View style={styles.container}>
@@ -132,14 +135,14 @@ function Desktop() {
           clusters={clusters}
           agents={[]}
           openUrl={selectedUrl}
-          onOpenCluster={select}
+          onOpenCluster={setSelectedUrl}
           onOpenAgent={() => {}}
-          onClose={() => select(undefined)}
+          onClose={() => setSelectedUrl(undefined)}
         >
           {selected && (
             <View style={styles.column}>
-              <Text style={styles.title}>{selected.name || selected.pullRequests[0].title}</Text>
-              <PullRequestList pullRequests={selected.pullRequests} agents={[]} />
+              <Text style={styles.title}>{clusterName(selected)}</Text>
+              <PullRequestList pullRequests={selected.list('pullRequests')} agents={[]} />
             </View>
           )}
         </Board>
@@ -150,7 +153,16 @@ function Desktop() {
 
 // The phone's cluster list, titled by the profile; tapping the title opens the sheet.
 function Phone() {
-  const { profile, clusters, switchTo } = useProfiles();
+  const { profile, db, switchTo } = useProfiles();
+  return (
+    <DbContext value={db}>
+      <PhoneList profile={profile} switchTo={switchTo} />
+    </DbContext>
+  );
+}
+
+function PhoneList({ profile, switchTo }: { profile: Profile; switchTo: (id: string) => void }) {
+  const { clusters } = useDb(view);
   return (
     <Login value={profile.login!}>
       <View style={styles.phoneFrame}>
@@ -162,7 +174,7 @@ function Phone() {
           </View>
           <ScrollView>
             {clusters.map((c) => (
-              <PhoneClusterRow key={c.pullRequests[0].url} cluster={c} onPress={() => {}} />
+              <PhoneClusterRow key={clusterKey(c)} cluster={c} onPress={() => {}} />
             ))}
           </ScrollView>
         </View>

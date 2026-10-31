@@ -1,10 +1,10 @@
-import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { Check, Copy } from 'lucide-react';
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { active } from './agents';
-import { type Agent, AgentState, MergeBy, type PullRequest, type PullRequestCluster } from './gen/gem_pb';
+import type { Node } from './db';
+import { type Agent, agentState, type Cluster, clusterKey, mergeBy, type PullRequest } from './shapes';
 import { t3 } from './t3';
 
 export const units: [Intl.RelativeTimeFormatUnit, number][] = [
@@ -30,19 +30,24 @@ export const sections = ['Needs you', 'Ready to merge', 'Agents working', 'Check
 
 // An agent waiting on the user, or with proposals for them to review, puts its cluster in front of
 // them, as a rebase or merge waiting on them does.
-export function section(cluster: PullRequestCluster): (typeof sections)[number] {
-  const prs = cluster.pullRequests;
-  const working = cluster.agents.filter(active);
-  const running = (pr: PullRequest) => (pr.checks?.total ?? 0) > (pr.checks?.done ?? 0);
-  const answered = (pr: PullRequest) => working.some((agent) => agent.pullRequestUrls.includes(pr.url));
-  const needsYou = (pr: PullRequest) =>
-    pr.proposals.length > 0 ||
-    (pr.behind && !pr.rebasing && !pr.rebased) ||
-    ((pr.rebasing || pr.merging) && !answered(pr)) ||
-    (pr.checksFailing && !running(pr) && !answered(pr));
-  if (cluster.agents.some((agent) => !active(agent) || agent.proposals.length > 0) || prs.some(needsYou)) return 'Needs you';
-  if (working.length > 0 || prs.some((pr) => pr.rebased)) return 'Agents working';
-  if (cluster.mergeBy !== MergeBy.UNSPECIFIED) return 'Ready to merge';
+export function section(cluster: Node<Cluster>): (typeof sections)[number] {
+  const prs = cluster.list('pullRequests');
+  const agents = cluster.list('agents');
+  const working = agents.filter(active);
+  const running = (pr: Node<PullRequest>) => {
+    const checks = pr.node('checks');
+    return (checks?.num('total') ?? 0) > (checks?.num('done') ?? 0);
+  };
+  const answered = (pr: Node<PullRequest>) =>
+    working.some((agent) => agent.strings('pullRequestUrls').includes(pr.str('url')));
+  const needsYou = (pr: Node<PullRequest>) =>
+    pr.list('proposals').length > 0 ||
+    (pr.bool('behind') && !pr.bool('rebasing') && !pr.bool('rebased')) ||
+    ((pr.bool('rebasing') || pr.bool('merging')) && !answered(pr)) ||
+    (pr.bool('checksFailing') && !running(pr) && !answered(pr));
+  if (agents.some((agent) => !active(agent) || agent.list('proposals').length > 0) || prs.some(needsYou)) return 'Needs you';
+  if (working.length > 0 || prs.some((pr) => pr.bool('rebased'))) return 'Agents working';
+  if (mergeBy(cluster) !== 'MERGE_BY_UNSPECIFIED') return 'Ready to merge';
   if (prs.some(running)) return 'Checks running';
   return 'Waiting on review';
 }
@@ -51,10 +56,10 @@ const SEGMENT_WIDTH = 36;
 const SEGMENT_GAP = 4;
 
 // Each PR's checks, review and merge, as three bars: green done, red failed, amber in progress.
-function segments(pr: PullRequest): (string | undefined)[] {
-  const checks = pr.checksFailing ? t3.deletion : pr.checksPassing ? t3.addition : t3.warning;
-  const review = pr.approved ? t3.addition : undefined;
-  const merge = pr.merging ? t3.warning : undefined;
+function segments(pr: Node<PullRequest>): (string | undefined)[] {
+  const checks = pr.bool('checksFailing') ? t3.deletion : pr.bool('checksPassing') ? t3.addition : t3.warning;
+  const review = pr.bool('approved') ? t3.addition : undefined;
+  const merge = pr.bool('merging') ? t3.warning : undefined;
   return [checks, review, merge];
 }
 
@@ -72,11 +77,11 @@ export function Legend() {
 }
 
 // "<url> + <url> - <name>": every PR of the cluster, then the name its card shows.
-function CopyCluster({ cluster }: { cluster: PullRequestCluster }) {
+function CopyCluster({ cluster }: { cluster: Node<Cluster> }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    const urls = cluster.pullRequests.map((pr) => pr.url).join(' + ');
-    await navigator.clipboard.writeText(`${urls} - ${cluster.name || cluster.pullRequests[0].title}`);
+    const urls = cluster.list('pullRequests').map((pr) => pr.str('url')).join(' + ');
+    await navigator.clipboard.writeText(`${urls} - ${clusterName(cluster)}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -88,94 +93,133 @@ function CopyCluster({ cluster }: { cluster: PullRequestCluster }) {
   );
 }
 
+// The name a cluster's thread gave it, or before then its oldest pull request's title.
+export function clusterName(cluster: Node<Cluster>): string {
+  return cluster.str('name') || (cluster.list('pullRequests')[0]?.str('title') ?? '');
+}
+
 // A cluster sized for a thumb: its name, a button that copies its links, and how long ago, over one
 // line per PR with its repository, number and bars. On the board, where columns are narrow, the name
 // wraps to a second line, the bars shorten, and a PR's waiting proposals are counted; the open
-// cluster's card is outlined.
-export function PhoneClusterRow({
+// cluster's card is outlined. A card renders again only when its cluster changed, as `cluster` is
+// the same node until then.
+export const PhoneClusterRow = memo(function PhoneClusterRow({
   cluster,
   board = false,
   selected = false,
   onPress,
 }: {
-  cluster: PullRequestCluster;
+  cluster: Node<Cluster>;
   board?: boolean;
   selected?: boolean;
-  onPress: () => void;
+  // Called with the cluster's key.
+  onPress: (key: string) => void;
 }) {
+  const by = mergeBy(cluster);
+  const updatedAt = cluster.time('updatedAt');
   return (
-    <Pressable onPress={onPress} style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}>
+    <Pressable
+      onPress={() => onPress(clusterKey(cluster))}
+      style={[styles.card, board && styles.boardCard, selected && styles.cardSelected]}
+    >
       <View style={styles.cardTop}>
-        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, cluster.mergeBy === MergeBy.APPROVAL && styles.ready, cluster.mergeBy === MergeBy.ADMIN && styles.forceable]}>
-          {cluster.name || cluster.pullRequests[0].title}
+        <Text numberOfLines={board ? 2 : 1} style={[styles.cardName, board && styles.boardCardName, by === 'MERGE_BY_APPROVAL' && styles.ready, by === 'MERGE_BY_ADMIN' && styles.forceable]}>
+          {clusterName(cluster)}
         </Text>
         <CopyCluster cluster={cluster} />
-        {cluster.updatedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(cluster.updatedAt))}</Text>}
+        {updatedAt && <Text style={styles.rowTime}>{shortAgo(updatedAt)}</Text>}
       </View>
-      {cluster.pullRequests.map((pr) => (
-        <View key={pr.url} style={styles.pipe}>
-          <Text numberOfLines={1} style={styles.pipeRef}>
-            <Text style={styles.pipeRepo}>{pr.repository?.name}</Text> #{pr.number}
-          </Text>
-          {board && pr.proposals.length > 0 && <Text style={styles.count}>{pr.proposals.length}</Text>}
-          {segments(pr).map((color, i) => (
-            <View
-              key={i}
-              style={[styles.segment, board && styles.boardSegment, { backgroundColor: color ?? 'rgba(255, 255, 255, 0.08)' }]}
-            />
-          ))}
-        </View>
+      {cluster.list('pullRequests').map((pr) => (
+        <PullRequestPipe key={pr.str('url')} pr={pr} board={board} />
       ))}
     </Pressable>
   );
-}
+});
+
+// One PR of a card: its repository and number, and its bars.
+const PullRequestPipe = memo(function PullRequestPipe({ pr, board }: { pr: Node<PullRequest>; board: boolean }) {
+  const proposals = pr.list('proposals').length;
+  return (
+    <View style={styles.pipe}>
+      <Text numberOfLines={1} style={styles.pipeRef}>
+        <Text style={styles.pipeRepo}>{pr.node('repository')?.str('name')}</Text> #{pr.num('number')}
+      </Text>
+      {board && proposals > 0 && <Text style={styles.count}>{proposals}</Text>}
+      {segments(pr).map((color, i) => (
+        <View
+          key={i}
+          style={[styles.segment, board && styles.boardSegment, { backgroundColor: color ?? 'rgba(255, 255, 255, 0.08)' }]}
+        />
+      ))}
+    </View>
+  );
+});
 
 // A spinner while the agent runs, a dot while it is queued, and a slot as wide when it waits on the
 // user, so titles line up.
-function AgentMark({ agent }: { agent: Agent }) {
-  if (agent.state === AgentState.WORKING) return <ActivityIndicator size={10} color="#8FA8F5" />;
-  if (agent.state === AgentState.QUEUED) return <View style={[styles.mark, styles.queued]} />;
+function AgentMark({ agent }: { agent: Node<Agent> }) {
+  const state = agentState(agent);
+  if (state === 'AGENT_STATE_WORKING') return <ActivityIndicator size={10} color="#8FA8F5" />;
+  if (state === 'AGENT_STATE_QUEUED') return <View style={[styles.mark, styles.queued]} />;
   return <View style={styles.mark} />;
 }
 
-function ToReview({ agent }: { agent: Agent }) {
-  const count = agent.proposals.length;
+function ToReview({ agent }: { agent: Node<Agent> }) {
+  const count = agent.list('proposals').length;
   if (count === 0) return null;
   return <Text style={styles.toReview}>{count} to review</Text>;
 }
 
 // One line per agent, like a cluster's.
-export function AgentRow({ agent, selected, onPress }: { agent: Agent; selected: boolean; onPress: () => void }) {
+export const AgentRow = memo(function AgentRow({
+  agent,
+  selected,
+  onPress,
+}: {
+  agent: Node<Agent>;
+  selected: boolean;
+  // Called with the agent's ID.
+  onPress: (id: string) => void;
+}) {
   const [hovered, setHovered] = useState(false);
+  const startedAt = agent.time('startedAt');
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => onPress(agent.str('id'))}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       style={[styles.row, (selected || hovered) && styles.rowActive]}
     >
       <AgentMark agent={agent} />
       <Text numberOfLines={1} style={styles.rowName}>
-        {agent.title}
+        {agent.str('title')}
       </Text>
       <ToReview agent={agent} />
-      {agent.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(agent.startedAt))}</Text>}
+      {startedAt && <Text style={styles.rowTime}>{shortAgo(startedAt)}</Text>}
     </Pressable>
   );
-}
+});
 
-export function PhoneAgentRow({ agent, onPress }: { agent: Agent; onPress: () => void }) {
+export const PhoneAgentRow = memo(function PhoneAgentRow({
+  agent,
+  onPress,
+}: {
+  agent: Node<Agent>;
+  // Called with the agent's ID.
+  onPress: (id: string) => void;
+}) {
+  const startedAt = agent.time('startedAt');
   return (
-    <Pressable onPress={onPress} style={styles.phoneRow}>
+    <Pressable onPress={() => onPress(agent.str('id'))} style={styles.phoneRow}>
       <AgentMark agent={agent} />
       <Text numberOfLines={1} style={[styles.phoneRowName, { flex: 1 }]}>
-        {agent.title}
+        {agent.str('title')}
       </Text>
       <ToReview agent={agent} />
-      {agent.startedAt && <Text style={styles.rowTime}>{shortAgo(timestampDate(agent.startedAt))}</Text>}
+      {startedAt && <Text style={styles.rowTime}>{shortAgo(startedAt)}</Text>}
     </Pressable>
   );
-}
+});
 
 // Above the agents and the clusters, when there are agents.
 export function SectionTitle({ children }: { children: string }) {

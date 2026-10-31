@@ -15,7 +15,8 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 
 import 'github-markdown-css/github-markdown-dark.css';
 
-import type { CheckFailure, Comment, NewPullRequest, Proposal } from './gen/gem_pb';
+import type { Node } from './db';
+import type { CheckFailure, Comment, NewPullRequest, Proposal } from './shapes';
 import { languageOf, Tokens, useTokens } from './highlight';
 import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
@@ -367,21 +368,22 @@ export function Quote({ children, lines }: { children: string; lines?: number })
 // A comment in the conversation, as a message from its author: the user's on the right like the reply,
 // everyone else's on the left. The body is GitHub's own rendering, styled with GitHub's stylesheet,
 // cut to `max` pixels when given.
-export function Theirs({ comment, trailing, max }: { comment: Comment; trailing?: ReactNode; max?: number }) {
-  const side = comment.author === useContext(Login) ? 'right' : 'left';
+export function Theirs({ comment, trailing, max }: { comment: Node<Comment>; trailing?: ReactNode; max?: number }) {
+  const author = comment.str('author');
+  const side = author === useContext(Login) ? 'right' : 'left';
   return (
     <View style={{ gap: 4 }}>
       <View style={[styles.theirsHeader, side === 'right' && styles.theirsHeaderRight]}>
-        <Text style={styles.meta}>{comment.author}</Text>
+        <Text style={styles.meta}>{author}</Text>
         {trailing}
       </View>
       <Bubble side={side}>
         {max ? (
           <Clamp max={max}>
-            <Html html={comment.bodyHtml} />
+            <Html html={comment.str('bodyHtml')} />
           </Clamp>
         ) : (
-          <Html html={comment.bodyHtml} />
+          <Html html={comment.str('bodyHtml')} />
         )}
       </Bubble>
     </View>
@@ -391,33 +393,34 @@ export function Theirs({ comment, trailing, max }: { comment: Comment; trailing?
 // Cuts its content to `max` pixels, fading out the last lines, with Show more under it when
 // anything was cut.
 // Each failed check with the log lines that show why it failed, opening its logs.
-export function FailedChecks({ failure }: { failure: CheckFailure }) {
+export function FailedChecks({ failure }: { failure: Node<CheckFailure> }) {
   return (
     <View style={{ gap: 8 }}>
-      {failure.checks.map((check) => (
-        <View key={check.id} style={styles.check}>
+      {failure.list('checks').map((check) => (
+        <View key={check.str('id')} style={styles.check}>
           <View style={styles.checkHeader}>
             <Icon icon={CircleX} size={12} color={t3.deletion} />
             <Text numberOfLines={1} style={styles.checkName}>
-              {check.name} <Text style={styles.meta}>· {check.conclusion.toLowerCase().replace('_', ' ')}</Text>
+              {check.str('name')}{' '}
+              <Text style={styles.meta}>· {check.str('conclusion').toLowerCase().replace('_', ' ')}</Text>
             </Text>
-            <Pressable accessibilityLabel="Open logs" onPress={() => Linking.openURL(check.url)}>
+            <Pressable accessibilityLabel="Open logs" onPress={() => Linking.openURL(check.str('url'))}>
               <Icon icon={ExternalLink} size={12} />
             </Pressable>
           </View>
-          {check.excerpt !== '' && <Text style={styles.excerpt}>{check.excerpt.trimEnd()}</Text>}
+          {check.str('excerpt') !== '' && <Text style={styles.excerpt}>{check.str('excerpt').trimEnd()}</Text>}
         </View>
       ))}
     </View>
   );
 }
 
-export function RerunCard({ failure }: { failure: CheckFailure }) {
+export function RerunCard({ failure }: { failure: Node<CheckFailure> }) {
   return (
     <View style={styles.rerun}>
       <Icon icon={RotateCcw} size={14} />
       <Text style={styles.checkName}>
-        Reruns {failure.checks.map((c) => c.name).join(' and ')} on the same commit. No code changes.
+        Reruns {failure.list('checks').map((c) => c.str('name')).join(' and ')} on the same commit. No code changes.
       </Text>
     </View>
   );
@@ -664,9 +667,11 @@ export function FollowUpCard({
 
 // The pull request approving opens: where it goes, its title and description as GitHub renders
 // them, and the change it commits, until an approve that failed after pushing it.
-export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullRequest }) {
-  const diff = pullRequest.patch?.diff ?? '';
+export function NewPullRequestCard({ pullRequest }: { pullRequest: Node<NewPullRequest> }) {
+  const patch = pullRequest.node('patch');
+  const diff = patch?.str('diff') ?? '';
   const files = diffFiles(diff);
+  const branch = pullRequest.str('branch');
   return (
     <View style={styles.followUp}>
       <View style={styles.followUpHeader}>
@@ -674,17 +679,17 @@ export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullReques
         <Text style={styles.meta}>
           <Text style={{ color: t3.foreground, fontWeight: '500' }}>New pull request</Text>
           {'  '}
-          {pullRequest.repository} · {pullRequest.base} ← {pullRequest.branch}
+          {pullRequest.str('repository')} · {pullRequest.str('base')} ← {branch}
         </Text>
       </View>
-      <Text style={{ color: t3.foreground, fontWeight: '600' }}>{pullRequest.title}</Text>
+      <Text style={{ color: t3.foreground, fontWeight: '600' }}>{pullRequest.str('title')}</Text>
       <Clamp max={130}>
-        <Html html={pullRequest.bodyHtml} />
+        <Html html={pullRequest.str('bodyHtml')} />
       </Clamp>
-      {pullRequest.patch ? (
+      {patch ? (
         <>
           <Text style={styles.meta}>
-            {pullRequest.patch.commitMessage}
+            {patch.str('commitMessage')}
             {'  '}
             <DiffStat added={files.reduce((n, f) => n + f.added, 0)} removed={files.reduce((n, f) => n + f.removed, 0)} />
           </Text>
@@ -693,7 +698,7 @@ export function NewPullRequestCard({ pullRequest }: { pullRequest: NewPullReques
           </Clamp>
         </>
       ) : (
-        <Text style={styles.meta}>Pushed {pullRequest.branch}; approving again opens the pull request.</Text>
+        <Text style={styles.meta}>Pushed {branch}; approving again opens the pull request.</Text>
       )}
     </View>
   );
@@ -718,8 +723,8 @@ export function ClosesTag() {
 }
 
 // T3 Code's warning banner: amber label, the tool's name in mono, why it is needed below.
-export function ToolRequestBanner({ proposal }: { proposal: Proposal }) {
-  const [name] = proposal.summary.split(':');
+export function ToolRequestBanner({ proposal }: { proposal: Node<Proposal> }) {
+  const [name] = proposal.str('summary').split(':');
   return (
     <View style={styles.warning}>
       <Icon icon={Hammer} color="#F59E0B" />
@@ -727,10 +732,10 @@ export function ToolRequestBanner({ proposal }: { proposal: Proposal }) {
         <Text style={styles.meta}>
           <Text style={{ color: '#F59E0B', fontWeight: '500' }}>Tool request</Text>
           {'  '}
-          {proposal.comment?.author}
+          {proposal.node('comment')?.str('author')}
         </Text>
         <Text style={styles.mono}>{name}</Text>
-        <Text style={styles.meta}>{proposal.requestedTool.trim()}</Text>
+        <Text style={styles.meta}>{proposal.str('requestedTool').trim()}</Text>
       </View>
     </View>
   );

@@ -1,9 +1,9 @@
-import { timestampDate } from '@bufbuild/protobuf/wkt';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { type Agent, AgentState } from './gen/gem_pb';
+import type { Node } from './db';
 import { ProposalGroup } from './ProposalView';
+import { type Agent, agentState } from './shapes';
 import { Html } from './surfaces';
 import { Button, t3 } from './t3';
 
@@ -18,7 +18,7 @@ export function AgentView({
   onMessage,
   onClose,
 }: {
-  agent: Agent;
+  agent: Node<Agent>;
   ago: (date: Date) => string;
   busy?: ReadonlySet<string>;
   onApprove: (id: string, reply: string, followUp: string, diff: string) => void;
@@ -27,7 +27,9 @@ export function AgentView({
   onMessage: (message: string) => Promise<unknown>;
   onClose: () => void;
 }) {
-  const on = agent.pullRequestUrls.map((url) => {
+  const state = agentState(agent);
+  const startedAt = agent.time('startedAt');
+  const on = agent.strings('pullRequestUrls').map((url) => {
     const [, repository, number] = /github\.com\/[^/]+\/([^/]+)\/pull\/(\d+)/.exec(url) ?? [];
     return `${repository}#${number}`;
   });
@@ -35,26 +37,26 @@ export function AgentView({
     <View style={styles.column}>
       <View style={styles.header}>
         <View style={styles.titleBlock}>
-          <Text style={styles.title}>{agent.title}</Text>
+          <Text style={styles.title}>{agent.str('title')}</Text>
           <Text style={styles.meta}>
             {on.length > 0 && `on ${on.join(', ')}`}
-            {agent.startedAt && ` · ${ago(timestampDate(agent.startedAt))}`}
+            {startedAt && ` · ${ago(startedAt)}`}
           </Text>
         </View>
-        <Button label="Done" disabled={busy?.has(agent.id)} onPress={onClose} />
+        <Button label="Done" disabled={busy?.has(agent.str('id'))} onPress={onClose} />
       </View>
-      {agent.reply !== '' && <Html html={agent.replyHtml} />}
-      {agent.state === AgentState.WORKING && (
+      {agent.str('reply') !== '' && <Html html={agent.str('replyHtml')} />}
+      {state === 'AGENT_STATE_WORKING' && (
         <View style={styles.working}>
           <ActivityIndicator size={12} color="#8FA8F5" />
           <Text style={styles.meta}>Working…</Text>
         </View>
       )}
-      {agent.state === AgentState.QUEUED && <Text style={styles.meta}>Queued behind other agents…</Text>}
-      {agent.proposals.map((proposal) => (
-        <ProposalGroup key={proposal.id} proposals={[proposal]} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
+      {state === 'AGENT_STATE_QUEUED' && <Text style={styles.meta}>Queued behind other agents…</Text>}
+      {agent.list('proposals').map((proposal) => (
+        <ProposalGroup key={proposal.str('id')} proposals={[proposal]} busy={busy} onApprove={onApprove} onDismiss={onDismiss} />
       ))}
-      {agent.state !== AgentState.QUEUED && <Composer placeholder="Message the agent…" onSend={onMessage} />}
+      {state !== 'AGENT_STATE_QUEUED' && <Composer placeholder="Message the agent…" onSend={onMessage} />}
     </View>
   );
 }

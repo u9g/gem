@@ -3,7 +3,8 @@ import { ConnectionState, type Participant, Room, RoomEvent } from 'livekit-clie
 import { SignJWT } from 'jose';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { concat, Replica, type View, type ViewBytes, viewBytes } from './view';
+import type { Db } from './db';
+import { concat, Replica, type ViewBytes, viewBytes } from './view';
 
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
@@ -67,8 +68,8 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
-  // The server's view as this frontend's replica has it, since connecting.
-  const [view, setView] = useState<View>();
+  // This connection's replica of the server's view, which components read through `useDb`.
+  const [db, setDb] = useState<Db>();
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -103,6 +104,7 @@ export function useServer() {
       );
     // Another connection, to this profile or another, starts from an empty replica.
     const replica = new Replica();
+    setDb(replica);
     let closed = false;
     // While a sync is in flight, a change that doesn't follow on doesn't ask again: LiveKit
     // delivers the server's data in order, so the bytes it asked for arrive before its answer.
@@ -139,16 +141,15 @@ export function useServer() {
             sync();
             return;
           }
-          let changed = applied === 'applied';
-          for (let caughtUp = changed; caughtUp; ) {
+          // The replica tells the components reading it about each change it applies.
+          for (let caughtUp = applied === 'applied'; caughtUp; ) {
             caughtUp = false;
             ahead = ahead.filter((change) => {
               const result = replica.apply(change.sent, change.bytes);
-              if (result === 'applied') changed = caughtUp = true;
+              if (result === 'applied') caughtUp = true;
               return result === 'gap';
             });
           }
-          if (changed) setView(replica.view());
         })
         .catch(() => {});
     });
@@ -177,7 +178,7 @@ export function useServer() {
       room.unregisterByteStreamHandler(VIEW_TOPIC);
       room.disconnect();
       setStatus('connecting');
-      setView(undefined);
+      setDb(undefined);
     };
   }, [room, connection, visible]);
 
@@ -225,5 +226,5 @@ export function useServer() {
     [room],
   );
 
-  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, view };
+  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, db };
 }

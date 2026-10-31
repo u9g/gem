@@ -1,24 +1,12 @@
-import { sha1 } from '@noble/hashes/legacy.js';
-import { CoreMemory, Database, Hasher, ReadArrayList, ReadHashMap } from 'xitdb';
+import { CoreMemory, Database, ReadArrayList } from 'xitdb';
 
-import { type Agent, AgentSchema, type PullRequestCluster, PullRequestClusterSchema } from './gen/gem_pb';
-import { json, Views } from './lazy';
+import { BrowserSha1, type Db, type Node, Nodes } from './db';
+import type { Moment } from './shapes';
 
-// A replica of the server's view database (server/src/view.rs), the clusters as gem shows them.
-// The server's file only grows, so the replica is sent the whole of it once and then only the
-// bytes each change appends. Nothing here knows what carries them.
-
-// The view as of the replica's latest moment: the moment itself, and lazy views of what the UI
-// shows from it, read as they're used.
-export type View = {
-  moment: ReadHashMap;
-  // In the order they show, most recently updated first.
-  clusters: PullRequestCluster[];
-  login: string;
-  search: string;
-  // The agents acting on no open pull request.
-  agents: Agent[];
-};
+// A replica of the server's view database (server/src/view.rs), the clusters as gem shows them,
+// which components read through `useDb`. The server's file only grows, so the replica is sent the
+// whole of it once and then only the bytes each change appends. Nothing here knows what carries
+// them.
 
 // Which committed bytes of which file the server sent: `start` to `end` of the file with
 // `fileId`, a u64 as a decimal string. They replace the replica when `start` is 0.
@@ -32,23 +20,31 @@ export type ReplicaState = { committedSize: number; checksum: string } | null;
 // from it, so it must ask the server for the bytes it lacks.
 export type Applied = 'applied' | 'had' | 'gap';
 
-// The server's view database hashes keys with SHA-1. xitdb's own `Hasher` hashes with node's
-// crypto, which Metro resolves to an empty module on the web, so its `digest` is replaced with a
-// synchronous one in plain JavaScript. Everything in xitdb that hashes calls `db.hasher.digest`.
-export class BrowserSha1 extends Hasher {
-  constructor() {
-    super('SHA-1');
-  }
-
-  override digest(data: Uint8Array): Uint8Array {
-    return sha1(data);
-  }
-}
-
-export class Replica {
+export class Replica implements Db {
   private db?: Database;
   // The messages read from the replica's file.
-  private views = new Views();
+  private nodes = new Nodes();
+  private changes = 0;
+  private listeners = new Set<() => void>();
+
+  subscribe = (listener: () => void) => {
+    this.listeners.add(listener);
+    return () => void this.listeners.delete(listener);
+  };
+
+  version = () => this.changes;
+
+  // The latest moment, what the server last wrote, or undefined before the first sync.
+  moment = (): Node<Moment> | undefined => {
+    if (!this.db) return undefined;
+    const cursor = new ReadArrayList(this.db.rootCursor()).getCursor(-1);
+    return cursor ? this.nodes.node<Moment>(cursor) : undefined;
+  };
+
+  private changed() {
+    this.changes++;
+    this.listeners.forEach((listener) => listener());
+  }
 
   get fileId(): string | undefined {
     return this.db?.header.fileId.toString();
@@ -77,6 +73,7 @@ export class Replica {
       const writer = this.db!.openReplicated(size, sent.end - size);
       writer.write(bytes.subarray(size - sent.start));
       writer.close();
+      this.changed();
       return 'applied';
     } catch {
       // The replica stays at its last commit; the server sends it the bytes again.
@@ -94,42 +91,9 @@ export class Replica {
       return 'gap';
     }
     this.db = db;
-    this.views.clear();
+    this.nodes = new Nodes();
+    this.changed();
     return 'applied';
-  }
-
-  // The latest moment, a map of what the server last wrote, or undefined before the first sync.
-  latest(): ReadHashMap | undefined {
-    if (!this.db) return undefined;
-    const cursor = new ReadArrayList(this.db.rootCursor()).getCursor(-1);
-    return cursor ? new ReadHashMap(cursor) : undefined;
-  }
-
-  // The view as of the latest moment. Only the order of the clusters is read now; each cluster,
-  // and each agent, is read as it's used, and one a change didn't touch is the object it was.
-  view(): View | undefined {
-    const moment = this.latest();
-    if (!moment) return undefined;
-    const string = (key: string) => {
-      const cursor = moment.getCursor(key);
-      return cursor ? String(json(cursor)) : '';
-    };
-    const order = moment.getCursor('order');
-    const keys = order ? [...new ReadArrayList(order)].map((key) => String(json(key))) : [];
-    const stored = moment.getCursor('clusters');
-    const byKey = stored ? new ReadHashMap(stored) : undefined;
-    const clusters = keys.flatMap((key) => {
-      const cluster = byKey?.getCursor(key);
-      return cluster ? [this.views.message(PullRequestClusterSchema, cluster)] : [];
-    });
-    const agents = moment.getCursor('agents');
-    return {
-      moment,
-      clusters,
-      login: string('login'),
-      search: string('search'),
-      agents: agents ? this.views.messages(AgentSchema, agents) : [],
-    };
   }
 }
 

@@ -3,7 +3,8 @@ import { Check, GitPullRequest, X } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { type Item, items, pr } from '../fixtures';
+import type { PullRequest } from '../../shapes';
+import { type Item, items, pr, stored } from '../fixtures';
 import {
   Button,
   CommentRow,
@@ -23,7 +24,7 @@ import {
 function byComment(list: Item[]): Item[][] {
   const groups = new Map<string, Item[]>();
   for (const item of list) {
-    const id = item.proposal.comment?.id ?? item.proposal.id;
+    const id = item.proposal.node('comment')?.str('id') ?? item.proposal.str('id');
     groups.set(id, [...(groups.get(id) ?? []), item]);
   }
   return [...groups.values()];
@@ -54,15 +55,15 @@ function WorkLog({ expanded = false }: { expanded?: boolean }) {
     <Sidebar title="TTS retry fixes">
       <View style={styles.list}>
         {byComment(items).map((group) => (
-          <View key={group[0].proposal.id} style={styles.section}>
+          <View key={group[0].proposal.str('id')} style={styles.section}>
             <CommentRow item={group[0]} />
             {group.map(({ proposal }) => (
               <HoverActions
-                key={proposal.id}
+                key={proposal.str('id')}
                 shown={expanded && proposal === items[0].proposal}
                 actions={
                   <>
-                    {!proposal.requestedTool && <IconButton icon={Check} color={t3.addition} label="Approve" />}
+                    {!proposal.str('requestedTool') && <IconButton icon={Check} color={t3.addition} label="Approve" />}
                     <IconButton icon={X} label="Dismiss" />
                   </>
                 }
@@ -71,8 +72,8 @@ function WorkLog({ expanded = false }: { expanded?: boolean }) {
                   indent={12}
                   initiallyOpen={expanded && proposal === items[0].proposal}
                   icon={proposalIcon(proposal)}
-                  label={proposal.summary}
-                  labelColor={proposal.error ? t3.deletion : t3.muted}
+                  label={proposal.str('summary')}
+                  labelColor={proposal.str('error') ? t3.deletion : t3.muted}
                 >
                   <Text style={styles.meta}>{stepSentence(proposal)}</Text>
                   <Steps proposal={proposal} />
@@ -94,7 +95,7 @@ function ChooseOne() {
     <Sidebar title="TTS retry fixes">
       <View style={styles.list}>
         {byComment(items).map((group) => (
-          <Question key={group[0].proposal.id} group={group} />
+          <Question key={group[0].proposal.str('id')} group={group} />
         ))}
       </View>
     </Sidebar>
@@ -103,28 +104,28 @@ function ChooseOne() {
 
 function Question({ group }: { group: Item[] }) {
   const [picked, setPicked] = useState(0);
-  const comment = group[0].proposal.comment!;
+  const comment = group[0].proposal.node('comment')!;
   const proposal = group[picked].proposal;
   return (
     <View style={styles.question}>
       <Text style={styles.eyebrow}>
-        {comment.author} · {pr.repository?.name}#{pr.number}
+        {comment.str('author')} · {pr.repository?.name}#{pr.number}
       </Text>
       <Text numberOfLines={2} style={styles.questionText}>
-        {firstLine(comment.body)}
+        {firstLine(comment.str('body'))}
       </Text>
       {group.map(({ proposal: option }, i) => (
         <Pressable
-          key={option.id}
+          key={option.str('id')}
           onPress={() => setPicked(i)}
           style={[styles.option, i === picked && group.length > 1 && styles.optionPicked]}
         >
           <View style={{ flex: 1 }}>
             <Text numberOfLines={1} style={styles.optionLabel}>
-              {option.summary}
+              {option.str('summary')}
             </Text>
-            <Text style={[styles.meta, option.error !== '' && { color: t3.deletion }]}>
-              {option.error ? 'Approval failed' : stepSentence(option)}
+            <Text style={[styles.meta, option.str('error') !== '' && { color: t3.deletion }]}>
+              {option.str('error') ? 'Approval failed' : stepSentence(option)}
             </Text>
           </View>
           {group.length > 1 && <Text style={styles.kbd}>{i + 1}</Text>}
@@ -136,7 +137,7 @@ function Question({ group }: { group: Item[] }) {
       </Row>
       <View style={styles.buttons}>
         <Button label="Dismiss" variant="ghost" />
-        {!proposal.requestedTool && <Button label="Approve" variant="default" />}
+        {!proposal.str('requestedTool') && <Button label="Approve" variant="default" />}
       </View>
     </View>
   );
@@ -145,8 +146,8 @@ function Question({ group }: { group: Item[] }) {
 // 4. One fold: the sidebar says only what is waiting, as one T3 Code group sentence. Opening it
 // shows the work log.
 function OneFold({ expanded = false }: { expanded?: boolean }) {
-  const files = items.reduce((n, { proposal }) => n + (proposal.patch ? diffFiles(proposal.patch.diff).length : 0), 0);
-  const replies = items.filter(({ proposal }) => proposal.reply).length;
+  const files = items.reduce((n, { proposal }) => n + diffFiles(proposal.node('patch')?.str('diff') ?? '').length, 0);
+  const replies = items.filter(({ proposal }) => proposal.str('reply')).length;
   const comments = byComment(items).length;
   return (
     <Sidebar title="TTS retry fixes">
@@ -158,15 +159,15 @@ function OneFold({ expanded = false }: { expanded?: boolean }) {
           initiallyOpen={expanded}
         >
           {byComment(items).map((group) => (
-            <View key={group[0].proposal.id}>
+            <View key={group[0].proposal.str('id')}>
               <CommentRow item={group[0]} />
               {group.map(({ proposal }) => (
-                <Row key={proposal.id} indent={12} icon={proposalIcon(proposal)} label={proposal.summary}>
+                <Row key={proposal.str('id')} indent={12} icon={proposalIcon(proposal)} label={proposal.str('summary')}>
                   <Steps proposal={proposal} />
                   <ErrorLine proposal={proposal} />
                   <View style={styles.buttons}>
                     <Button label="Dismiss" variant="ghost" />
-                    {!proposal.requestedTool && <Button label="Approve" variant="default" />}
+                    {!proposal.str('requestedTool') && <Button label="Approve" variant="default" />}
                   </View>
                 </Row>
               ))}
@@ -196,11 +197,11 @@ function UnderThePr({ expanded = false }: { expanded?: boolean }) {
         >
           {items.map(({ proposal }) => (
             <HoverActions
-              key={proposal.id}
+              key={proposal.str('id')}
               shown={expanded && proposal === items[1].proposal}
               actions={
                 <>
-                  {!proposal.requestedTool && <IconButton icon={Check} color={t3.addition} label="Approve" />}
+                  {!proposal.str('requestedTool') && <IconButton icon={Check} color={t3.addition} label="Approve" />}
                   <IconButton icon={X} label="Dismiss" />
                 </>
               }
@@ -210,12 +211,12 @@ function UnderThePr({ expanded = false }: { expanded?: boolean }) {
                 icon={proposalIcon(proposal)}
                 label={
                   <>
-                    <Text style={{ color: t3.foreground }}>{proposal.comment?.author}</Text> {proposal.summary}
+                    <Text style={{ color: t3.foreground }}>{proposal.node('comment')?.str('author')}</Text> {proposal.str('summary')}
                   </>
                 }
-                labelColor={proposal.error ? t3.deletion : t3.muted}
+                labelColor={proposal.str('error') ? t3.deletion : t3.muted}
               >
-                <CommentRow item={{ pr, proposal }} />
+                <CommentRow item={{ pr: stored<PullRequest>(pr), proposal }} />
                 <Steps proposal={proposal} />
                 <ErrorLine proposal={proposal} />
               </Row>
