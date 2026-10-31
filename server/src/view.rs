@@ -1,11 +1,13 @@
-// What frontends show, in an xitdb database of its own that each frontend keeps a live replica
-// of. gem.xitdb holds agents' bearer tokens, so it is never replicated; this one holds only what
-// frontends render, in memory, and is made again when the server starts.
+// What frontends show, in an xitdb file of its own, view.xitdb in the server's working
+// directory, that each frontend keeps a live replica of and `server mcp` reads. gem.xitdb holds
+// agents' bearer tokens, so it is never replicated; this one holds only what frontends render.
 //
-// Its root is a `History` like gem.xitdb's. Each snapshot is written as one moment, and an
-// unchanged snapshot commits nothing. Since the file only grows, the bytes a moment appends are
-// all a replica that has the moments before it needs: a frontend is sent the whole database once,
-// and then each moment's bytes as it commits.
+// Its root is a `History` like gem.xitdb's, kept by the same `Db`. Each snapshot is written as
+// one moment, and an unchanged snapshot commits nothing. Since the file only grows, the bytes a
+// moment appends are all a replica that has the moments before it needs: a frontend is sent the
+// whole file once, and then each moment's bytes as it commits. The file is compacted when it
+// opens, and whenever it has grown well past its size then, which gives it a new file ID, so
+// every replica, including one from before a restart, is sent a whole copy when it next syncs.
 //
 // Everything in it is stored structurally, by xitdb's `Structured` codec: a message is a hash map
 // from each field's name, as pbjson names it (camelCase), to its value, a repeated field is an
@@ -22,18 +24,23 @@
 // - `login`, `search` and `agents`, the rest of the `ListOpenPullRequestsResponse`.
 
 use std::{
-    collections::HashMap,
+    collections::HashSet,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
-use gem_db::xitdb::{
-    Core, CoreMemory, Database, History, Map, MemoryOffsetMap, ReplicaState, Result, Structured,
-    WriteHashMap, put_structured,
+use gem_db::{
+    Db, Delta, Migrations, ReplicaState,
+    xitdb::{
+        Core, Map, ReadHashMap, Result, Structured, WriteHashMap, get_structured, put_structured,
+    },
 };
-use gem_room::Stream;
 use tokio::sync::broadcast;
 
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
+
+// In the server's working directory.
+pub const FILE: &str = "view.xitdb";
 
 const CLUSTERS: Map<str, Structured<PullRequestCluster>> = Map::new("clusters");
 const ORDER: &str = "order";
@@ -41,125 +48,64 @@ const LOGIN: &str = "login";
 const SEARCH: &str = "search";
 const AGENTS: &str = "agents";
 
-// How much the database grows past twice its compacted size before it is compacted again. A
-// frontend's first copy is the whole database, so it is at most about twice the view.
+// How much the file grows past twice its compacted size before it is compacted again. A
+// frontend's first copy is the whole file, so it is at most about twice the view.
 const GROWTH: i64 = 1 << 20;
 
-pub struct View {
-    db: Database<CoreMemory>,
-    // Its committed size when it was last compacted.
-    compacted: i64,
+// The view's layout has had no versions yet: it holds what the server writes, which a reader of
+// another build of gem refuses only once a version says it changed.
+pub fn migrations() -> Migrations {
+    Migrations::new([]).expect("migrations are in order")
 }
 
-// The committed bytes from `start` to `end` of the database with `file_id`, for a replica whose
-// committed size is `start`, or for any replica, which they replace, when `start` is 0.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Delta {
-    pub file_id: u64,
-    pub start: i64,
-    pub end: i64,
-    pub bytes: Vec<u8>,
-}
-
-impl Delta {
-    // As a frontend reads it: the file ID as a decimal string, since it is a u64 and JavaScript's
-    // numbers are not.
-    pub fn attributes(&self) -> HashMap<String, String> {
-        HashMap::from([
-            ("fileId".to_string(), self.file_id.to_string()),
-            ("start".to_string(), self.start.to_string()),
-            ("end".to_string(), self.end.to_string()),
-        ])
-    }
-}
-
-impl View {
-    pub fn new() -> Result<View> {
-        let db = Database::in_memory()?;
-        let compacted = db.committed_size()?;
-        Ok(View { db, compacted })
-    }
-
-    // Writes `response` as the latest moment, and returns the bytes that appended, or None when
-    // nothing changed.
-    pub fn write(&mut self, response: &ListOpenPullRequestsResponse) -> Result<Option<Delta>> {
-        let start = self.db.committed_size()?;
-        History::new(&self.db)?.transact(|moment| write_view(moment, response))?;
-        let end = self.db.committed_size()?;
-        if end == start {
-            return Ok(None);
-        }
-        let delta = self.read(start, end)?;
-        // After the bytes are read: a replica that applies them has the old file's last moment,
-        // the same as the compacted one's, and is replaced when it next asks for a sync.
-        if end > 2 * self.compacted + GROWTH {
-            self.compact()?;
-        }
-        Ok(Some(delta))
-    }
-
-    // The bytes a replica in `replica` lacks: from its committed size when it is a prefix of this
-    // database, and otherwise all of it.
-    pub fn sync(&self, replica: Option<ReplicaState>) -> Result<Delta> {
-        let start = match replica {
-            None => 0,
-            Some(replica) => self.db.replication_start(replica)?,
-        };
-        self.read(start, self.db.committed_size()?)
-    }
-
-    // Replaces the database with one holding only its last moment, with a file ID of its own, so
-    // every replica is replaced when it next syncs.
-    fn compact(&mut self) -> Result<()> {
-        self.db = self.db.compact(CoreMemory::new(), &mut MemoryOffsetMap::new())?;
-        self.compacted = self.db.committed_size()?;
-        Ok(())
-    }
-
-    fn read(&self, start: i64, end: i64) -> Result<Delta> {
-        let mut bytes = Vec::with_capacity((end - start) as usize);
-        self.db.read_committed(start, end, &mut bytes)?;
-        let file_id = self.db.header().file_id;
-        Ok(Delta { file_id, start, end, bytes })
-    }
+// The clusters in the order they show, as the view last held them.
+pub fn clusters<C: Core>(moment: &ReadHashMap<'_, C>) -> Result<Vec<PullRequestCluster>> {
+    let order: Vec<String> = get_structured(moment, ORDER)?.unwrap_or_default();
+    let clusters = order.iter().map(|key| CLUSTERS.get(moment, key));
+    clusters.filter_map(Result::transpose).collect()
 }
 
 // How many changes a stay in the room can fall behind on sending before it skips some, and the
 // frontends that missed them sync.
 const BACKLOG: usize = 16;
 
-// The view, shared by the snapshot loop and frontends' syncs, and the changes to send to every
-// frontend.
+// The view, shared by the snapshot loop, the actions and frontends' syncs, and the changes to send
+// to every frontend.
 #[derive(Clone)]
 pub struct Live {
-    view: Arc<Mutex<View>>,
-    changes: broadcast::Sender<Arc<Stream>>,
+    db: Db,
+    changes: broadcast::Sender<Arc<Delta>>,
+    // Held from a write until its change is sent, so changes are sent in the order they commit.
+    publishing: Arc<Mutex<()>>,
 }
 
 impl Live {
-    pub fn new() -> Live {
-        let view = View::new().unwrap_or_else(|error| panic!("the view: {error}"));
+    // Opens the view at `path`, or makes it.
+    pub fn open(path: impl AsRef<Path>) -> Result<Live, String> {
+        let (db, _) = Db::open_growing(path, &migrations(), GROWTH)?;
         let (changes, _) = broadcast::channel(BACKLOG);
-        Live { view: Arc::new(Mutex::new(view)), changes }
+        Ok(Live { db, changes, publishing: Arc::default() })
     }
 
-    pub fn changes(&self) -> broadcast::Sender<Arc<Stream>> {
+    pub fn db(&self) -> &Db {
+        &self.db
+    }
+
+    pub fn changes(&self) -> broadcast::Sender<Arc<Delta>> {
         self.changes.clone()
     }
 
     // Writes `response` and sends every frontend the bytes that appended. Returns whether any
-    // did. The change is sent while the view is locked, so changes are sent in the order they
-    // commit.
+    // did.
     pub fn publish(&self, response: &ListOpenPullRequestsResponse) -> bool {
-        let mut view = self.view.lock().unwrap();
-        match view.write(response) {
-            Ok(Some(delta)) => {
-                let stream = Stream { attributes: delta.attributes(), bytes: delta.bytes };
+        let _publishing = self.publishing.lock().unwrap_or_else(|error| error.into_inner());
+        match self.db.write_replicated(|moment| write_view(moment, response)) {
+            Ok(((), Some(delta))) => {
                 // No receiver while no frontend is in the room.
-                let _ = self.changes.send(Arc::new(stream));
+                let _ = self.changes.send(Arc::new(delta));
                 true
             }
-            Ok(None) => false,
+            Ok(((), None)) => false,
             Err(error) => {
                 tracing::warn!(%error, "cannot write the view");
                 false
@@ -167,17 +113,14 @@ impl Live {
         }
     }
 
-    // Answers a frontend's view-sync request with which bytes it is sent, and them. Its payload is
+    // Answers a frontend's view-sync request with the bytes its replica lacks. Its payload is
     // `null` for a new replica, or its `ReplicaState` as xitdb's serde writes it,
     // `{"committedSize":123,"checksum":"456"}`, the checksum a u64 as a decimal string.
-    pub fn sync(&self, payload: &str) -> Result<(String, Stream), (u32, String)> {
+    pub fn sync(&self, payload: &str) -> Result<Delta, (u32, String)> {
         let replica: Option<ReplicaState> = serde_json::from_str(payload)
             .map_err(|error| (400, format!("not a replica's state: {error}")))?;
-        let delta = (self.view.lock().unwrap().sync(replica))
-            .map_err(|error| (500, format!("cannot read the view: {error}")))?;
-        let attributes = delta.attributes();
-        let reply = serde_json::to_string(&attributes).unwrap();
-        Ok((reply, Stream { attributes, bytes: delta.bytes }))
+        let delta = self.db.replicate(replica);
+        delta.map_err(|error| (500, format!("cannot read the view: {error}")))
     }
 }
 
@@ -197,18 +140,11 @@ fn write_view<C: Core>(
         // Writes only what changed in the cluster, and nothing when it didn't.
         CLUSTERS.put(moment, key, cluster)?;
     }
-    let mut gone = Vec::new();
-    if let Some(clusters) = CLUSTERS.collection(moment)? {
-        for entry in clusters.entries()? {
-            let key = entry?.key_cursor.read_bytes(None)?;
-            if !order.iter().any(|shown| shown.as_bytes() == key) {
-                gone.push(String::from_utf8_lossy(&key).into_owned());
-            }
-        }
-    }
-    for key in gone {
-        CLUSTERS.remove(moment, &key)?;
-    }
+    // The clusters that are gone are the ones the last order showed and this one doesn't.
+    let shown: HashSet<&str> = order.iter().copied().collect();
+    let before: Vec<String> = get_structured(moment, ORDER)?.unwrap_or_default();
+    let gone = before.iter().map(String::as_str).filter(|key| !shown.contains(key));
+    CLUSTERS.remove_all(moment, gone)?;
     put_structured(moment, ORDER, &order)?;
     put_structured(moment, LOGIN, &response.login)?;
     put_structured(moment, SEARCH, &response.search)?;
@@ -218,7 +154,9 @@ fn write_view<C: Core>(
 
 #[cfg(test)]
 mod tests {
-    use gem_db::xitdb::{ReadHashMap, get_structured};
+    use std::path::PathBuf;
+
+    use gem_db::xitdb::{CoreMemory, Database, History};
     use pbjson_types::Timestamp;
 
     use super::*;
@@ -310,6 +248,43 @@ mod tests {
         }
     }
 
+    // The view in a file of its own, as the server keeps it.
+    struct View {
+        live: Live,
+        dir: PathBuf,
+    }
+
+    impl View {
+        fn new() -> Result<View, String> {
+            let dir = crate::tokens::tests::temp_dir("view");
+            Ok(View { live: Live::open(dir.join(FILE))?, dir })
+        }
+
+        // What the write appended.
+        fn write(&mut self, response: &ListOpenPullRequestsResponse) -> Result<Option<Delta>> {
+            let written = self.live.db.write_replicated(|moment| write_view(moment, response));
+            Ok(written.unwrap().1)
+        }
+
+        fn sync(&self, replica: Option<ReplicaState>) -> Result<Delta, String> {
+            self.live.db.replicate(replica)
+        }
+
+        fn size(&self) -> i64 {
+            self.sync(None).unwrap().end
+        }
+
+        fn file_id(&self) -> u64 {
+            self.sync(None).unwrap().file_id
+        }
+    }
+
+    impl Drop for View {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
     // A replica as a frontend keeps it: it applies a delta that follows on from it, ignores one it
     // already has, and otherwise asks for a sync.
     struct Frontend {
@@ -353,10 +328,8 @@ mod tests {
         fn shown(&self) -> ListOpenPullRequestsResponse {
             let history = History::new(&self.db).unwrap();
             let moment: ReadHashMap<_> = history.latest().unwrap();
-            let order: Vec<String> = get_structured(&moment, ORDER).unwrap().unwrap();
-            let clusters = order.iter().map(|key| CLUSTERS.get(&moment, key).unwrap().unwrap());
             ListOpenPullRequestsResponse {
-                clusters: clusters.collect(),
+                clusters: clusters(&moment).unwrap(),
                 login: get_structured(&moment, LOGIN).unwrap().unwrap(),
                 search: get_structured(&moment, SEARCH).unwrap().unwrap(),
                 agents: get_structured(&moment, AGENTS).unwrap().unwrap(),
@@ -368,9 +341,9 @@ mod tests {
     fn an_unchanged_view_commits_nothing() {
         let mut view = View::new().unwrap();
         assert!(view.write(&response(5)).unwrap().is_some());
-        let size = view.db.committed_size().unwrap();
+        let size = view.size();
         assert_eq!(view.write(&response(5)).unwrap(), None);
-        assert_eq!(view.db.committed_size().unwrap(), size);
+        assert_eq!(view.size(), size);
     }
 
     #[test]
@@ -398,7 +371,7 @@ mod tests {
         view.write(&response(3)).unwrap();
         let mut frontend = Frontend::new();
         let delta = frontend.sync(&view);
-        assert_eq!((delta.start, delta.end), (0, view.db.committed_size().unwrap()));
+        assert_eq!((delta.start, delta.end), (0, view.size()));
         assert_eq!(frontend.shown(), response(3));
     }
 
@@ -444,19 +417,19 @@ mod tests {
         view.write(&response(3)).unwrap();
         let mut frontend = Frontend::new();
         frontend.sync(&view);
-        let file_id = view.db.header().file_id;
+        let file_id = view.file_id();
         // Growing past the threshold compacts it; each change is still sent from the old file.
         let mut shown = response(3);
         for i in 0..20_000 {
             shown.clusters[0].name = format!("name {i}");
             let delta = view.write(&shown).unwrap().unwrap();
             assert!(frontend.receive(&delta));
-            if view.db.header().file_id != file_id {
+            if view.file_id() != file_id {
                 break;
             }
         }
-        assert_ne!(view.db.header().file_id, file_id);
-        assert!(view.db.committed_size().unwrap() < GROWTH);
+        assert_ne!(view.file_id(), file_id);
+        assert!(view.size() < GROWTH);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
         assert_eq!(frontend.shown(), shown);
@@ -464,6 +437,55 @@ mod tests {
         shown.clusters[1].name = "after".to_string();
         assert!(frontend.receive(&view.write(&shown).unwrap().unwrap()));
         assert_eq!(frontend.shown(), shown);
+    }
+
+    #[test]
+    fn gone_clusters_are_the_ones_the_last_order_showed() {
+        let mut view = View::new().unwrap();
+        view.write(&response(3)).unwrap();
+        // A cluster the order never showed is never looked at, so it stays.
+        let stray = cluster("https://github.com/o/r/pull/stray/", "stray");
+        (view.live.db.write(|moment| CLUSTERS.put(moment, "stray", &stray))).unwrap();
+        view.write(&response(2)).unwrap().unwrap();
+        let (gone, kept) = (view.live.db)
+            .read(|moment| {
+                let gone = CLUSTERS.contains(moment, "https://github.com/o/r/pull/2/0")?;
+                Ok((gone, CLUSTERS.contains(moment, "stray")?))
+            })
+            .unwrap();
+        assert!(!gone && kept);
+    }
+
+    #[test]
+    fn publishing_sends_each_change_to_every_frontend() {
+        let view = View::new().unwrap();
+        let mut changes = view.live.changes().subscribe();
+        let before = view.size();
+        assert!(view.live.publish(&response(2)));
+        let delta = changes.try_recv().unwrap();
+        assert_eq!((delta.start, delta.end), (before, view.size()));
+        assert!(!view.live.publish(&response(2)));
+        assert!(changes.try_recv().is_err());
+        // A sync request carries xitdb's serde form of the replica's state.
+        assert_eq!(view.live.sync("null").unwrap().end, view.size());
+        assert!(view.live.sync("{}").is_err());
+    }
+
+    #[test]
+    fn a_restarted_server_sends_every_replica_a_whole_copy() {
+        let mut view = View::new().unwrap();
+        view.write(&response(3)).unwrap();
+        let mut frontend = Frontend::new();
+        frontend.sync(&view);
+        let file_id = view.file_id();
+        // The file outlives the server, and is compacted, with a new file ID, when it opens.
+        let path = view.dir.join(FILE);
+        view.live = Live::open(view.dir.join("other.xitdb")).unwrap();
+        view.live = Live::open(&path).unwrap();
+        assert_ne!(view.file_id(), file_id);
+        let delta = frontend.sync(&view);
+        assert_eq!(delta.start, 0);
+        assert_eq!(frontend.shown(), response(3));
     }
 
     // With GEM_VIEW_FIXTURE set to a directory, writes the bytes the frontend's view-replica test
@@ -491,9 +513,17 @@ mod tests {
         let delta = view.write(&second).unwrap().unwrap();
         std::fs::write(dir.join("full.bin"), &full.bytes).unwrap();
         std::fs::write(dir.join("delta.bin"), &delta.bytes).unwrap();
+        // As the room sends their attributes.
+        let attributes = |delta: &Delta| {
+            serde_json::json!({
+                "fileId": delta.file_id.to_string(),
+                "start": delta.start.to_string(),
+                "end": delta.end.to_string(),
+            })
+        };
         let fixture = serde_json::json!({
-            "full": full.attributes(),
-            "delta": delta.attributes(),
+            "full": attributes(&full),
+            "delta": attributes(&delta),
             "first": first,
             "second": second,
         });

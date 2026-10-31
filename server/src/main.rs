@@ -3,13 +3,17 @@ use std::{
     collections::{HashMap, HashSet},
     ffi::OsString,
     future::Future,
+    pin::Pin,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use axum::{
     Json, Router,
+    extract::{Request, State},
     http::StatusCode,
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
 };
 use pbjson_types::Timestamp;
@@ -378,13 +382,13 @@ async fn run_server() {
     rebases::init(db.clone(), prs.clone()).unwrap_or_else(|error| panic!("{error}"));
     merges::init(db).unwrap_or_else(|error| panic!("{error}"));
 
-    // Agents read the clusters through `server mcp`, and frontends' replicas of the view are sent
-    // them, as soon as they change. Proposals and investigations change in the database, so the
-    // snapshot is compared rather than announced. The agents gem starts propose through
+    // Agents read the clusters from the view through `server mcp`, and frontends' replicas of it
+    // are sent them, as soon as they change. Proposals and investigations change in the database,
+    // so the view is compared rather than announced. The agents gem starts propose through
     // `gem-agent`.
+    let live = view::Live::open(view::FILE).unwrap_or_else(|error| panic!("{error}"));
     tokio::task::spawn_blocking(mcp::register);
-    tokio::spawn(mcp::listen());
-    let live = view::Live::new();
+    tokio::spawn(mcp::listen(live.db().clone()));
     {
         let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
         let live = live.clone();
@@ -396,9 +400,8 @@ async fn run_server() {
         });
     }
 
-    let app = Router::new()
-        .route("/healthz", get(healthz))
-        .route("/repos", get(move || serve(repos)))
+    // Every route that changes what frontends see.
+    let actions = Router::new()
         .route("/clusters/restart", {
             let conversations = conversations.clone();
             post(|Json(request): Json<RestartClusterRequest>| async move {
@@ -452,15 +455,6 @@ async fn run_server() {
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })
-        .route(
-            "/prs/search",
-            post(|Json(request): Json<SearchPullRequestsRequest>| async move {
-                search::matching(&request.query)
-                    .await
-                    .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
-                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
-            }),
-        )
         .route(
             "/prs/rebase",
             post(|Json(request): Json<RebasePullRequestRequest>| async move {
@@ -537,6 +531,37 @@ async fn run_server() {
             })
         })
         .route(
+            "/proposals/dismiss",
+            post(|Json(request): Json<DismissProposalRequest>| async move {
+                proposals::dismiss(&request.id).await;
+                tracing::info!(proposal = %request.id, "proposal dismissed");
+                Json(DismissProposalResponse {})
+            }),
+        );
+    // Each action publishes the view once it has made its change, so every frontend is sent the
+    // change at once rather than at the next snapshot.
+    let publish: Publish = {
+        let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+        let live = live.clone();
+        Arc::new(move || {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            let live = live.clone();
+            Box::pin(async move { publish(&prs, &names, &conversations, &live).await })
+        })
+    };
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/repos", get(move || serve(repos)))
+        .route(
+            "/prs/search",
+            post(|Json(request): Json<SearchPullRequestsRequest>| async move {
+                search::matching(&request.query)
+                    .await
+                    .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
+                    .map_err(|error| (StatusCode::BAD_GATEWAY, error))
+            }),
+        )
+        .route(
             "/markdown/render",
             post(|Json(request): Json<RenderMarkdownRequest>| async move {
                 render(&request.pull_request_url, &request.markdown)
@@ -545,28 +570,12 @@ async fn run_server() {
                     .map_err(|error| (StatusCode::BAD_GATEWAY, error))
             }),
         )
-        .route(
-            "/proposals/dismiss",
-            post(|Json(request): Json<DismissProposalRequest>| async move {
-                proposals::dismiss(&request.id).await;
-                tracing::info!(proposal = %request.id, "proposal dismissed");
-                Json(DismissProposalResponse {})
-            }),
-        );
+        .merge(actions.layer(middleware::from_fn_with_state(publish, published_after)));
 
     investigations::watch();
-    agents::watch(conversations.clone());
+    agents::watch(conversations);
     let changes = live.changes();
-    // A frontend syncs after each action too, so the view is written first, to show the action's
-    // effect without waiting for the next snapshot.
-    let sync = move |payload: String| {
-        let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
-        let live = live.clone();
-        async move {
-            publish(&prs, &names, &conversations, &live).await;
-            live.sync(&payload)
-        }
-    };
+    let sync = move |payload: &str| live.sync(payload);
     gem_room::serve(
         move |request| gem_http::respond(app.clone(), request),
         sync,
@@ -575,19 +584,27 @@ async fn run_server() {
     .await;
 }
 
-// Writes the clusters as gem shows them to the view, which sends every frontend what changed, and
-// saves them for agents when they changed.
+// Writes the clusters as gem shows them to the view, which sends every frontend what changed.
 async fn publish(
     prs: &Cache<ListOpenPullRequestsResponse>,
     names: &Names,
     conversations: &Conversations,
     live: &view::Live,
 ) {
-    if let Some(response) = filled(prs, names, conversations).await
-        && live.publish(&response)
-    {
-        mcp::save(&response).await;
+    if let Some(response) = filled(prs, names, conversations).await {
+        live.publish(&response);
     }
+}
+
+// Publishes the view, as `publish` does.
+type Publish = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+// Answers a request, then publishes the view, whether the request succeeded or not: one that
+// failed can still have changed something, and an unchanged view sends nothing.
+async fn published_after(State(publish): State<Publish>, request: Request, next: Next) -> Response {
+    let response = next.run(request).await;
+    publish().await;
+    response
 }
 
 // One line of JSON per event on stderr, which the launcher appends to server.log. RUST_LOG
@@ -855,7 +872,45 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use axum::body::Body;
+    use tower::ServiceExt;
+
     use super::*;
+
+    // An action's route publishes the view once it has answered, failed or not, so its change
+    // reaches every frontend at once.
+    #[tokio::test]
+    async fn actions_publish_the_view_after_their_change() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let publish: Publish = {
+            let log = log.clone();
+            Arc::new(move || {
+                let log = log.clone();
+                Box::pin(async move { log.lock().unwrap().push("published") })
+            })
+        };
+        let changed = {
+            let log = log.clone();
+            move || async move {
+                log.lock().unwrap().push("changed");
+                StatusCode::CONFLICT
+            }
+        };
+        let actions = Router::new().route("/act", post(changed));
+        let app = Router::new()
+            .route("/read", get(|| async { "read" }))
+            .merge(actions.layer(middleware::from_fn_with_state(publish, published_after)));
+        let request = |uri| axum::http::Request::post(uri).body(Body::empty()).unwrap();
+        let response = app.clone().oneshot(request("/act")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(*log.lock().unwrap(), ["changed", "published"]);
+        // A route that changes nothing doesn't publish.
+        let read = axum::http::Request::get("/read").body(Body::empty()).unwrap();
+        app.oneshot(read).await.unwrap();
+        assert_eq!(log.lock().unwrap().len(), 2);
+    }
 
     #[test]
     fn an_action_reaches_only_the_cluster_the_user_saw() {

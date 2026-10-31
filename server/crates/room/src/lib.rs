@@ -1,8 +1,9 @@
 use std::{collections::HashMap, env, error::Error, future::Future, sync::Arc, time::Duration};
 
+pub use gem_db::Delta;
 use livekit::{
-    StreamByteOptions,
-    prelude::{Room, RoomEvent, RoomOptions, RpcError},
+    StreamByteOptions, StreamResult,
+    prelude::{LocalParticipant, ParticipantIdentity, Room, RoomEvent, RoomOptions, RpcError},
 };
 use livekit_api::{
     access_token::{AccessToken, VideoGrants},
@@ -21,13 +22,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 // payload is limited to 15 KiB, and the first copy of the view is far bigger.
 const SYNC_METHOD: &str = "view-sync";
 const VIEW_TOPIC: &str = "view";
-
-// Bytes to send on VIEW_TOPIC, with the attributes that say which they are.
-#[derive(Debug, Clone, Default)]
-pub struct Stream {
-    pub attributes: HashMap<String, String>,
-    pub bytes: Vec<u8>,
-}
 
 // SIGTERM, or Ctrl+C on Windows, which has no SIGTERM.
 #[cfg(unix)]
@@ -52,17 +46,16 @@ enum Left {
 // carried over a room in the user's own LiveKit project instead of a port: nothing listens on the
 // network. LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET name the
 // project and GEM_ROOM the room, so several servers can share a project. `sync` answers a
-// frontend's view-sync request with a reply and the stream to send that frontend alone, and each
-// stream sent on `streams` goes to every frontend in the room. Returns on SIGTERM.
+// frontend's view-sync request with the bytes to send that frontend alone, and each change sent on
+// `changes` goes to every frontend in the room. Returns on SIGTERM.
 //
 // Every connected participant costs the project's connection minutes, so the server is in the
 // room only while a frontend is.
-pub async fn serve<H, F, S, G>(handler: H, sync: S, streams: broadcast::Sender<Arc<Stream>>)
+pub async fn serve<H, F, S>(handler: H, sync: S, changes: broadcast::Sender<Arc<Delta>>)
 where
     H: Fn(String) -> F + Send + Sync + 'static,
     F: Future<Output = Result<String, (u32, String)>> + Send + 'static,
-    S: Fn(String) -> G + Send + Sync + 'static,
-    G: Future<Output = Result<(String, Stream), (u32, String)>> + Send + 'static,
+    S: Fn(&str) -> Result<Delta, (u32, String)> + Send + Sync + 'static,
 {
     let handler = Arc::new(handler);
     let sync = Arc::new(sync);
@@ -82,8 +75,8 @@ where
             session += 1;
             // Everything logged during this stay in the room, requests included, carries it.
             let span = tracing::info_span!("room_session", room = %room, session);
-            let streams = streams.subscribe();
-            match join(&url, &room, &handler, &sync, streams, &mut terminate)
+            let changes = changes.subscribe();
+            match join(&url, &room, &handler, &sync, changes, &mut terminate)
                 .instrument(span.clone())
                 .await
             {
@@ -103,19 +96,18 @@ where
 // offline at once instead of after LiveKit's participant timeout. Errors when the room is lost;
 // the SDK reconnects through shorter outages itself. A frontend asks for the view once it and the
 // server are both active, so it is sent only the changes made since.
-async fn join<H, F, S, G>(
+async fn join<H, F, S>(
     url: &str,
     name: &str,
     handler: &Arc<H>,
     sync: &Arc<S>,
-    mut streams: broadcast::Receiver<Arc<Stream>>,
+    mut changes: broadcast::Receiver<Arc<Delta>>,
     terminate: &mut Terminate,
 ) -> Result<Left, Box<dyn Error>>
 where
     H: Fn(String) -> F + Send + Sync + 'static,
     F: Future<Output = Result<String, (u32, String)>> + Send + 'static,
-    S: Fn(String) -> G + Send + Sync + 'static,
-    G: Future<Output = Result<(String, Stream), (u32, String)>> + Send + 'static,
+    S: Fn(&str) -> Result<Delta, (u32, String)> + Send + Sync + 'static,
 {
     let token = AccessToken::new()?
         .with_identity(IDENTITY)
@@ -134,87 +126,29 @@ where
         "joined the room"
     );
     let handler = handler.clone();
-    // LiveKit answers requests on its own tasks, outside this stay's span unless it is named.
-    let session = tracing::Span::current();
-    {
-        let session = session.clone();
-        room.local_participant()
-            .register_rpc_method(METHOD.to_string(), move |data| {
-                // Everything logged while answering carries the request's ID and caller.
-                let span = tracing::info_span!(
-                    parent: &session,
-                    "rpc",
-                    request_id = %data.request_id,
-                    caller = %data.caller_identity,
-                );
-                let reply = span.in_scope(|| handler(data.payload));
-                let timeout_ms = data.response_timeout.as_millis() as u64;
-                Box::pin(
-                    async move {
-                        let started = std::time::Instant::now();
-                        let reply = reply.await;
-                        let elapsed_ms = started.elapsed().as_millis() as u64;
-                        match &reply {
-                            Ok(_) => tracing::info!(elapsed_ms, timeout_ms, "rpc answered"),
-                            Err((code, message)) => {
-                                tracing::warn!(elapsed_ms, timeout_ms, code, message, "rpc failed")
-                            }
-                        }
-                        reply.map_err(|(code, message)| RpcError::new(code, message, None))
-                    }
-                    .instrument(span),
-                )
-            });
-    }
-    let sync = sync.clone();
-    let participant = room.local_participant();
-    room.local_participant()
-        .register_rpc_method(SYNC_METHOD.to_string(), move |data| {
-            let span = tracing::info_span!(
-                parent: &session,
-                "view_sync",
-                request_id = %data.request_id,
-                caller = %data.caller_identity,
-            );
-            let reply = span.in_scope(|| sync(data.payload));
-            let participant = participant.clone();
-            Box::pin(
-                async move {
-                    let (reply, stream) = reply.await.map_err(|(code, message)| {
-                        tracing::warn!(code, message, "view sync failed");
-                        RpcError::new(code, message, None)
-                    })?;
-                    let size = stream.bytes.len();
-                    // A frontend that is up to date is only told so.
-                    if size == 0 {
-                        return Ok(reply);
-                    }
-                    let options = StreamByteOptions {
-                        destination_identities: vec![data.caller_identity],
-                        ..StreamByteOptions::new_with_topic(VIEW_TOPIC)
-                            .with_attributes(stream.attributes)
-                    };
-                    // Sent before the reply, which only says which bytes they were.
-                    if let Err(error) = participant.send_bytes(&stream.bytes, options).await {
-                        tracing::warn!(%error, "cannot send the view");
-                        return Err(RpcError::new(1, error.to_string(), None));
-                    }
-                    tracing::info!(size, "view sent");
-                    Ok(reply)
-                }
-                .instrument(span),
-            )
-        });
+    register(&room, METHOD, move |payload, _| handler(payload));
+    let (sync, participant) = (sync.clone(), room.local_participant());
+    register(&room, SYNC_METHOD, move |payload, caller| {
+        let delta = sync(&payload);
+        let participant = participant.clone();
+        async move {
+            let delta = delta?;
+            // A frontend that is up to date is sent nothing.
+            if !delta.bytes.is_empty() {
+                let sent = send(&participant, &delta, vec![caller]).await;
+                sent.map_err(|error| (500, format!("cannot send the view: {error}")))?;
+            }
+            tracing::info!(size = delta.bytes.len(), "view sent");
+            Ok(String::new())
+        }
+    });
     // The last frontend can leave between the poll and the join.
     let mut left = room.remote_participants().is_empty().then_some(Left::Empty);
     while left.is_none() {
         tokio::select! {
-            stream = streams.recv() => match stream {
-                Ok(stream) => {
-                    let options = StreamByteOptions::new_with_topic(VIEW_TOPIC)
-                        .with_attributes(stream.attributes.clone());
-                    let sent = room.local_participant().send_bytes(&stream.bytes, options).await;
-                    if let Err(error) = sent {
+            change = changes.recv() => match change {
+                Ok(delta) => {
+                    if let Err(error) = send(&room.local_participant(), &delta, vec![]).await {
                         tracing::warn!(%error, "cannot send a change to the view");
                     }
                 }
@@ -262,4 +196,62 @@ where
         "left the room"
     );
     Ok(left)
+}
+
+// Answers RPC calls to `method` with `answer`, which is given each call's payload and caller and
+// returns the reply, or an error code and message for the frontend to see.
+fn register<A, F>(room: &Room, method: &'static str, answer: A)
+where
+    A: Fn(String, ParticipantIdentity) -> F + Send + Sync + 'static,
+    F: Future<Output = Result<String, (u32, String)>> + Send + 'static,
+{
+    // LiveKit answers requests on its own tasks, outside this stay's span unless it is named.
+    let session = tracing::Span::current();
+    room.local_participant().register_rpc_method(method.to_string(), move |data| {
+        // Everything logged while answering carries the request's method, ID and caller.
+        let span = tracing::info_span!(
+            parent: &session,
+            "rpc",
+            method,
+            request_id = %data.request_id,
+            caller = %data.caller_identity,
+        );
+        let reply = span.in_scope(|| answer(data.payload, data.caller_identity));
+        let timeout_ms = data.response_timeout.as_millis() as u64;
+        Box::pin(
+            async move {
+                let started = std::time::Instant::now();
+                let reply = reply.await;
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                match &reply {
+                    Ok(_) => tracing::info!(elapsed_ms, timeout_ms, "rpc answered"),
+                    Err((code, message)) => {
+                        tracing::warn!(elapsed_ms, timeout_ms, code, message, "rpc failed")
+                    }
+                }
+                reply.map_err(|(code, message)| RpcError::new(code, message, None))
+            }
+            .instrument(span),
+        )
+    });
+}
+
+// Sends `delta` on VIEW_TOPIC to the frontends `to`, or to all of them when it is empty, with
+// attributes saying which bytes they are: the file ID as a decimal string, since it is a u64 and
+// JavaScript's numbers are not.
+async fn send(
+    participant: &LocalParticipant,
+    delta: &Delta,
+    to: Vec<ParticipantIdentity>,
+) -> StreamResult<()> {
+    let attributes = HashMap::from([
+        ("fileId".to_string(), delta.file_id.to_string()),
+        ("start".to_string(), delta.start.to_string()),
+        ("end".to_string(), delta.end.to_string()),
+    ]);
+    let options = StreamByteOptions {
+        destination_identities: to,
+        ..StreamByteOptions::new_with_topic(VIEW_TOPIC).with_attributes(attributes)
+    };
+    participant.send_bytes(&delta.bytes, options).await.map(drop)
 }
