@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-xitdb = { git = "https://github.com/u9g/xitdb-rs", rev = "a2780a59e8eb535496934dfde810491daf30641d", features = ["derive", "serde"] }
+xitdb = { git = "https://github.com/u9g/xitdb-rs", rev = "b9341f2386b3a9f99177a83e9f0e5aeb2711e23c", features = ["derive", "serde"] }
