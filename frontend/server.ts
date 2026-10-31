@@ -1,10 +1,9 @@
 import type { JsonValue } from '@bufbuild/protobuf';
 import { ConnectionState, type Participant, Room, RoomEvent } from 'livekit-client';
 import { SignJWT } from 'jose';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ReadHashMap } from 'xitdb';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { concat, Replica, type ViewBytes, viewBytes } from './view';
+import { concat, Replica, type View, type ViewBytes, viewBytes } from './view';
 
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
@@ -15,12 +14,14 @@ const SERVER = 'server';
 // Approving pushes a commit and posts to GitHub before it answers.
 const RESPONSE_TIMEOUT_MS = 5 * 60_000;
 // The frontend asks for the bytes its replica of the server's view lacks with an RPC call to this
-// method. The server sends them, and every later change to the view, as a byte stream on
-// VIEW_TOPIC, and answers which bytes it sent.
+// method: when it connects, when the server joins, and when a change doesn't follow on from its
+// replica. The server sends them, like every change to the view, as a byte stream on VIEW_TOPIC.
 const SYNC_METHOD = 'view-sync';
 const VIEW_TOPIC = 'view';
-// How long a sync waits for the server's answer, and then for the bytes it sent.
+// The server sends the bytes before it answers, and the first copy can take a while.
 const SYNC_TIMEOUT_MS = 60_000;
+// How many changes that arrived ahead of the replica are kept until it catches up to them.
+const AHEAD = 16;
 
 // The user's own LiveKit project, the one their gem server is configured with. It never leaves
 // this browser: tokens are minted here.
@@ -30,10 +31,6 @@ export type Project = { url: string; apiKey: string; apiSecret: string };
 // one GitHub user's PRs narrowed by its GEM_SEARCH; login and search are what it last reported, to
 // label it while another profile is connected.
 export type Profile = Project & { id: string; name: string; room: string; login?: string; search?: string };
-
-// The server's view as this frontend's replica last had it: its latest moment, and the
-// ListOpenPullRequestsResponse JSON rebuilt from it.
-export type View = { moment: ReadHashMap; response: JsonValue };
 
 // Unreachable when the project refuses to connect, e.g. for a wrong URL, API key or secret;
 // offline when the room is reached but the server is not in it.
@@ -70,10 +67,8 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
-  // The view, since connecting.
+  // The server's view as this frontend's replica has it, since connecting.
   const [view, setView] = useState<View>();
-  // Asks the server for the bytes the replica lacks, while connected.
-  const syncView = useRef<() => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -109,52 +104,27 @@ export function useServer() {
     // Another connection, to this profile or another, starts from an empty replica.
     const replica = new Replica();
     let closed = false;
-    // Syncs waiting for the replica to have the bytes the server answered it sent.
-    let waiting: { sent: ViewBytes; done: () => void }[] = [];
-    const has = (sent: ViewBytes) => replica.fileId === sent.fileId && replica.committedSize >= sent.end;
-    const settle = () => {
-      waiting.filter((wait) => has(wait.sent)).forEach((wait) => wait.done());
-      waiting = waiting.filter((wait) => !has(wait.sent));
-    };
-    let syncing: Promise<void> | undefined;
-    // Whether to sync again once the sync in flight is done, for bytes that arrived during it and
-    // didn't follow on from the replica.
-    let again = false;
-    const sync = (): Promise<void> => {
-      if (closed) return Promise.resolve();
-      // A sync asked for after an action has to see it, so it waits for one that starts later.
-      if (syncing) {
-        again = true;
-        return syncing.then(() => syncing);
-      }
-      const asked = room.localParticipant
+    // While a sync is in flight, a change that doesn't follow on doesn't ask again: LiveKit
+    // delivers the server's data in order, so the bytes it asked for arrive before its answer.
+    let syncing = false;
+    const sync = () => {
+      if (closed || syncing) return;
+      syncing = true;
+      room.localParticipant
         .performRpc({
           destinationIdentity: SERVER,
           method: SYNC_METHOD,
           payload: JSON.stringify(replica.state()),
           responseTimeout: SYNC_TIMEOUT_MS,
         })
-        .then((reply) => {
-          const sent = viewBytes(JSON.parse(reply));
-          if (!sent || has(sent)) return;
-          return new Promise<void>((done) => {
-            waiting.push({ sent, done });
-            // Bytes lost on the way are asked for again when the next change doesn't follow on.
-            setTimeout(done, SYNC_TIMEOUT_MS);
-          });
-        })
         .catch(() => {})
         .finally(() => {
-          syncing = undefined;
-          if (again) {
-            again = false;
-            void sync();
-          }
+          syncing = false;
         });
-      syncing = asked;
-      return asked;
     };
-    syncView.current = sync;
+    // Changes that arrived ahead of the replica, like those committed while a sync was read and
+    // sent, applied once it has caught up to them.
+    let ahead: { sent: ViewBytes; bytes: Uint8Array }[] = [];
     // Streams are applied in the order they start, one at a time.
     let applying = Promise.resolve();
     room.registerByteStreamHandler(VIEW_TOPIC, (reader) => {
@@ -164,21 +134,27 @@ export function useServer() {
           const sent = viewBytes(reader.info.attributes);
           if (closed || !sent) return;
           const applied = replica.apply(sent, bytes);
-          if (applied === 'applied') {
-            const moment = replica.latest();
-            const response = replica.response();
-            if (moment && response) setView({ moment, response });
-          } else if (applied === 'gap') {
-            if (syncing) again = true;
-            else void sync();
+          if (applied === 'gap') {
+            ahead = [...ahead, { sent, bytes }].slice(-AHEAD);
+            sync();
+            return;
           }
-          settle();
+          let changed = applied === 'applied';
+          for (let caughtUp = changed; caughtUp; ) {
+            caughtUp = false;
+            ahead = ahead.filter((change) => {
+              const result = replica.apply(change.sent, change.bytes);
+              if (result === 'applied') changed = caughtUp = true;
+              return result === 'gap';
+            });
+          }
+          if (changed) setView(replica.view());
         })
         .catch(() => {});
     });
     // The server sends a participant data only once it is active.
     const syncWhenActive = (server: Participant) =>
-      server.waitUntilActive().then(() => void sync());
+      server.waitUntilActive().then(sync);
     const joined = (participant: Participant) => {
       update();
       if (participant.identity === SERVER) void syncWhenActive(participant);
@@ -197,8 +173,6 @@ export function useServer() {
       .catch(() => setStatus('unreachable'));
     return () => {
       closed = true;
-      waiting.forEach((wait) => wait.done());
-      syncView.current = () => Promise.resolve();
       room.removeAllListeners();
       room.unregisterByteStreamHandler(VIEW_TOPIC);
       room.disconnect();
@@ -207,9 +181,6 @@ export function useServer() {
     };
   }, [room, connection, visible]);
 
-  // Resolves once the replica has the view as the server has it now, or the server could not be
-  // asked.
-  const sync = useCallback(() => syncView.current(), []);
 
   const selectProfile = useCallback((id: string) => {
     localStorage.setItem(SELECTED_KEY, id);
@@ -254,5 +225,5 @@ export function useServer() {
     [room],
   );
 
-  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, sync, view };
+  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, view };
 }

@@ -21,7 +21,6 @@ import {
   CloseAgentRequestSchema,
   DismissProposalRequestSchema,
   InvestigateRequestSchema,
-  ListOpenPullRequestsResponseSchema,
   MergeClusterRequestSchema,
   MessageClusterRequestSchema,
   MessageAgentRequestSchema,
@@ -92,7 +91,7 @@ function placeSearch(place: Place): string {
 }
 
 export default function App() {
-  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, sync, view } =
+  const { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, view } =
     useServer();
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
@@ -118,24 +117,16 @@ export default function App() {
     [post],
   );
 
-  const show = useCallback(
-    (json: JsonValue) => {
-      const response = fromJson(ListOpenPullRequestsResponseSchema, json);
-      setClusters(response.clusters);
-      setAgents(response.agents);
-      setLogin(response.login);
-      reported(response.login, response.search);
-    },
-    [reported],
-  );
-
-  // Brings the replica of the server's view up to date, after an action has changed it.
-  const load = sync;
-
-  // The replica is synced whenever this frontend or the server joins, and sent every change.
+  // The clusters and agents are lazy views of the server's view, read from this frontend's replica
+  // of it as they're rendered. Every action's change reaches the replica as soon as the server has
+  // made it, like any other change.
   useEffect(() => {
-    if (view) show(view.response);
-  }, [view, show]);
+    if (!view) return;
+    setClusters(view.clusters);
+    setAgents(view.agents);
+    setLogin(view.login);
+    reported(view.login, view.search);
+  }, [view, reported]);
 
   // A pushed entry's state is the query of the entry it was pushed from, so going to that place goes
   // back to it instead of stacking a copy. `replace` overwrites the current entry otherwise, for a
@@ -170,12 +161,13 @@ export default function App() {
     return () => removeEventListener('popstate', restore);
   }, []);
 
-  // Marks `key` busy until the request and the reload after it settle. A refused request reloads too:
-  // the server refuses an action on a cluster whose pull requests changed, and the reload shows them.
+  // Marks `key` busy until the request settles. The server publishes the view as it answers, so
+  // the change, or for a refused request, like one on a cluster whose pull requests changed, the
+  // view as it is now, reaches every frontend with the answer.
   function track(key: string, request: Promise<unknown>) {
     setBusy((keys) => new Set(keys).add(key));
     request
-      .then(load, load)
+      .catch(() => {})
       .finally(() =>
         setBusy((keys) => {
           const rest = new Set(keys);
@@ -245,12 +237,12 @@ export default function App() {
       toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
     )
       .then((json) => fromJson(MessageClusterResponseSchema, json).agentId)
-      .then((id) => load().then(() => go({ cluster: place.cluster, agent: id })));
+      .then((id) => go({ cluster: place.cluster, agent: id }));
   }
 
   function messageAgent(id: string, message: string) {
     return post('/agents/message', toJson(MessageAgentRequestSchema, create(MessageAgentRequestSchema, { id, message }))).then(
-      load,
+      () => {},
     );
   }
 
