@@ -7,29 +7,35 @@
 // all a replica that has the moments before it needs: a frontend is sent the whole database once,
 // and then each moment's bytes as it commits.
 //
+// Everything in it is stored structurally, by xitdb's `Structured` codec: a message is a hash map
+// from each field's name, as pbjson names it (camelCase), to its value, a repeated field is an
+// array list, and a string, an enum (pbjson writes its name) or a 64-bit integer (pbjson writes it
+// as a decimal string) is bytes. A bool is the text `true` or `false`, tagged `bl`. pbjson leaves
+// out fields that hold their default, so those are missing keys. Writing compares with what's
+// stored and writes only what differs, so a change appends the values that changed and the
+// blocks along the path to them, not the cluster they are in.
+//
 // A moment holds:
-// - `clusters`: each cluster's JSON, by `key`;
-// - `order`: the clusters' keys, as a JSON array, in the order they show;
-// - `login`, `search` and `agents`, the rest of the `ListOpenPullRequestsResponse`, `agents` as a
-//   JSON array.
+// - `clusters`: each cluster, by `key`. Clusters move up and down the list as they're updated,
+//   and a list is compared by index, so they're kept in a map that doesn't move them;
+// - `order`: the clusters' keys, in the order they show;
+// - `login`, `search` and `agents`, the rest of the `ListOpenPullRequestsResponse`.
 
 use std::{
     collections::HashMap,
-    io,
     sync::{Arc, Mutex},
 };
 
 use gem_db::xitdb::{
-    Core, CoreMemory, Data, Database, History, JSON_FORMAT_TAG, Json, Map, MemoryOffsetMap,
-    ReplicaState, Result, WriteHashMap,
+    Core, CoreMemory, Database, History, Map, MemoryOffsetMap, ReplicaState, Result, Structured,
+    WriteHashMap, put_structured,
 };
 use gem_room::Stream;
-use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
 
-const CLUSTERS: Map<str, Json<PullRequestCluster>> = Map::new("clusters");
+const CLUSTERS: Map<str, Structured<PullRequestCluster>> = Map::new("clusters");
 const ORDER: &str = "order";
 const LOGIN: &str = "login";
 const SEARCH: &str = "search";
@@ -67,15 +73,6 @@ impl Delta {
     }
 }
 
-// What a frontend's replica has, as it sends it: `null` for none yet, and otherwise its committed
-// size and its checksum, a u64 as a decimal string.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Replica {
-    pub committed_size: i64,
-    pub checksum: String,
-}
-
 impl View {
     pub fn new() -> Result<View> {
         let db = Database::in_memory()?;
@@ -103,16 +100,10 @@ impl View {
 
     // The bytes a replica in `replica` lacks: from its committed size when it is a prefix of this
     // database, and otherwise all of it.
-    pub fn sync(&self, replica: Option<&Replica>) -> Result<Delta> {
+    pub fn sync(&self, replica: Option<ReplicaState>) -> Result<Delta> {
         let start = match replica {
             None => 0,
-            Some(replica) => {
-                let Ok(checksum) = replica.checksum.parse() else {
-                    return self.read(0, self.db.committed_size()?);
-                };
-                let committed_size = replica.committed_size;
-                self.db.replication_start(ReplicaState { committed_size, checksum })?
-            }
+            Some(replica) => self.db.replication_start(replica)?,
         };
         self.read(start, self.db.committed_size()?)
     }
@@ -176,12 +167,13 @@ impl Live {
         }
     }
 
-    // Answers a frontend's view-sync request, whose payload is its `Replica` or `null`, with
-    // which bytes it is sent, and them.
+    // Answers a frontend's view-sync request with which bytes it is sent, and them. Its payload is
+    // `null` for a new replica, or its `ReplicaState` as xitdb's serde writes it,
+    // `{"committedSize":123,"checksum":"456"}`, the checksum a u64 as a decimal string.
     pub fn sync(&self, payload: &str) -> Result<(String, Stream), (u32, String)> {
-        let replica: Option<Replica> = serde_json::from_str(payload)
+        let replica: Option<ReplicaState> = serde_json::from_str(payload)
             .map_err(|error| (400, format!("not a replica's state: {error}")))?;
-        let delta = (self.view.lock().unwrap().sync(replica.as_ref()))
+        let delta = (self.view.lock().unwrap().sync(replica))
             .map_err(|error| (500, format!("cannot read the view: {error}")))?;
         let attributes = delta.attributes();
         let reply = serde_json::to_string(&attributes).unwrap();
@@ -202,7 +194,8 @@ fn write_view<C: Core>(
 ) -> Result<()> {
     let order: Vec<&str> = response.clusters.iter().map(key).collect();
     for (key, cluster) in order.iter().zip(&response.clusters) {
-        write_cluster(moment, key, cluster)?;
+        // Writes only what changed in the cluster, and nothing when it didn't.
+        CLUSTERS.put(moment, key, cluster)?;
     }
     let mut gone = Vec::new();
     if let Some(clusters) = CLUSTERS.collection(moment)? {
@@ -216,54 +209,88 @@ fn write_view<C: Core>(
     for key in gone {
         CLUSTERS.remove(moment, &key)?;
     }
-    put_json(moment, ORDER, &order)?;
-    moment.put_if_changed(LOGIN, response.login.as_str())?;
-    moment.put_if_changed(SEARCH, response.search.as_str())?;
-    put_json(moment, AGENTS, &response.agents)?;
+    put_structured(moment, ORDER, &order)?;
+    put_structured(moment, LOGIN, &response.login)?;
+    put_structured(moment, SEARCH, &response.search)?;
+    put_structured(moment, AGENTS, &response.agents)?;
     Ok(())
-}
-
-// Writes the cluster at `key` only when its JSON changed, so a moment appends only the clusters
-// that did. The JSON is what `Json<PullRequestCluster>` writes; a structural codec that writes only
-// the fields that changed can replace it here.
-fn write_cluster<C: Core>(
-    moment: &mut WriteHashMap<'_, C>,
-    key: &str,
-    cluster: &PullRequestCluster,
-) -> Result<bool> {
-    let json = serde_json::to_vec(cluster).map_err(io::Error::from)?;
-    let data = Data::tagged_bytes(json, JSON_FORMAT_TAG);
-    moment.put_path_if_changed(&[CLUSTERS.name(), key], data)
-}
-
-fn put_json<C: Core>(
-    moment: &mut WriteHashMap<'_, C>,
-    key: &str,
-    value: &impl Serialize,
-) -> Result<bool> {
-    let json = serde_json::to_vec(value).map_err(io::Error::from)?;
-    moment.put_if_changed(key, Data::tagged_bytes(json, JSON_FORMAT_TAG))
 }
 
 #[cfg(test)]
 mod tests {
-    use gem_db::xitdb::ReadHashMap;
+    use gem_db::xitdb::{ReadHashMap, get_structured};
+    use pbjson_types::Timestamp;
 
     use super::*;
-    use crate::proto::PullRequest;
+    use crate::proto::{
+        Agent, AgentState, CheckFailure, Checks, FailedCheck, MergeBy, Proposal, PullRequest,
+        Repository,
+    };
+
+    fn at(seconds: i64) -> Option<Timestamp> {
+        Some(Timestamp { seconds, nanos: 0 })
+    }
+
+    // A pull request as gem shows one: enums, timestamps, bools both ways, fields left at their
+    // defaults (which pbjson leaves out), and a workflow run ID past 2^53, which pbjson writes
+    // as a string.
+    fn pull_request(url: &str, n: u32) -> PullRequest {
+        let even = n.is_multiple_of(2);
+        let failed = FailedCheck {
+            id: format!("check-{n}"),
+            name: "test (ubuntu-latest)".to_string(),
+            conclusion: "FAILURE".to_string(),
+            url: format!("https://github.com/u9g/gem/actions/runs/{n}"),
+            workflow_run_id: (1 << 60) + u64::from(n),
+            excerpt: "assertion failed: left == right\n".repeat(8),
+        };
+        let proposal = Proposal {
+            id: format!("proposal-{n}"),
+            summary: "Fix the flaky test by waiting for the room to empty".to_string(),
+            pull_request_url: format!("{url}{n}"),
+            reply: "The test raced the server leaving the room. ".repeat(6),
+            rerun: true,
+            check_failure: Some(CheckFailure {
+                id: format!("failure-{n}"),
+                head_oid: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                checks: vec![failed],
+            }),
+            ..Default::default()
+        };
+        PullRequest {
+            repository: Some(Repository { owner: "u9g".to_string(), name: "gem".to_string() }),
+            number: 100 + n,
+            title: format!("Make the view live, part {n}"),
+            url: format!("{url}{n}"),
+            approved: even,
+            merge_by: MergeBy::Approval as i32,
+            checks_passing: even,
+            checks_failing: !even,
+            proposals: vec![proposal],
+            checks: Some(Checks { total: 14, done: 14, failed: n % 2 }),
+            head_oid: "89abcdef0123456789abcdef0123456789abcdef".to_string(),
+            base: "main".to_string(),
+            created_at: at(1_790_000_000 + i64::from(n)),
+            ..Default::default()
+        }
+    }
 
     fn cluster(url: &str, title: &str) -> PullRequestCluster {
-        let pr = |n: u32| PullRequest {
-            url: format!("{url}{n}"),
-            title: format!("{title} {n}"),
-            // Like a real pull request's description, the bulk of a cluster's JSON.
-            no_proposal_reason: "a reason that takes some room to explain. ".repeat(20),
+        let agent = Agent {
+            id: format!("{url}agent"),
+            title: format!("Answer the review of {title}"),
+            state: AgentState::Waiting as i32,
+            pull_request_urls: vec![format!("{url}0")],
+            reply: "Done: the comments are answered.".to_string(),
+            started_at: at(1_790_000_500),
             ..Default::default()
         };
         PullRequestCluster {
-            pull_requests: (0..3).map(pr).collect(),
+            pull_requests: (0..3).map(|n| pull_request(url, n)).collect(),
+            updated_at: at(1_790_001_000),
             name: title.to_string(),
-            ..Default::default()
+            merge_by: MergeBy::Admin as i32,
+            agents: vec![agent],
         }
     }
 
@@ -274,7 +301,12 @@ mod tests {
                 .collect(),
             login: "u9g".to_string(),
             search: "org:livekit".to_string(),
-            agents: Vec::new(),
+            agents: vec![Agent {
+                id: "lone".to_string(),
+                state: AgentState::Working as i32,
+                started_at: at(1_790_000_900),
+                ..Default::default()
+            }],
         }
     }
 
@@ -290,11 +322,11 @@ mod tests {
             Frontend { db: Database::in_memory().unwrap(), file_id: None }
         }
 
-        fn replica(&self) -> Option<Replica> {
+        // What it sends, through xitdb's serde form of its state.
+        fn replica(&self) -> Option<ReplicaState> {
             self.file_id?;
-            let state = self.db.replica_state().unwrap();
-            let checksum = state.checksum.to_string();
-            Some(Replica { committed_size: state.committed_size, checksum })
+            let json = serde_json::to_string(&self.db.replica_state().unwrap()).unwrap();
+            Some(serde_json::from_str(&json).unwrap())
         }
 
         // Whether it applied the delta; a frontend that didn't syncs.
@@ -312,7 +344,7 @@ mod tests {
         }
 
         fn sync(&mut self, view: &View) -> Delta {
-            let delta = view.sync(self.replica().as_ref()).unwrap();
+            let delta = view.sync(self.replica()).unwrap();
             assert!(self.receive(&delta));
             delta
         }
@@ -321,18 +353,13 @@ mod tests {
         fn shown(&self) -> ListOpenPullRequestsResponse {
             let history = History::new(&self.db).unwrap();
             let moment: ReadHashMap<_> = history.latest().unwrap();
-            let json = |key: &str| {
-                let cursor = moment.get_cursor(key).unwrap().unwrap();
-                serde_json::from_slice::<serde_json::Value>(&cursor.read_bytes(None).unwrap())
-                    .unwrap()
-            };
-            let order: Vec<String> = serde_json::from_value(json(ORDER)).unwrap();
+            let order: Vec<String> = get_structured(&moment, ORDER).unwrap().unwrap();
             let clusters = order.iter().map(|key| CLUSTERS.get(&moment, key).unwrap().unwrap());
             ListOpenPullRequestsResponse {
                 clusters: clusters.collect(),
-                login: moment.get_string(LOGIN, None).unwrap().unwrap(),
-                search: moment.get_string(SEARCH, None).unwrap().unwrap(),
-                agents: serde_json::from_value(json(AGENTS)).unwrap(),
+                login: get_structured(&moment, LOGIN).unwrap().unwrap(),
+                search: get_structured(&moment, SEARCH).unwrap().unwrap(),
+                agents: get_structured(&moment, AGENTS).unwrap().unwrap(),
             }
         }
     }
@@ -347,15 +374,22 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_cluster_appends_little_more_than_itself() {
+    fn a_changed_check_appends_a_small_delta() {
         let mut view = View::new().unwrap();
         let mut shown = response(50);
         let whole = view.write(&shown).unwrap().unwrap();
-        shown.clusters[7].name = "renamed".to_string();
+        let pr = &mut shown.clusters[7].pull_requests[1];
+        pr.checks = Some(Checks { total: 14, done: 13, failed: 0 });
+        pr.checks_failing = false;
         let delta = view.write(&shown).unwrap().unwrap();
-        let one = serde_json::to_vec(&shown.clusters[7]).unwrap().len();
-        assert!(delta.bytes.len() < whole.bytes.len() / 10, "{} bytes", delta.bytes.len());
-        assert!(delta.bytes.len() < 2 * one + 4096, "{} bytes", delta.bytes.len());
+        let cluster = serde_json::to_vec(&shown.clusters[7]).unwrap().len();
+        eprintln!(
+            "whole view {} bytes, one cluster's JSON {cluster} bytes, delta {} bytes",
+            whole.bytes.len(),
+            delta.bytes.len()
+        );
+        assert!(delta.bytes.len() < 4096, "{} bytes", delta.bytes.len());
+        assert!(delta.bytes.len() < cluster, "{} bytes", delta.bytes.len());
     }
 
     #[test]
@@ -377,12 +411,14 @@ mod tests {
         let mut shown = response(3);
         shown.clusters.remove(1);
         shown.clusters.push(cluster("https://github.com/o/r/pull/9/", "new"));
+        shown.clusters[0].pull_requests[0].approved = false;
+        shown.clusters[0].agents.clear();
         shown.login = "other".to_string();
         let delta = view.write(&shown).unwrap().unwrap();
         assert!(frontend.receive(&delta));
         assert_eq!(frontend.shown(), shown);
         // One it already has, from a sync that raced the change, is not applied twice.
-        let synced = view.sync(frontend.replica().as_ref()).unwrap();
+        let synced = view.sync(frontend.replica()).unwrap();
         assert_eq!(synced.start, synced.end);
         assert!(!frontend.receive(&delta));
     }
@@ -411,7 +447,7 @@ mod tests {
         let file_id = view.db.header().file_id;
         // Growing past the threshold compacts it; each change is still sent from the old file.
         let mut shown = response(3);
-        for i in 0..2000 {
+        for i in 0..20_000 {
             shown.clusters[0].name = format!("name {i}");
             let delta = view.write(&shown).unwrap().unwrap();
             assert!(frontend.receive(&delta));
@@ -432,7 +468,7 @@ mod tests {
 
     // With GEM_VIEW_FIXTURE set to a directory, writes the bytes the frontend's view-replica test
     // replays: `full.bin`, a whole view, then `delta.bin`, a change to it, with `fixture.json`
-    // saying which bytes each is and what the frontend should show after each.
+    // saying which bytes each is and what the frontend should show after each, as pbjson's JSON.
     #[test]
     fn writes_a_fixture_for_the_frontend() {
         let Some(dir) = std::env::var_os("GEM_VIEW_FIXTURE") else {
@@ -449,6 +485,8 @@ mod tests {
         let mut second = first.clone();
         second.clusters.swap(0, 2);
         second.clusters[1].name = "renamed".to_string();
+        second.clusters[1].pull_requests[0].approved = false;
+        second.clusters[1].pull_requests[2].checks = None;
         second.clusters.pop();
         let delta = view.write(&second).unwrap().unwrap();
         std::fs::write(dir.join("full.bin"), &full.bytes).unwrap();

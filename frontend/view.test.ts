@@ -8,7 +8,10 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fromJson, type JsonValue } from '@bufbuild/protobuf';
 import { Hasher } from 'xitdb';
+
+import { ListOpenPullRequestsResponseSchema } from './gen/gem_pb';
 
 import { BrowserSha1, Replica, viewBytes } from './view';
 
@@ -45,7 +48,23 @@ test('a replica shows what the server wrote', { skip: !dir && 'GEM_VIEW_FIXTURE 
   // A change doesn't follow on from nothing.
   assert.equal(replica.apply(delta, read('delta.bin')), 'gap');
   assert.equal(replica.apply(full, read('full.bin')), 'applied');
-  assert.deepEqual(replica.response(), shown(fixture.first));
+  const first = replica.response() as { clusters: JsonValue[] };
+  assert.deepEqual(first, shown(fixture.first));
+  // As pbjson writes them: bools, enums by name, timestamps and 64-bit integers as strings, and
+  // fields at their defaults left out.
+  const pr = (first.clusters[0] as any).pullRequests[1];
+  assert.equal(pr.approved, undefined);
+  assert.equal(pr.checksFailing, true);
+  assert.equal(pr.mergeBy, 'MERGE_BY_APPROVAL');
+  assert.equal(pr.checks.failed, 1);
+  assert.equal(pr.createdAt, fixture.first.clusters[0].pullRequests[1].createdAt);
+  assert.equal(pr.proposals[0].checkFailure.checks[0].workflowRunId, '1152921504606846977');
+  assert.equal(pr.rebasing, undefined);
+  // And as the app reads it.
+  const response = fromJson(ListOpenPullRequestsResponseSchema, replica.response()!);
+  const check = response.clusters[0].pullRequests[1].proposals[0].checkFailure!.checks[0];
+  assert.equal(check.workflowRunId, 1152921504606846977n);
+  assert.equal(response.clusters[0].agents[0].state, 2);
   // A key is looked up by its hash, as the server's view wrote it.
   const login = replica.latest()!.getCursor('login');
   assert.equal(new TextDecoder().decode(login!.readBytes()), fixture.first.login);
@@ -54,7 +73,10 @@ test('a replica shows what the server wrote', { skip: !dir && 'GEM_VIEW_FIXTURE 
   assert.equal(replica.fileId, full.fileId);
 
   assert.equal(replica.apply(delta, read('delta.bin')), 'applied');
-  assert.deepEqual(replica.response(), shown(fixture.second));
+  const second = replica.response() as { clusters: JsonValue[] };
+  assert.deepEqual(second, shown(fixture.second));
+  // A cluster the change didn't touch isn't converted again.
+  assert.equal(second.clusters[0], first.clusters[2]);
   // Bytes it has already are not applied again, nor is the older whole copy.
   assert.equal(replica.apply(delta, read('delta.bin')), 'had');
   assert.equal(replica.apply(full, read('full.bin')), 'had');
