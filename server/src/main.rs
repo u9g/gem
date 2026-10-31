@@ -35,7 +35,6 @@ use proto::{
 mod agents;
 mod conversations;
 mod files;
-mod import;
 mod investigations;
 mod mcp;
 mod merges;
@@ -348,7 +347,6 @@ async fn run_server() {
     login();
 
     let db = gem_db::Db::open(DB_FILE).unwrap_or_else(|error| panic!("{error}"));
-    import::import(&db).unwrap_or_else(|error| panic!("{error}"));
     let _ = DB.set(db.clone());
 
     // Nothing watches the repositories for changes.

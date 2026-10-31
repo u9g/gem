@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gem_db::{Db, Read};
+use gem_db::{Db, get_map, get_text, map_mut, texts};
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -467,12 +467,21 @@ async fn load() -> Vec<Investigation> {
     load_from(crate::db(), false)
 }
 
+// In the database's moment, the hash maps from each open investigation's ID, and from each closed
+// one's, to the Investigation, as JSON. A closed investigation stays, so later agents can search
+// what it found.
+const OPEN: &str = "investigations";
+const CLOSED: &str = "closed-investigations";
+
+fn map_of(closed: bool) -> &'static str {
+    if closed { CLOSED } else { OPEN }
+}
+
 fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
-    let investigations = db.read(|db| db.rows("investigations"));
+    let investigations = db.read(|moment| texts(moment, map_of(closed)));
     match investigations {
         Ok(investigations) => (investigations.iter())
-            .filter(|(_, row)| row.flag("closed") == closed)
-            .filter_map(|(_, row)| serde_json::from_str(&row.text("investigation")?).ok())
+            .filter_map(|(_, json)| serde_json::from_str(json).ok())
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "cannot read investigations");
@@ -482,10 +491,9 @@ fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
 }
 
 fn insert(investigation: &Investigation, closed: bool) {
-    let saved = crate::db().write(|tx| {
+    let saved = crate::db().write(|moment| {
         let json = serde_json::to_string(investigation).unwrap();
-        let fields = [("investigation", json.into()), ("closed", closed.into())];
-        tx.put_row("investigations", &investigation.id, &fields)
+        map_mut(moment, map_of(closed))?.put(&investigation.id, json)
     });
     if let Err(error) = saved {
         tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
@@ -496,17 +504,21 @@ fn insert(investigation: &Investigation, closed: bool) {
 // once, so a refresh never brings back a closed investigation or undoes a message's `working`.
 // Returns whether it closed it.
 fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
-    let updated = crate::db().write(|tx| {
-        let json = tx.row("investigations", id)?.filter(|row| !row.flag("closed"));
-        let Some(mut investigation) = (json.and_then(|row| row.text("investigation")))
-            .and_then(|json| serde_json::from_str(&json).ok())
+    let updated = crate::db().write(|moment| {
+        let json = match get_map(moment, OPEN)? {
+            Some(open) => get_text(&open, id)?,
+            None => None,
+        };
+        let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
         else {
             return Ok(false);
         };
         let close = change(&mut investigation);
         let json = serde_json::to_string(&investigation).unwrap();
-        let fields = [("investigation", json.into()), ("closed", close.into())];
-        tx.put_row("investigations", id, &fields)?;
+        if close {
+            map_mut(moment, OPEN)?.remove(id)?;
+        }
+        map_mut(moment, map_of(close))?.put(id, json)?;
         Ok(close)
     });
     updated.unwrap_or_else(|error| {
@@ -552,11 +564,7 @@ mod tests {
                 ..Default::default()
             };
             let json = serde_json::to_string(&investigation).unwrap();
-            db.write(|tx| {
-                let fields = [("investigation", (&json).into()), ("closed", closed.into())];
-                tx.put_row("investigations", id, &fields)
-            })
-            .unwrap();
+            db.write(|moment| map_mut(moment, map_of(closed))?.put(id, &*json)).unwrap();
         };
         write("1", "Investigate test on r#1", "", "test_join times out: the room closes first.", true);
         write("2", "Investigate lint on r#2", "", "A new clippy lint.", true);

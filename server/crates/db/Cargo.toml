@@ -4,6 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Only to import a gem.sqlite written before the database was xitdb.
-rusqlite = { version = "0.37.0", features = ["bundled"] }
 xitdb = { git = "https://github.com/u9g/xitdb-rs" }

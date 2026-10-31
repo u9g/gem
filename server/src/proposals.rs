@@ -4,7 +4,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, Read};
+use gem_db::{Db, map_mut, texts};
 use serde::Deserialize;
 use tracing::Instrument;
 
@@ -800,13 +800,14 @@ pub async fn propose(
         open_pull_request,
     };
     // The proposal it replaces may have been approved or dismissed meanwhile.
-    let recorded = db.write(|tx| {
+    let recorded = db.write(|moment| {
+        let mut proposals = map_mut(moment, PROPOSALS)?;
         if let Some(replaced) = &replaced
-            && !tx.remove("proposals", replaced)?
+            && !proposals.remove(replaced)?
         {
             return Ok(false);
         }
-        tx.put("proposals", &proposal.id, &serde_json::to_string(&proposal).unwrap())?;
+        proposals.put(&proposal.id, serde_json::to_string(&proposal).unwrap())?;
         Ok(true)
     })?;
     if !recorded {
@@ -936,8 +937,11 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     })
 }
 
+// In the database's moment, the hash map from each proposal's ID to the Proposal, as JSON.
+const PROPOSALS: &str = "proposals";
+
 pub fn load(db: &Db) -> Vec<Proposal> {
-    let proposals = db.read(|db| db.texts("proposals"));
+    let proposals = db.read(|moment| texts(moment, PROPOSALS));
     match proposals {
         Ok(proposals) => (proposals.iter())
             .filter_map(|(_, json)| serde_json::from_str(json).ok())
@@ -950,8 +954,8 @@ pub fn load(db: &Db) -> Vec<Proposal> {
 }
 
 fn save(db: &Db, proposal: &Proposal) {
-    let saved = db.write(|tx| {
-        tx.put("proposals", &proposal.id, &serde_json::to_string(proposal).unwrap())
+    let saved = db.write(|moment| {
+        map_mut(moment, PROPOSALS)?.put(&proposal.id, serde_json::to_string(proposal).unwrap())
     });
     if let Err(error) = saved {
         tracing::warn!(proposal = %proposal.id, %error, "cannot save proposal");
@@ -959,7 +963,7 @@ fn save(db: &Db, proposal: &Proposal) {
 }
 
 fn delete(id: &str) {
-    let deleted = crate::db().write(|tx| tx.remove("proposals", id));
+    let deleted = crate::db().write(|moment| map_mut(moment, PROPOSALS)?.remove(id));
     if let Err(error) = deleted {
         tracing::warn!(proposal = id, %error, "cannot delete proposal");
     }

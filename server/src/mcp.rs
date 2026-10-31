@@ -24,7 +24,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use gem_db::{Db, Read};
+use gem_db::{Db, get_text};
 use serde_json::{Value, json};
 
 use crate::investigations;
@@ -40,10 +40,12 @@ pub async fn save(response: &ListOpenPullRequestsResponse) {
     save_to(crate::db(), response);
 }
 
+// In the database's moment, the clusters as gem last showed them, with their names and proposals:
+// the ListOpenPullRequestsResponse, as JSON.
+const SNAPSHOT: &str = "snapshot";
+
 fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
-    let saved = db.write(|tx| {
-        tx.put("snapshot", "response", &serde_json::to_string(response).unwrap())
-    });
+    let saved = db.write(|moment| moment.put(SNAPSHOT, serde_json::to_string(response).unwrap()));
     if let Err(error) = saved {
         tracing::warn!(%error, "cannot save the snapshot");
     }
@@ -51,7 +53,7 @@ fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
 
 // The snapshot's JSON, once the server saved one.
 fn snapshot(db: &Db) -> Option<String> {
-    db.read(|db| db.get("snapshot", "response")).ok().flatten()
+    db.read(|moment| get_text(moment, SNAPSHOT)).ok().flatten()
 }
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
@@ -1142,7 +1144,7 @@ mod tests {
             "pullRequests": [{ "url": PR, "title": "Rename", "titleHtml": "<p>Rename</p>" }],
         }] });
         (server.db())
-            .write(|tx| tx.put("snapshot", "response", &snapshot.to_string()))
+            .write(|moment| moment.put(SNAPSHOT, snapshot.to_string()))
             .unwrap();
         let token = server.token(&in_thread()).await;
         let result = server
@@ -1183,10 +1185,9 @@ mod tests {
             "reply": "test_join times out when the room closes first.",
         });
         (server.db())
-            .write(|tx| {
-                let investigation = investigation.to_string();
-                let fields = [("investigation", investigation.into()), ("closed", true.into())];
-                tx.put_row("investigations", "18f", &fields)
+            .write(|moment| {
+                let mut closed = gem_db::map_mut(moment, "closed-investigations")?;
+                closed.put("18f", investigation.to_string())
             })
             .unwrap();
         let token = server.token(&in_thread()).await;

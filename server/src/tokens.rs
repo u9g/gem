@@ -8,13 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gem_db::{Db, Read};
+use gem_db::{Db, get_map, get_text, map_mut, texts};
 use serde::{Deserialize, Serialize};
 
 // The --mcp-config each token's agent was started with, as `<token>.mcp.json` in this directory,
 // relative to the server's working directory: T3 Code reads it from a file, again for as long as
 // the token lasts.
 pub const DIR: &str = "agent-tokens";
+
+// In the database's moment, the hash map from each token to its Subject, as JSON.
+pub const TOKENS: &str = "agent-tokens";
 
 // What an agent answers, and so what it may propose on.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -103,7 +106,11 @@ impl Tokens {
 
     // The subject of `token`, or None when it is not one gem issued or it was revoked.
     pub async fn subject(&self, token: &str) -> Option<Subject> {
-        let json = self.db.read(|db| db.get("agent_tokens", token)).ok()?;
+        let json = self.db.read(|moment| match get_map(moment, TOKENS)? {
+            Some(tokens) => get_text(&tokens, token),
+            None => Ok(None),
+        });
+        let json = json.ok()?;
         serde_json::from_str(&json?).ok()
     }
 
@@ -127,18 +134,19 @@ impl Tokens {
         revoked: impl Fn(&Subject) -> bool,
         issued: Option<(&str, &Subject)>,
     ) -> Result<Vec<String>, String> {
-        self.db.write(|tx| {
-            let revoked: Vec<String> = (tx.texts("agent_tokens")?.into_iter())
+        self.db.write(|moment| {
+            let revoked: Vec<String> = (texts(moment, TOKENS)?.into_iter())
                 .filter(|(_, subject)| {
                     serde_json::from_str::<Subject>(subject).is_ok_and(|subject| revoked(&subject))
                 })
                 .map(|(token, _)| token)
                 .collect();
+            let mut tokens = map_mut(moment, TOKENS)?;
             for token in &revoked {
-                tx.remove("agent_tokens", token)?;
+                tokens.remove(token)?;
             }
             if let Some((token, subject)) = issued {
-                tx.put("agent_tokens", token, &serde_json::to_string(subject).unwrap())?;
+                tokens.put(token, serde_json::to_string(subject).unwrap())?;
             }
             Ok(revoked)
         })
@@ -178,7 +186,7 @@ pub mod tests {
         dir
     }
 
-    // A database with every table the server's state needs, and nothing in them.
+    // An empty database.
     pub fn db() -> Db {
         Db::open_in_memory().unwrap()
     }
