@@ -1,9 +1,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use gem_db::{
-    Db,
-    rusqlite::{OptionalExtension, params},
-};
+use gem_db::{Db, Read};
 use pbjson_types::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -471,14 +468,11 @@ async fn load() -> Vec<Investigation> {
 }
 
 fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
-    let investigations = db.with(|db| {
-        db.prepare("SELECT investigation FROM investigations WHERE closed = ?1")?
-            .query_map([closed], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()
-    });
+    let investigations = db.read(|db| db.rows("investigations"));
     match investigations {
         Ok(investigations) => (investigations.iter())
-            .filter_map(|json| serde_json::from_str(json).ok())
+            .filter(|(_, row)| row.flag("closed") == closed)
+            .filter_map(|(_, row)| serde_json::from_str(&row.text("investigation")?).ok())
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "cannot read investigations");
@@ -488,11 +482,10 @@ fn load_from(db: &Db, closed: bool) -> Vec<Investigation> {
 }
 
 fn insert(investigation: &Investigation, closed: bool) {
-    let saved = crate::db().with(|db| {
-        db.execute(
-            "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
-            params![investigation.id, serde_json::to_string(investigation).unwrap(), closed],
-        )
+    let saved = crate::db().write(|tx| {
+        let json = serde_json::to_string(investigation).unwrap();
+        let fields = [("investigation", json.into()), ("closed", closed.into())];
+        tx.put_row("investigations", &investigation.id, &fields)
     });
     if let Err(error) = saved {
         tracing::warn!(investigation = %investigation.id, %error, "cannot save investigation");
@@ -503,25 +496,17 @@ fn insert(investigation: &Investigation, closed: bool) {
 // once, so a refresh never brings back a closed investigation or undoes a message's `working`.
 // Returns whether it closed it.
 fn update(id: &str, change: impl FnOnce(&mut Investigation) -> bool) -> bool {
-    let updated = crate::db().with(|db| {
-        let tx = db.unchecked_transaction()?;
-        let json: Option<String> = tx
-            .query_row(
-                "SELECT investigation FROM investigations WHERE id = ?1 AND closed = 0",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(mut investigation) = json.and_then(|json| serde_json::from_str(&json).ok())
+    let updated = crate::db().write(|tx| {
+        let json = tx.row("investigations", id)?.filter(|row| !row.flag("closed"));
+        let Some(mut investigation) = (json.and_then(|row| row.text("investigation")))
+            .and_then(|json| serde_json::from_str(&json).ok())
         else {
             return Ok(false);
         };
         let close = change(&mut investigation);
-        tx.execute(
-            "UPDATE investigations SET investigation = ?2, closed = ?3 WHERE id = ?1",
-            params![id, serde_json::to_string(&investigation).unwrap(), close],
-        )?;
-        tx.commit()?;
+        let json = serde_json::to_string(&investigation).unwrap();
+        let fields = [("investigation", json.into()), ("closed", close.into())];
+        tx.put_row("investigations", id, &fields)?;
         Ok(close)
     });
     updated.unwrap_or_else(|error| {
@@ -567,11 +552,9 @@ mod tests {
                 ..Default::default()
             };
             let json = serde_json::to_string(&investigation).unwrap();
-            db.with(|db| {
-                db.execute(
-                    "INSERT INTO investigations (id, investigation, closed) VALUES (?1, ?2, ?3)",
-                    params![id, json, closed],
-                )
+            db.write(|tx| {
+                let fields = [("investigation", (&json).into()), ("closed", closed.into())];
+                tx.put_row("investigations", id, &fields)
             })
             .unwrap();
         };

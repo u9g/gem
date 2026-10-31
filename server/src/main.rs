@@ -54,7 +54,7 @@ use gem_t3 as t3;
 type Cache<T> = Arc<RwLock<Option<T>>>;
 
 // The server's own database, in its working directory, with its state.
-const DB_FILE: &str = "gem.sqlite";
+const DB_FILE: &str = "gem.xitdb";
 static DB: OnceLock<gem_db::Db> = OnceLock::new();
 
 // Opened when the server starts, before anything reads its state.

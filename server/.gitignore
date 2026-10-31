@@ -3,7 +3,9 @@
 /.env
 /releases
 /launcher.lock
-/gem.sqlite
-/gem.sqlite-journal
+/gem.xitdb
+/gem.xitdb.compacting
+# Kept once imported into gem.xitdb.
+/gem.sqlite*
 /server.log
 /deploy

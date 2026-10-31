@@ -4,7 +4,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{Db, rusqlite::params};
+use gem_db::{Db, Read};
 use serde::Deserialize;
 use tracing::Instrument;
 
@@ -800,18 +800,13 @@ pub async fn propose(
         open_pull_request,
     };
     // The proposal it replaces may have been approved or dismissed meanwhile.
-    let recorded = db.with(|db| {
-        let tx = db.unchecked_transaction()?;
+    let recorded = db.write(|tx| {
         if let Some(replaced) = &replaced
-            && tx.execute("DELETE FROM proposals WHERE id = ?1", [replaced])? == 0
+            && !tx.remove("proposals", replaced)?
         {
             return Ok(false);
         }
-        tx.execute(
-            "INSERT INTO proposals (id, proposal) VALUES (?1, ?2)",
-            params![proposal.id, serde_json::to_string(&proposal).unwrap()],
-        )?;
-        tx.commit()?;
+        tx.put("proposals", &proposal.id, &serde_json::to_string(&proposal).unwrap())?;
         Ok(true)
     })?;
     if !recorded {
@@ -942,14 +937,10 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
 }
 
 pub fn load(db: &Db) -> Vec<Proposal> {
-    let proposals = db.with(|db| {
-        db.prepare("SELECT proposal FROM proposals")?
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()
-    });
+    let proposals = db.read(|db| db.texts("proposals"));
     match proposals {
         Ok(proposals) => (proposals.iter())
-            .filter_map(|json| serde_json::from_str(json).ok())
+            .filter_map(|(_, json)| serde_json::from_str(json).ok())
             .collect(),
         Err(error) => {
             tracing::warn!(%error, "cannot read proposals");
@@ -959,11 +950,8 @@ pub fn load(db: &Db) -> Vec<Proposal> {
 }
 
 fn save(db: &Db, proposal: &Proposal) {
-    let saved = db.with(|db| {
-        db.execute(
-            "INSERT OR REPLACE INTO proposals (id, proposal) VALUES (?1, ?2)",
-            params![proposal.id, serde_json::to_string(proposal).unwrap()],
-        )
+    let saved = db.write(|tx| {
+        tx.put("proposals", &proposal.id, &serde_json::to_string(proposal).unwrap())
     });
     if let Err(error) = saved {
         tracing::warn!(proposal = %proposal.id, %error, "cannot save proposal");
@@ -971,8 +959,7 @@ fn save(db: &Db, proposal: &Proposal) {
 }
 
 fn delete(id: &str) {
-    let deleted =
-        crate::db().with(|db| db.execute("DELETE FROM proposals WHERE id = ?1", [id]));
+    let deleted = crate::db().write(|tx| tx.remove("proposals", id));
     if let Err(error) = deleted {
         tracing::warn!(proposal = id, %error, "cannot delete proposal");
     }

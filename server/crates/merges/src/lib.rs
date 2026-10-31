@@ -1,19 +1,16 @@
-// A T3 Code agent merging a cluster's pull requests. Merges are rows in the server's database, one
-// per pull request and sharing the agent's thread, until the thread settles or stops, so a cluster
-// keeps its one merge across presses, frontends and server restarts. T3 Code is reached through
-// `Host`.
+// A T3 Code agent merging a cluster's pull requests. Merges are rows of the server's database's
+// `merges` table, one per pull request by its URL, and sharing the agent's thread, until the thread
+// settles or stops, so a cluster keeps its one merge across presses, frontends and server restarts.
+// T3 Code is reached through `Host`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{
-    Db,
-    rusqlite::{self, OptionalExtension, params},
-};
+use gem_db::{Db, Read, Row, Tx};
 use tokio::sync::Mutex;
 
 // Reading a thread is a local CLI call.
@@ -95,10 +92,9 @@ impl<H: Host> Merges<H> {
     // T3 Code does not settle threads when they finish.
     pub async fn start(&self, urls: &[String], admin: &[String], name: &str) -> Result<(), String> {
         let _starting = self.starting.lock().await;
-        let running = self.db.with(|db| {
-            let mut rows = db.prepare("SELECT 1 FROM merges WHERE url = ?1")?;
+        let running = self.db.read(|db| {
             for url in urls {
-                if rows.query_row([url], |_| Ok(())).optional()?.is_some() {
+                if db.contains("merges", url)? {
                     return Ok(true);
                 }
             }
@@ -131,11 +127,10 @@ When you are done, call the t3_thread_organize tool with action \"settle\" and n
 settle this thread."
         );
         let title = format!("Merge {name}");
-        self.db.with(|db| {
-            let mut insert =
-                db.prepare("INSERT INTO merges (url, title, started_at) VALUES (?1, ?2, ?3)")?;
+        self.db.write(|tx| {
             for url in urls {
-                insert.execute(params![url, title, now()])?;
+                let fields = [("title", (&title).into()), ("started_at", now().into())];
+                tx.put_row("merges", url, &fields)?;
             }
             Ok(())
         })?;
@@ -143,16 +138,15 @@ settle this thread."
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
-                self.db
-                    .with(|db| db.execute("DELETE FROM merges WHERE thread_id IS NULL", []))?;
+                self.db.write(|tx| remove(tx, |row| row.text("thread_id").is_none()))?;
                 return Err(error);
             }
         };
-        self.db.with(|db| {
-            db.execute(
-                "UPDATE merges SET thread_id = ?1 WHERE thread_id IS NULL",
-                [&thread_id],
-            )
+        self.db.write(|tx| {
+            for url in urls_where(tx, |row| row.text("thread_id").is_none())? {
+                tx.set("merges", &url, "thread_id", &thread_id)?;
+            }
+            Ok(())
         })?;
         tokio::spawn(self.clone().watch(thread_id));
         Ok(())
@@ -161,11 +155,10 @@ settle this thread."
     // Watches the merges a previous run of the server left. One whose thread never started is
     // dropped: its server stopped while starting it.
     pub fn resume(&self) -> Result<(), String> {
-        let threads = self.db.with(|db| {
-            db.execute("DELETE FROM merges WHERE thread_id IS NULL", [])?;
-            let mut rows = db.prepare("SELECT DISTINCT thread_id FROM merges")?;
-            rows.query_map([], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()
+        let threads = self.db.write(|tx| {
+            remove(tx, |row| row.text("thread_id").is_none())?;
+            let rows = tx.rows("merges")?.into_iter();
+            Ok(rows.filter_map(|(_, row)| row.text("thread_id")).collect::<BTreeSet<_>>())
         })?;
         for thread_id in threads {
             tokio::spawn(self.clone().watch(thread_id));
@@ -175,28 +168,25 @@ settle this thread."
 
     // By pull request URL.
     pub fn all(&self) -> Result<BTreeMap<String, Merge>, String> {
-        self.db.with(|db| {
-            let mut rows =
-                db.prepare("SELECT url, thread_id, question, title, started_at FROM merges")?;
-            rows.query_map([], |row| {
+        let rows = self.db.read(|db| db.rows("merges"))?;
+        Ok((rows.into_iter())
+            .map(|(url, row)| {
                 let merge = Merge {
-                    thread_id: row.get(1)?,
-                    question: row.get(2)?,
-                    title: row.get(3)?,
-                    started_at: row.get(4)?,
+                    thread_id: row.text("thread_id"),
+                    question: row.flag("question"),
+                    title: row.text("title").unwrap_or_default(),
+                    started_at: row.int("started_at"),
                 };
-                Ok((row.get(0)?, merge))
-            })?
-            .collect()
-        })
+                (url, merge)
+            })
+            .collect())
     }
 
     // Stops showing the merge whose agent runs in `thread_id`, as the user asked. Its cluster can be
     // merged again; the agent keeps running in T3 Code.
     pub fn forget(&self, thread_id: &str) -> Result<(), String> {
-        self.db
-            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [thread_id]))
-            .map(drop)
+        let thread_id = Some(thread_id);
+        (self.db).write(|tx| remove(tx, |row| row.text("thread_id").as_deref() == thread_id))
     }
 
     async fn watch(self, thread_id: String) {
@@ -215,19 +205,31 @@ settle this thread."
             if progress.done {
                 break;
             }
-            let _ = self.db.with(|db| {
-                db.execute(
-                    "UPDATE merges SET question = ?2 WHERE thread_id = ?1",
-                    params![thread_id, progress.question],
-                )
+            let _ = self.db.write(|tx| {
+                let ours = |row: &Row| row.text("thread_id").as_deref() == Some(&*thread_id);
+                for url in urls_where(tx, ours)? {
+                    tx.set("merges", &url, "question", progress.question)?;
+                }
+                Ok(())
             });
         }
-        let removed = (self.db)
-            .with(|db| db.execute("DELETE FROM merges WHERE thread_id = ?1", [&thread_id]));
-        if let Err(error) = removed {
+        if let Err(error) = self.forget(&thread_id) {
             eprintln!("{error}");
         }
     }
+}
+
+// The URLs of the merges whose rows `matches`.
+fn urls_where(tx: &Tx, matches: impl Fn(&Row) -> bool) -> gem_db::Result<Vec<String>> {
+    let rows = tx.rows("merges")?.into_iter();
+    Ok(rows.filter(|(_, row)| matches(row)).map(|(url, _)| url).collect())
+}
+
+fn remove(tx: &mut Tx, matches: impl Fn(&Row) -> bool) -> gem_db::Result<()> {
+    for url in urls_where(tx, matches)? {
+        tx.remove("merges", &url)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -391,12 +393,11 @@ mod tests {
         let host = FakeHost::new();
         let db = Db::open_in_memory().unwrap();
         Merges::new(db.clone(), host.clone()).unwrap();
-        db.with(|db| {
-            db.execute_batch(
-                "INSERT INTO merges (url, thread_id) VALUES ('https://github.com/o/r/pull/1', 't');
-                 INSERT INTO merges (url, thread_id) VALUES ('https://github.com/o/s/pull/2', 't');
-                 INSERT INTO merges (url) VALUES ('https://github.com/o/t/pull/3');",
-            )
+        db.write(|tx| {
+            let thread = [("thread_id", "t".into())];
+            tx.put_row("merges", "https://github.com/o/r/pull/1", &thread)?;
+            tx.put_row("merges", "https://github.com/o/s/pull/2", &thread)?;
+            tx.put_row("merges", "https://github.com/o/t/pull/3", &[])
         })
         .unwrap();
 

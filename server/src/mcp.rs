@@ -24,10 +24,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use gem_db::{
-    Db,
-    rusqlite::{OptionalExtension, params},
-};
+use gem_db::{Db, Read};
 use serde_json::{Value, json};
 
 use crate::investigations;
@@ -44,11 +41,8 @@ pub async fn save(response: &ListOpenPullRequestsResponse) {
 }
 
 fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
-    let saved = db.with(|db| {
-        db.execute(
-            "INSERT OR REPLACE INTO snapshot (id, response) VALUES (0, ?1)",
-            params![serde_json::to_string(response).unwrap()],
-        )
+    let saved = db.write(|tx| {
+        tx.put("snapshot", "response", &serde_json::to_string(response).unwrap())
     });
     if let Err(error) = saved {
         tracing::warn!(%error, "cannot save the snapshot");
@@ -57,12 +51,7 @@ fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
 
 // The snapshot's JSON, once the server saved one.
 fn snapshot(db: &Db) -> Option<String> {
-    db.with(|db| {
-        db.query_row("SELECT response FROM snapshot", [], |row| row.get(0))
-            .optional()
-    })
-    .ok()
-    .flatten()
+    db.read(|db| db.get("snapshot", "response")).ok().flatten()
 }
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
@@ -106,13 +95,12 @@ pub fn register() {
 // Answers MCP requests on stdin until it closes.
 pub fn serve(args: &[String]) {
     let db = match args {
-        [flag, dir] if flag == "--state" => Db::open(Path::new(dir).join(crate::DB_FILE)),
+        [flag, dir] if flag == "--state" => Db::open_reader(Path::new(dir).join(crate::DB_FILE)),
         _ => {
             eprintln!("usage: server mcp --state <the server's working directory>");
             std::process::exit(2);
         }
-    }
-    .unwrap_or_else(|error| panic!("{error}"));
+    };
     let mut stdout = std::io::stdout().lock();
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -1153,14 +1141,8 @@ mod tests {
             "name": "Renames",
             "pullRequests": [{ "url": PR, "title": "Rename", "titleHtml": "<p>Rename</p>" }],
         }] });
-        server
-            .db()
-            .with(|db| {
-                db.execute(
-                    "INSERT INTO snapshot (id, response) VALUES (0, ?1)",
-                    [snapshot.to_string()],
-                )
-            })
+        (server.db())
+            .write(|tx| tx.put("snapshot", "response", &snapshot.to_string()))
             .unwrap();
         let token = server.token(&in_thread()).await;
         let result = server
@@ -1200,13 +1182,11 @@ mod tests {
             "pullRequestUrl": PR,
             "reply": "test_join times out when the room closes first.",
         });
-        server
-            .db()
-            .with(|db| {
-                db.execute(
-                    "INSERT INTO investigations (id, investigation, closed) VALUES ('18f', ?1, 1)",
-                    [investigation.to_string()],
-                )
+        (server.db())
+            .write(|tx| {
+                let investigation = investigation.to_string();
+                let fields = [("investigation", investigation.into()), ("closed", true.into())];
+                tx.put_row("investigations", "18f", &fields)
             })
             .unwrap();
         let token = server.token(&in_thread()).await;

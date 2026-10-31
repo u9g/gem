@@ -8,10 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use gem_db::{
-    Db,
-    rusqlite::{OptionalExtension, params},
-};
+use gem_db::{Db, Read};
 use serde::{Deserialize, Serialize};
 
 // The --mcp-config each token's agent was started with, as `<token>.mcp.json` in this directory,
@@ -106,17 +103,7 @@ impl Tokens {
 
     // The subject of `token`, or None when it is not one gem issued or it was revoked.
     pub async fn subject(&self, token: &str) -> Option<Subject> {
-        let json: Option<String> = self
-            .db
-            .with(|db| {
-                db.query_row(
-                    "SELECT subject FROM agent_tokens WHERE token = ?1",
-                    [token],
-                    |row| row.get(0),
-                )
-                .optional()
-            })
-            .ok()?;
+        let json = self.db.read(|db| db.get("agent_tokens", token)).ok()?;
         serde_json::from_str(&json?).ok()
     }
 
@@ -140,28 +127,19 @@ impl Tokens {
         revoked: impl Fn(&Subject) -> bool,
         issued: Option<(&str, &Subject)>,
     ) -> Result<Vec<String>, String> {
-        self.db.with(|db| {
-            let tx = db.unchecked_transaction()?;
-            let tokens: Vec<(String, String)> = tx
-                .prepare("SELECT token, subject FROM agent_tokens")?
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<Result<_, _>>()?;
-            let revoked: Vec<String> = (tokens.into_iter())
+        self.db.write(|tx| {
+            let revoked: Vec<String> = (tx.texts("agent_tokens")?.into_iter())
                 .filter(|(_, subject)| {
                     serde_json::from_str::<Subject>(subject).is_ok_and(|subject| revoked(&subject))
                 })
                 .map(|(token, _)| token)
                 .collect();
             for token in &revoked {
-                tx.execute("DELETE FROM agent_tokens WHERE token = ?1", [token])?;
+                tx.remove("agent_tokens", token)?;
             }
             if let Some((token, subject)) = issued {
-                tx.execute(
-                    "INSERT INTO agent_tokens (token, subject) VALUES (?1, ?2)",
-                    params![token, serde_json::to_string(subject).unwrap()],
-                )?;
+                tx.put("agent_tokens", token, &serde_json::to_string(subject).unwrap())?;
             }
-            tx.commit()?;
             Ok(revoked)
         })
     }

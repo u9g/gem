@@ -1,19 +1,16 @@
-// A T3 Code agent rebasing pull requests onto their base branches. Rebases are rows in the server's
-// database, one per pull request and sharing the agent's thread, until the thread settles or stops,
-// so a pull request keeps its one rebase across presses, frontends and server restarts. GitHub and
-// T3 Code are reached through `Host`.
+// A T3 Code agent rebasing pull requests onto their base branches. Rebases are rows of the server's
+// database's `rebases` table, one per pull request by its URL and sharing the agent's thread, until
+// the thread settles or stops, so a pull request keeps its one rebase across presses, frontends and
+// server restarts. GitHub and T3 Code are reached through `Host`.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::Future,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use gem_db::{
-    Db,
-    rusqlite::{self, OptionalExtension, params},
-};
+use gem_db::{Db, Read, Row, Tx};
 use tokio::sync::Mutex;
 
 // Reading a thread is a local CLI call.
@@ -107,10 +104,9 @@ impl<H: Host> Rebases<H> {
     // does not settle threads when they finish.
     pub async fn start(&self, urls: &[String], name: &str) -> Result<(), String> {
         let _starting = self.starting.lock().await;
-        let running = self.db.with(|db| {
-            let mut rows = db.prepare("SELECT 1 FROM rebases WHERE url = ?1")?;
+        let running = self.db.read(|db| {
             for url in urls {
-                if rows.query_row([url], |_| Ok(())).optional()?.is_some() {
+                if db.contains("rebases", url)? {
                     return Ok(true);
                 }
             }
@@ -135,12 +131,14 @@ settle this thread.",
             urls.join(", ")
         );
         let title = format!("Rebase {name}");
-        self.db.with(|db| {
-            let mut insert = db.prepare(
-                "INSERT INTO rebases (url, head, title, started_at) VALUES (?1, ?2, ?3, ?4)",
-            )?;
+        self.db.write(|tx| {
             for (url, head) in urls.iter().zip(&heads) {
-                insert.execute(params![url, head, title, now()])?;
+                let fields = [
+                    ("head", head.into()),
+                    ("title", (&title).into()),
+                    ("started_at", now().into()),
+                ];
+                tx.put_row("rebases", url, &fields)?;
             }
             Ok(())
         })?;
@@ -148,16 +146,15 @@ settle this thread.",
         let thread_id = match started {
             Ok(thread_id) => thread_id,
             Err(error) => {
-                self.db
-                    .with(|db| db.execute("DELETE FROM rebases WHERE thread_id IS NULL", []))?;
+                self.db.write(|tx| remove(tx, |row| row.text("thread_id").is_none()))?;
                 return Err(error);
             }
         };
-        self.db.with(|db| {
-            db.execute(
-                "UPDATE rebases SET thread_id = ?1 WHERE thread_id IS NULL",
-                [&thread_id],
-            )
+        self.db.write(|tx| {
+            for url in urls_where(tx, |row| row.text("thread_id").is_none())? {
+                tx.set("rebases", &url, "thread_id", &thread_id)?;
+            }
+            Ok(())
         })?;
         tokio::spawn(self.clone().watch(thread_id));
         Ok(())
@@ -166,11 +163,10 @@ settle this thread.",
     // Watches the rebases a previous run of the server left. One whose thread never started is
     // dropped: its server stopped while starting it.
     pub fn resume(&self) -> Result<(), String> {
-        let rebases = self.db.with(|db| {
-            db.execute("DELETE FROM rebases WHERE thread_id IS NULL", [])?;
-            let mut rows = db.prepare("SELECT DISTINCT thread_id FROM rebases")?;
-            rows.query_map([], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()
+        let rebases = self.db.write(|tx| {
+            remove(tx, |row| row.text("thread_id").is_none())?;
+            let rows = tx.rows("rebases")?.into_iter();
+            Ok(rows.filter_map(|(_, row)| row.text("thread_id")).collect::<BTreeSet<_>>())
         })?;
         for thread_id in rebases {
             tokio::spawn(self.clone().watch(thread_id));
@@ -180,22 +176,19 @@ settle this thread.",
 
     // By pull request URL.
     pub fn all(&self) -> Result<BTreeMap<String, Rebase>, String> {
-        self.db.with(|db| {
-            let mut rows = db.prepare(
-                "SELECT url, thread_id, question, pushed, title, started_at FROM rebases",
-            )?;
-            rows.query_map([], |row| {
+        let rows = self.db.read(|db| db.rows("rebases"))?;
+        Ok((rows.into_iter())
+            .map(|(url, row)| {
                 let rebase = Rebase {
-                    thread_id: row.get(1)?,
-                    question: row.get(2)?,
-                    pushed: row.get(3)?,
-                    title: row.get(4)?,
-                    started_at: row.get(5)?,
+                    thread_id: row.text("thread_id"),
+                    question: row.flag("question"),
+                    pushed: row.flag("pushed"),
+                    title: row.text("title").unwrap_or_default(),
+                    started_at: row.int("started_at"),
                 };
-                Ok((row.get(0)?, rebase))
-            })?
-            .collect()
-        })
+                (url, rebase)
+            })
+            .collect())
     }
 
     // A pushed rebase lasts until the pull request is listed with another head, so its old head's
@@ -216,17 +209,19 @@ settle this thread.",
             if progress.done {
                 break;
             }
-            let _ = self.db.with(|db| {
-                db.execute(
-                    "UPDATE rebases SET question = ?2 WHERE thread_id = ?1",
-                    params![thread_id, progress.question],
-                )
+            let _ = self.db.write(|tx| {
+                let ours = |row: &Row| row.text("thread_id").as_deref() == Some(&*thread_id);
+                for url in urls_where(tx, ours)? {
+                    tx.set("rebases", &url, "question", progress.question)?;
+                }
+                Ok(())
             });
         }
-        let rebases = self.db.with(|db| {
-            let mut rows = db.prepare("SELECT url, head FROM rebases WHERE thread_id = ?1")?;
-            rows.query_map([&thread_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<Vec<(String, String)>>>()
+        let rebases = self.db.read(|db| {
+            let rows = db.rows("rebases")?.into_iter();
+            Ok((rows.filter(|(_, row)| row.text("thread_id").as_deref() == Some(&*thread_id)))
+                .map(|(url, row)| (url, row.text("head").unwrap_or_default()))
+                .collect::<Vec<_>>())
         });
         let rebases = rebases.unwrap_or_else(|error| {
             eprintln!("{error}");
@@ -235,11 +230,9 @@ settle this thread.",
         let mut pushed = Vec::new();
         for (url, head) in rebases {
             if self.host.refs(&url).await.is_some_and(|refs| refs.head != head) {
-                let _ = self.db.with(|db| {
-                    db.execute(
-                        "UPDATE rebases SET question = 0, pushed = 1 WHERE url = ?1",
-                        [&url],
-                    )
+                let _ = self.db.write(|tx| {
+                    tx.set("rebases", &url, "question", false)?;
+                    tx.set("rebases", &url, "pushed", true)
                 });
                 pushed.push((url, head));
             } else if let Err(error) = self.remove(&url) {
@@ -259,16 +252,26 @@ settle this thread.",
     // Stops showing the rebase whose agent runs in `thread_id`, as the user asked. Its pull requests
     // can be rebased again; the agent keeps running in T3 Code.
     pub fn forget(&self, thread_id: &str) -> Result<(), String> {
-        self.db
-            .with(|db| db.execute("DELETE FROM rebases WHERE thread_id = ?1", [thread_id]))
-            .map(drop)
+        let thread_id = Some(thread_id);
+        (self.db).write(|tx| remove(tx, |row| row.text("thread_id").as_deref() == thread_id))
     }
 
     fn remove(&self, url: &str) -> Result<(), String> {
-        self.db
-            .with(|db| db.execute("DELETE FROM rebases WHERE url = ?1", [url]))
-            .map(drop)
+        self.db.write(|tx| tx.remove("rebases", url)).map(drop)
     }
+}
+
+// The URLs of the rebases whose rows `matches`.
+fn urls_where(tx: &Tx, matches: impl Fn(&Row) -> bool) -> gem_db::Result<Vec<String>> {
+    let rows = tx.rows("rebases")?.into_iter();
+    Ok(rows.filter(|(_, row)| matches(row)).map(|(url, _)| url).collect())
+}
+
+fn remove(tx: &mut Tx, matches: impl Fn(&Row) -> bool) -> gem_db::Result<()> {
+    for url in urls_where(tx, matches)? {
+        tx.remove("rebases", &url)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -472,11 +475,10 @@ mod tests {
         let host = FakeHost::new();
         let db = Db::open_in_memory().unwrap();
         Rebases::new(db.clone(), host.clone()).unwrap();
-        db.with(|db| {
-            db.execute_batch(
-                "INSERT INTO rebases (url, head, thread_id) VALUES ('https://github.com/o/r/pull/1', 'old', 't');
-                 INSERT INTO rebases (url, head) VALUES ('https://github.com/o/r/pull/2', 'old');",
-            )
+        db.write(|tx| {
+            let fields = [("head", "old".into()), ("thread_id", "t".into())];
+            tx.put_row("rebases", "https://github.com/o/r/pull/1", &fields)?;
+            tx.put_row("rebases", "https://github.com/o/r/pull/2", &[("head", "old".into())])
         })
         .unwrap();
 

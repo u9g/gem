@@ -722,6 +722,7 @@ name = "gem-db"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "xitdb",
 ]
 
 [[package]]
@@ -3630,6 +3631,15 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "xitdb"
+version = "0.1.0"
+source = "git+https://github.com/u9g/xitdb-rs#f3ec88d77ee532607b8cda5922dc3a2ae78e6bba"
+dependencies = [
+ "getrandom 0.3.4",
+ "sha1",
+]
 
 [[package]]
 name = "yoke"
