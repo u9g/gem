@@ -14,6 +14,7 @@ import { BrowserSha1, type Db, type Kept, same, select } from './db';
 import { MemoryDb } from './memory';
 import type { Cluster, Moment } from './view-types';
 import { blank } from './stories/fixtures';
+import { followView, type ServerStatus } from './server';
 import { Replica, shown, type ViewBytes } from './view';
 
 // On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, as here:
@@ -208,4 +209,72 @@ test('same compares what reads return', () => {
   assert.ok(same([1, 'a', { b: [true] }], [1, 'a', { b: [true] }]));
   assert.ok(!same({ a: 1 }, { a: 1, b: 2 }));
   assert.ok(!same([1], [2]));
+});
+
+// A room as `followView` uses one, with the server in it, whose syncs `answer` answers: by sending
+// bytes on the view's topic and resolving, or by rejecting, as LiveKit does for a method the
+// server hasn't registered yet.
+function fakeRoom(answer: (call: number, send: (sent: ViewBytes, bytes: Uint8Array) => void) => Promise<string>) {
+  const listeners = new Map<string, (participant: unknown) => void>();
+  let handler: ((reader: unknown) => void) | undefined;
+  const server = { identity: 'server', waitUntilActive: () => Promise.resolve() };
+  const send = (sent: ViewBytes, bytes: Uint8Array) =>
+    handler!({
+      readAll: async () => [bytes],
+      info: { attributes: { fileId: sent.fileId, start: String(sent.start), end: String(sent.end) } },
+    });
+  const room = {
+    state: 'disconnected',
+    calls: 0,
+    remoteParticipants: new Map<string, unknown>(),
+    localParticipant: { performRpc: () => answer(++room.calls, send) },
+    on(event: string, listener: (participant: unknown) => void) {
+      listeners.set(event, listener);
+      return room;
+    },
+    registerByteStreamHandler: (_: string, h: typeof handler) => void (handler = h),
+    unregisterByteStreamHandler: () => {},
+    removeAllListeners: () => listeners.clear(),
+    disconnect: async () => {},
+    // Connects with the server already in the room.
+    connect: async () => {
+      room.state = 'connected';
+      room.remoteParticipants.set('server', server);
+    },
+  };
+  return room;
+}
+
+const until = async (done: () => boolean) => {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+};
+
+test('a sync the server refuses is asked again until the replica has a copy', { skip }, async () => {
+  const { full } = fixture();
+  const room = fakeRoom(async (call, send) => {
+    if (call === 1) throw new Error('Method not supported at destination');
+    send(full.sent, full.bytes);
+    return '';
+  });
+  const replica = new Replica();
+  const statuses: ServerStatus[] = [];
+  const stop = followView(room as any, replica, (status) => statuses.push(status), room.connect);
+  await until(() => statuses.at(-1) === 'online');
+  stop();
+  assert.equal(room.calls, 2);
+  assert.ok(replica.moment());
+  assert.deepEqual(statuses, ['syncing', 'online']);
+});
+
+test('leaving the room stops asking again', async () => {
+  const room = fakeRoom(async () => {
+    throw new Error('Method not supported at destination');
+  });
+  const statuses: ServerStatus[] = [];
+  const stop = followView(room as any, new Replica(), (status) => statuses.push(status), room.connect);
+  await until(() => room.calls === 1);
+  stop();
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.equal(room.calls, 1);
+  assert.deepEqual(statuses, ['syncing']);
 });

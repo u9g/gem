@@ -18,11 +18,14 @@ use crate::{
 // fetch may take before it counts as failed.
 const RETRY: Duration = Duration::from_secs(60);
 
+// Each holds the diff to show: a PR's files are in the view, and a PR that shows none for a while
+// and then its files again has them all written to the view again, and sent to every frontend.
 enum Diff {
     // The previous diff, shown meanwhile so threads stay where they were.
     Fetching(Vec<FileDiff>),
     Fetched(Vec<FileDiff>),
-    Failed(Instant),
+    // The previous diff still, until it's asked for again.
+    Failed(Instant, Vec<FileDiff>),
 }
 
 // What a PR's diff is of: its head commit and the branch it merges into. Only a push or a retarget
@@ -35,6 +38,20 @@ fn of(pr: &PullRequest) -> (String, String) {
 static DIFFS: LazyLock<Mutex<HashMap<String, ((String, String), u64, Diff)>>> =
     LazyLock::new(Default::default);
 static FETCHES: AtomicU64 = AtomicU64::new(0);
+
+// Starts from the diffs `clusters`, the view's, show, so a restarted server shows them while it
+// fetches each again rather than showing none until it has.
+pub async fn seed(clusters: &[crate::view::Cluster]) {
+    let mut diffs = DIFFS.lock().await;
+    for pr in clusters.iter().flat_map(|c| &c.pull_requests) {
+        let files = (pr.files.iter())
+            .map(|f| FileDiff { path: f.path.clone(), patch: f.patch.clone() })
+            .collect();
+        // Of nothing, so the first `diff` fetches it.
+        let of_nothing = (String::new(), String::new());
+        diffs.insert(pr.url.clone(), (of_nothing, 0, Diff::Failed(Instant::now(), files)));
+    }
+}
 
 // Gives each PR with proposals its diff of the files they are about, once fetched: a snapshot
 // never waits on GitHub.
@@ -71,21 +88,23 @@ async fn diff(pr: &PullRequest) -> Vec<FileDiff> {
         Some((of_, _, Diff::Fetched(files) | Diff::Fetching(files))) if *of_ == of(pr) => {
             return files.clone();
         }
-        Some((of_, _, Diff::Failed(at))) if *of_ == of(pr) && at.elapsed() < RETRY => {
-            return Vec::new();
+        Some((of_, _, Diff::Failed(at, files))) if *of_ == of(pr) && at.elapsed() < RETRY => {
+            return files.clone();
         }
         _ => {}
     }
     let previous = match diffs.remove(&pr.url) {
-        Some((_, _, Diff::Fetched(files) | Diff::Fetching(files))) => files,
-        _ => Vec::new(),
+        Some((_, _, Diff::Fetched(files) | Diff::Fetching(files) | Diff::Failed(_, files))) => {
+            files
+        }
+        None => Vec::new(),
     };
     let fetch_id = FETCHES.fetch_add(1, Ordering::Relaxed);
     diffs.insert(pr.url.clone(), (of(pr), fetch_id, Diff::Fetching(previous.clone())));
-    let pr = pr.clone();
+    let (pr, shown) = (pr.clone(), previous.clone());
     tokio::spawn(async move {
         let files = tokio::time::timeout(RETRY, fetch(&pr)).await.ok().flatten();
-        let diff = files.map_or_else(|| Diff::Failed(Instant::now()), Diff::Fetched);
+        let diff = files.map_or_else(|| Diff::Failed(Instant::now(), shown), Diff::Fetched);
         // A later fetch of the PR, after a push or retarget, owns its entry now.
         if let Some(entry) = DIFFS.lock().await.get_mut(&pr.url)
             && entry.1 == fetch_id

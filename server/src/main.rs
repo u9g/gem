@@ -389,6 +389,7 @@ async fn run_server() {
     // so the view is compared rather than announced. The agents gem starts propose through
     // `gem-agent`.
     let live = view::Live::open(view::FILE).unwrap_or_else(|error| panic!("{error}"));
+    files::seed(&live.db().read(view::clusters).unwrap_or_default()).await;
     tokio::task::spawn_blocking(mcp::register);
     tokio::spawn(mcp::listen(live.db().clone()));
     {
