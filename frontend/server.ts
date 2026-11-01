@@ -4,7 +4,7 @@ import { SignJWT } from 'jose';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import type { Db } from './db';
-import { Replica, type ViewBytes } from './view';
+import { Replica } from './view';
 
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
@@ -14,18 +14,10 @@ const PROJECT_KEY = 'gem.project';
 const SERVER = 'server';
 // Approving pushes a commit and posts to GitHub before it answers.
 const RESPONSE_TIMEOUT_MS = 5 * 60_000;
-// The frontend asks for the bytes its replica of the server's view lacks with an RPC call to this
-// method: when it connects, when the server joins, and when a change doesn't follow on from its
-// replica. The server sends them, like every change to the view, as a byte stream on VIEW_TOPIC.
-const SYNC_METHOD = 'view-sync';
+// The server sends the bytes of its view a replica lacks, and every change to it, as byte streams
+// on VIEW_TOPIC, and the frontend reports what its replica has in data messages on STATE_TOPIC.
 const VIEW_TOPIC = 'view';
-// The server sends the bytes before it answers, and the first copy can take a while.
-const SYNC_TIMEOUT_MS = 60_000;
-// How many changes that arrived ahead of the replica are kept until it catches up to them.
-const AHEAD = 16;
-// How long a failed sync waits before it asks again, doubling up to the last.
-const FIRST_RETRY_MS = 500;
-const LAST_RETRY_MS = 10_000;
+const STATE_TOPIC = 'view-state';
 
 // The user's own LiveKit project, the one their gem server is configured with. It never leaves
 // this browser: tokens are minted here.
@@ -38,7 +30,7 @@ export type Profile = Project & { id: string; name: string; room: string; login?
 
 // Unreachable when the project refuses to connect, e.g. for a wrong URL, API key or secret;
 // offline when the room is reached but the server is not in it; syncing until the replica has a
-// whole copy of the server's view since the server joined.
+// whole copy of the server's view.
 export type ServerStatus = 'no-profile' | 'connecting' | 'unreachable' | 'offline' | 'syncing' | 'online';
 
 // A LiveKit access token that can only exchange data in the profile's room.
@@ -63,6 +55,10 @@ function savedProfiles(): Profile[] {
 
 // Connects with `connect` and keeps `replica` a copy of the server's view, reporting the server's
 // status, until the returned function leaves the room. It's apart from `useServer` for its test.
+//
+// The server drives syncing: it sends the whole view once this frontend is active, every change
+// as it commits, and whatever this frontend's reports show it lacks. So the frontend only applies
+// what it's sent, and reports what it has after each stream and when it connects.
 export function followView(
   room: Room,
   replica: Replica,
@@ -70,7 +66,7 @@ export function followView(
   connect: () => Promise<void>,
 ): () => void {
   let closed = false;
-  // Whether the replica has had a whole copy since the server last joined.
+  // Whether the replica has had a whole copy yet.
   let synced = false;
   const update = () =>
     setStatus(
@@ -82,47 +78,18 @@ export function followView(
             ? 'online'
             : 'syncing',
     );
+  // Its file ID, a u64, as a decimal string, with xitdb's serde form of its state, or null while
+  // it's empty.
+  const report = () => {
+    const state = replica.state();
+    const payload = new TextEncoder().encode(JSON.stringify(state && { fileId: replica.fileId, ...state }));
+    room.localParticipant
+      .publishData(payload, { reliable: true, destinationIdentities: [SERVER], topic: STATE_TOPIC })
+      // The server sends again what a report it doesn't get would have asked for.
+      .catch(() => {});
+  };
   // Streams are applied in the order they start, one at a time.
   let applying = Promise.resolve();
-  // While a sync is in flight, a change that doesn't follow on doesn't ask again: LiveKit
-  // delivers the server's data in order, so the bytes it asked for arrive before its answer.
-  let syncing = false;
-  // A failed sync asks again until one succeeds: the server registers its methods only once it's
-  // in the room, so the first can reach it before it answers them, and an empty replica is sent
-  // no changes that would show it's behind.
-  let retry: ReturnType<typeof setTimeout> | undefined;
-  let delay = FIRST_RETRY_MS;
-  const sync = () => {
-    if (closed || syncing || !room.remoteParticipants.has(SERVER)) return;
-    clearTimeout(retry);
-    syncing = true;
-    room.localParticipant
-      .performRpc({
-        destinationIdentity: SERVER,
-        method: SYNC_METHOD,
-        payload: JSON.stringify(replica.state()),
-        responseTimeout: SYNC_TIMEOUT_MS,
-      })
-      // The bytes came before the answer, so they're applied once the streams before it are.
-      .then(() => applying)
-      .then(() => {
-        if (!replica.moment()) throw new Error('the server sent no view');
-        synced = true;
-        delay = FIRST_RETRY_MS;
-        update();
-      })
-      .catch(() => {
-        if (closed) return;
-        retry = setTimeout(sync, delay);
-        delay = Math.min(2 * delay, LAST_RETRY_MS);
-      })
-      .finally(() => {
-        syncing = false;
-      });
-  };
-  // Changes that arrived ahead of the replica, like those committed while a sync was read and
-  // sent, applied once it has caught up to them.
-  let ahead: { sent: ViewBytes; bytes: Uint8Array }[] = [];
   room.registerByteStreamHandler(VIEW_TOPIC, (reader) => {
     applying = applying
       .then(async () => {
@@ -131,50 +98,33 @@ export function followView(
         // Which bytes they are, as the server says in the stream's attributes.
         const { fileId, start, end } = reader.info.attributes ?? {};
         if (closed || !fileId || !start || !end) return;
-        const sent = { fileId, start: Number(start), end: Number(end) };
-        const applied = replica.apply(sent, bytes);
-        if (applied === 'gap') {
-          ahead = [...ahead, { sent, bytes }].slice(-AHEAD);
-          sync();
-          return;
+        // Bytes that don't follow on from the replica are left out; the report says what it has.
+        replica.apply({ fileId, start: Number(start), end: Number(end) }, bytes);
+        if (!synced && replica.moment()) {
+          synced = true;
+          update();
         }
-        // The replica tells the components reading it about each change it applies.
-        for (let caughtUp = applied === 'applied'; caughtUp; ) {
-          caughtUp = false;
-          ahead = ahead.filter((change) => {
-            const result = replica.apply(change.sent, change.bytes);
-            if (result === 'applied') caughtUp = true;
-            return result === 'gap';
-          });
-        }
+        report();
       })
       .catch(() => {});
   });
-  // The server sends a participant data only once it is active, whether the server joins after
-  // this frontend or was there first.
   room
     .on(RoomEvent.ConnectionStateChanged, update)
     .on(RoomEvent.ParticipantConnected, (participant) => {
       if (participant.identity !== SERVER) return;
-      synced = false;
       update();
-      void participant.waitUntilActive().then(sync);
+      report();
     })
-    .on(RoomEvent.ParticipantDisconnected, (participant) => {
-      if (participant.identity !== SERVER) return;
-      clearTimeout(retry);
-      update();
-    });
+    .on(RoomEvent.ParticipantDisconnected, update);
   connect()
     .then(() => {
       update();
-      void room.remoteParticipants.get(SERVER)?.waitUntilActive().then(sync);
+      if (room.remoteParticipants.has(SERVER)) report();
     })
     // A project that refuses the token can still be edited or switched away from.
     .catch(() => setStatus('unreachable'));
   return () => {
     closed = true;
-    clearTimeout(retry);
     room.removeAllListeners();
     room.unregisterByteStreamHandler(VIEW_TOPIC);
     void room.disconnect();

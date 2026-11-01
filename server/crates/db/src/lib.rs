@@ -51,6 +51,13 @@ pub struct Delta {
     pub bytes: Vec<u8>,
 }
 
+// A replica's state with the ID of the file it is a copy of, as a frontend reports it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Replica {
+    pub file_id: u64,
+    pub state: ReplicaState,
+}
+
 enum Inner {
     // This process writes it: in the file at `path`, or in memory when None.
     Writer {
@@ -191,17 +198,19 @@ impl Db {
         Ok((written, delta))
     }
 
-    // The bytes a replica in `replica` lacks: from its committed size when it is a copy of this
-    // file up to there, and otherwise, or for no replica, all of it.
-    pub fn replicate(&self, replica: Option<ReplicaState>) -> Result<Delta, String> {
+    // The bytes `replica` lacks: from its committed size when it is a copy of this file up to
+    // there, and otherwise, or for no replica, all of it.
+    pub fn replicate(&self, replica: Option<Replica>) -> Result<Delta, String> {
         let inner = self.lock();
         let Inner::Writer { path, db, .. } = &*inner else {
             return Err("gem's database: only the server replicates it".into());
         };
         let read = || {
             let start = match replica {
-                Some(replica) => db.replication_start(replica)?,
-                None => 0,
+                Some(replica) if replica.file_id == db.header().file_id => {
+                    db.replication_start(replica.state)?
+                }
+                _ => 0,
             };
             let end = db.committed_size()?;
             let mut bytes = Vec::with_capacity((end - start) as usize);
@@ -396,7 +405,7 @@ mod tests {
         let delta = delta.unwrap();
         assert_eq!((delta.file_id, delta.start), (full.file_id, full.end));
         apply(&replica, &delta);
-        let state = replica.replica_state().unwrap();
+        let state = Replica { file_id: full.file_id, state: replica.replica_state().unwrap() };
         // Up to date, it lacks nothing; an unchanged write appends nothing.
         assert!(db.replicate(Some(state)).unwrap().bytes.is_empty());
         assert_eq!(db.write_replicated(|moment| moment.get_string("n", None)).unwrap().1, None);
@@ -416,6 +425,11 @@ mod tests {
         let copy = db.replicate(Some(state)).unwrap();
         assert_ne!(copy.file_id, full.file_id);
         assert_eq!(copy.start, 0);
+        // A copy of it said to be of another file, whose bytes match these, is sent all of it.
+        let copied = Database::in_memory().unwrap();
+        apply(&copied, &copy);
+        let state = Replica { file_id: full.file_id, state: copied.replica_state().unwrap() };
+        assert_eq!(db.replicate(Some(state)).unwrap().start, 0);
         drop(db);
         let _ = std::fs::remove_file(&path);
     }

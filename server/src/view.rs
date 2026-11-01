@@ -7,7 +7,8 @@
 // moment appends are all a replica that has the moments before it needs: a frontend is sent the
 // whole file once, and then each moment's bytes as it commits. The file is compacted when it
 // opens, and whenever it has grown well past its size then, which gives it a new file ID, so
-// every replica, including one from before a restart, is sent a whole copy when it next syncs.
+// every replica, including one from before a restart, is sent a whole copy once it reports one
+// of another file.
 //
 // It holds the plain structs of `types`, stored structurally by xitdb's `Structured` codec,
 // every field written, so a reader needs no schema. Writing compares with what's stored and writes
@@ -29,7 +30,7 @@ use std::{
 };
 
 use gem_db::{
-    Db, Delta, MapMut, Migrations, ReplicaState,
+    Db, Delta, MapMut, Migrations,
     xitdb::{
         Core, Map, ReadHashMap, Result, Structured, WriteHashMap, get_structured, put_structured,
     },
@@ -142,16 +143,6 @@ impl Live {
             let _ = self.changes.send(Arc::new(delta));
         }
         Ok((value, sent))
-    }
-
-    // Answers a frontend's view-sync request with the bytes its replica lacks. Its payload is
-    // `null` for a new replica, or its `ReplicaState` as xitdb's serde writes it,
-    // `{"committedSize":123,"checksum":"456"}`, the checksum a u64 as a decimal string.
-    pub fn sync(&self, payload: &str) -> Result<Delta, (u32, String)> {
-        let replica: Option<ReplicaState> = serde_json::from_str(payload)
-            .map_err(|error| (400, format!("not a replica's state: {error}")))?;
-        let delta = self.db.replicate(replica);
-        delta.map_err(|error| (500, format!("cannot read the view: {error}")))
     }
 }
 
@@ -329,21 +320,21 @@ mod tests {
     }
 
     // A replica as a frontend keeps it: it applies a delta that follows on from it, ignores one it
-    // already has, and otherwise asks for a sync.
+    // already has, and otherwise reports what it has, to be sent what it lacks.
     struct Frontend {
         db: Database<CoreMemory>,
         file_id: Option<u64>,
     }
 
     impl Frontend {
-        // What it sends, through xitdb's serde form of its state.
-        fn replica(&self) -> Option<ReplicaState> {
-            self.file_id?;
+        // What it reports, through xitdb's serde form of its state.
+        fn replica(&self) -> Option<gem_db::Replica> {
             let json = serde_json::to_string(&self.db.replica_state().unwrap()).unwrap();
-            Some(serde_json::from_str(&json).unwrap())
+            let state = serde_json::from_str(&json).unwrap();
+            Some(gem_db::Replica { file_id: self.file_id?, state })
         }
 
-        // Whether it applied the delta; a frontend that didn't syncs.
+        // Whether it applied the delta; a frontend that didn't is sent what it lacks.
         fn receive(&mut self, delta: &Delta) -> bool {
             let follows = self.file_id == Some(delta.file_id)
                 && delta.start == self.db.committed_size().unwrap();
@@ -593,9 +584,6 @@ mod tests {
         assert_eq!((delta.start, delta.end), (before, view.live.db.replicate(None).unwrap().end));
         assert!(!view.live.publish(&response(2)));
         assert!(changes.try_recv().is_err());
-        // A sync request carries xitdb's serde form of the replica's state.
-        assert_eq!(view.live.sync("null").unwrap().end, view.live.db.replicate(None).unwrap().end);
-        assert!(view.live.sync("{}").is_err());
     }
 
     #[test]
