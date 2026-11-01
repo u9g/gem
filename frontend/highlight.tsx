@@ -43,16 +43,18 @@ export function useTokens(code: string, language: string): ThemedToken[][] | und
 export function Tokens({ tokens, text }: { tokens?: ThemedToken[]; text: string }) {
   if (!tokens) return text;
   return tokens.map((token, i) => (
-    <Text
-      key={i}
-      style={{
-        color: token.color,
-        // Shiki's FontStyle flags.
-        fontStyle: token.fontStyle && token.fontStyle & 1 ? 'italic' : undefined,
-        fontWeight: token.fontStyle && token.fontStyle & 2 ? 'bold' : undefined,
-      }}
-    >
+    <Text key={i} style={tokenStyle(token)}>
       {token.content}
     </Text>
   ));
+}
+
+// A token's color and style, or the surrounding ones without a token.
+export function tokenStyle(token: ThemedToken | undefined) {
+  return {
+    color: token?.color,
+    // Shiki's FontStyle flags.
+    fontStyle: token?.fontStyle && token.fontStyle & 1 ? ('italic' as const) : undefined,
+    fontWeight: token?.fontStyle && token.fontStyle & 2 ? ('bold' as const) : undefined,
+  };
 }

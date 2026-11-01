@@ -1,3 +1,17 @@
+import { sha1 } from '@noble/hashes/legacy.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+
+// A diff's key in the view's `diffs`: the SHA-1 of its text in lowercase hex, as the server keys it.
+export function diffKey(diff: string): string {
+  return bytesToHex(sha1(utf8ToBytes(diff)));
+}
+
+// Hunks without a file header, as GitHub gives a file's and a review comment's, under one: as they
+// show, and as the server keys their highlights.
+export function withHeader(path: string, hunks: string): string {
+  return `--- a/${path}\n+++ b/${path}\n${hunks}`;
+}
+
 // A patch cut into one piece per file, each starting at its file's header lines. Joining the pieces
 // with newlines gives back the patch exactly.
 export function splitFiles(diff: string): string[] {

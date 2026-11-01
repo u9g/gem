@@ -1,7 +1,7 @@
 import { Bytes, CoreMemory, Database, Float, Int, ReadArrayList, Uint, WriteArrayList, type WriteCursor, WriteHashMap } from 'xitdb';
 
 import { BrowserSha1, type Db, Views } from './db';
-import type { Agent, Cluster, Moment } from './view-types';
+import type { Agent, Cluster, DiffHighlights, Moment } from './view-types';
 
 // A view database in memory, written from plain values the way the server's `Structured` codec
 // writes its structs, for stories and tests to render and read as the app reads its replica: an
@@ -16,6 +16,8 @@ export type Shown = {
   search?: string;
   // The keys of the actions in progress.
   pending?: readonly string[];
+  // What omnidiff makes of diffs, by `diffKey`.
+  diffs?: Readonly<Record<string, DiffHighlights>>;
 };
 
 export class MemoryDb implements Db {
@@ -48,6 +50,7 @@ export class MemoryDb implements Db {
       search: shown.search ?? '',
       agents: shown.agents ?? [],
       pending: Object.fromEntries((shown.pending ?? []).map((key) => [key, ''])),
+      diffs: shown.diffs ?? {},
     });
   }
 

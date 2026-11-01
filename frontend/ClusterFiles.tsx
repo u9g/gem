@@ -1,13 +1,15 @@
 import { FileCode, MessagesSquare } from 'lucide-react';
-import { Fragment, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { ClusterAgents, CloseClusterButton, type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
 import { Composer } from './AgentView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
+import { HighlightNote, lineTint, type Mark, marksOf, Painted, useHighlights } from './omnidiff';
+import { withHeader } from './patch';
 import type { Proposal, PullRequest } from './view-types';
-import { parseDiff } from './surfaces';
+import { type DiffLine, parseDiff } from './surfaces';
 import { Button, DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // The conversations of one PR about one file, by the line each is on. `path` is '' for those on no
@@ -146,13 +148,16 @@ export function ClusterReview(props: Props) {
 }
 
 // One file's diff on its PR with the section's conversations inside it, each after the line its
-// comment's own hunk ends on. Conversations on no line of the diff, or on a deleted one, come before
-// it; without a diff, they are all there is.
+// comment's own hunk ends on, and in its changed lines the parts omnidiff found changed or moved.
+// Conversations on no line of the diff, or on a deleted one, come before it; without a diff, they
+// are all there is.
 function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { section: Section } & Props) {
   const file = section.pr.files.find((f) => f.path === section.path);
-  const patch = file?.patch ?? '';
   // GitHub's hunks for the file come without a file header.
-  const lines = parseDiff(`--- a/${section.path}\n+++ b/${section.path}\n${patch}`)[0]?.lines ?? [];
+  const diff = withHeader(section.path, file?.patch ?? '');
+  const lines = parseDiff(diff)[0]?.lines ?? [];
+  const highlighted = useHighlights(diff)?.find((h) => h.path === section.path);
+  const marks = useMemo(() => marksOf(highlighted), [highlighted]);
   const placed = new Map<number, (readonly Proposal[])[]>();
   const unplaced: (readonly Proposal[])[] = [];
   for (const group of section.groups) {
@@ -191,6 +196,7 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
             removed={lines.filter((l) => l.kind === 'del').length}
           />
         )}
+        <HighlightNote file={highlighted} />
         <View style={{ flex: 1 }} />
         <Text style={styles.meta}>
           {section.groups.length} {section.groups.length === 1 ? 'thread' : 'threads'} waiting on you
@@ -206,20 +212,21 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
                   {'  ⋯  '}
                   {line.text}
                 </Text>
-              ) : (
-                <View style={[styles.line, line.kind === 'add' && styles.add, line.kind === 'del' && styles.del]}>
-                  <Text style={styles.number}>{line.old ?? ''}</Text>
-                  <Text style={styles.number}>{line.number ?? ''}</Text>
-                  <Text
-                    style={[
-                      styles.text,
-                      line.kind === 'add' && { color: '#B7F5D8' },
-                      line.kind === 'del' && { color: '#FFC9C9' },
-                    ]}
-                  >
-                    {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} {line.text}
+              ) : line.kind === 'ctx' ? (
+                <View style={styles.line}>
+                  <Text style={styles.number}>{line.old}</Text>
+                  <Text style={styles.number}>{line.number}</Text>
+                  <Text style={styles.text}>
+                    {'  '}
+                    {line.text}
                   </Text>
                 </View>
+              ) : (
+                <ChangedLine
+                  line={line}
+                  marks={line.kind === 'add' ? marks?.after.get(line.number!) : marks?.before.get(line.old!)}
+                  read={marks !== undefined}
+                />
               )}
               {placed.has(i) && (
                 <View style={styles.inline}>{placed.get(i)!.map((group) => thread(group, true))}</View>
@@ -228,6 +235,21 @@ function FileView({ section, busy, onApprove, onDismiss, onInvestigate }: { sect
           ))}
         </View>
       )}
+    </View>
+  );
+}
+
+// A deleted or added line with its marks set off. Once omnidiff has `read` the file, a line it
+// found nothing changed on is fainter.
+function ChangedLine({ line, marks, read }: { line: DiffLine; marks?: Mark[]; read: boolean }) {
+  const kind = line.kind === 'add' ? 'add' : 'del';
+  return (
+    <View style={[styles.line, { backgroundColor: lineTint(kind, read && !marks) }]}>
+      <Text style={styles.number}>{line.old ?? ''}</Text>
+      <Text style={styles.number}>{line.number ?? ''}</Text>
+      <Text style={[styles.text, { color: kind === 'add' ? '#B7F5D8' : '#FFC9C9' }]}>
+        {kind === 'add' ? '+' : '−'} <Painted text={line.text} marks={marks} kind={kind} />
+      </Text>
     </View>
   );
 }
@@ -350,12 +372,6 @@ const styles = StyleSheet.create({
   },
   line: {
     flexDirection: 'row',
-  },
-  add: {
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-  },
-  del: {
-    backgroundColor: 'rgba(242, 109, 109, 0.12)',
   },
   number: {
     width: GUTTER,

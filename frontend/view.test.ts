@@ -12,6 +12,7 @@ import { Hasher } from 'xitdb';
 
 import { BrowserSha1, type Db, type Kept, same, select } from './db';
 import { MemoryDb } from './memory';
+import { diffKey } from './patch';
 import type { Cluster, Moment } from './view-types';
 import { blank } from './stories/fixtures';
 import { followView, type ServerStatus } from './server';
@@ -41,6 +42,7 @@ function fixture() {
     delta: { sent: { ...json.delta, start: Number(json.delta.start), end: Number(json.delta.end) }, bytes: new Uint8Array(readFileSync(join(dir!, 'delta.bin'))) },
     first: json.first,
     second: json.second,
+    diff: json.diff as string,
   };
 }
 
@@ -115,6 +117,22 @@ test('the reader reads every stored form as the server wrote it', { skip }, () =
   assert.throws(() => (cluster.pullRequests as unknown[]).push(odd));
   // The same stored value is the same object.
   assert.equal(cluster.pullRequests[1], odd);
+});
+
+test("a diff's highlights are under the key the server gave them", { skip }, () => {
+  const { full, first, diff } = fixture();
+  const moment = replicaOf(full).moment()!;
+  assert.deepEqual(json(moment.diffs), json(first.diffs));
+  const [file] = moment.diffs[diffKey(diff)].files;
+  assert.equal(file.summary, 'movesOnly');
+  assert.deepEqual(file.before.moved, [12, 4, 30]);
+  assert.deepEqual(file.after.changed, [3, 0, 8, 3, 10, 14]);
+});
+
+test('a diff is keyed by the SHA-1 of its text in UTF-8', () => {
+  for (const text of ['', '--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b', 'héllo 👋\n\t']) {
+    assert.equal(diffKey(text), createHash('sha1').update(text, 'utf8').digest('hex'));
+  }
 });
 
 // What `useDb` gives a component: React re-renders it when this is another value.

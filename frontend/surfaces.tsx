@@ -15,8 +15,9 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } fro
 
 import 'github-markdown-css/github-markdown-dark.css';
 
-import type { CheckFailure, Comment, NewPullRequest, Proposal } from './view-types';
+import type { CheckFailure, Comment, FileHighlights, NewPullRequest, Proposal } from './view-types';
 import { languageOf, Tokens, useTokens } from './highlight';
+import { HighlightNote, lineTint, marksOf, Painted, useHighlights } from './omnidiff';
 import { editHunk, newSides, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
@@ -68,23 +69,28 @@ export function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
   return files;
 }
 
-// T3 Code's diff surface: code background, tinted add/delete lines, a new-line-number gutter.
-// `header` replaces each file header's stats, e.g. with an error mark. Given `onChange`, each file's
-// Diff / Edit switch flips it to the code the patch leaves, to rewrite; `diff` is then the user's
-// rewrite of `suggested`, which has the same files.
+// T3 Code's diff surface: code background, tinted add/delete lines, a new-line-number gutter, and
+// in the changed lines, the parts omnidiff found changed or moved. `header` replaces each file
+// header's stats, e.g. with an error mark. Given `onChange`, each file's Diff / Edit switch flips
+// it to the code the patch leaves, to rewrite; `diff` is then the user's rewrite of `suggested`,
+// which has the same files. `of` is the diff omnidiff read when `diff` is cut from it, numbered
+// as it is.
 export function DiffSurface({
   diff,
   header,
   suggested,
   onChange,
+  of,
 }: {
   diff: string;
   header?: ReactNode;
   suggested?: string;
   onChange?: (diff: string) => void;
+  of?: string;
 }) {
   const files = splitFiles(diff);
   const theirs = suggested === undefined ? [] : splitFiles(suggested);
+  const highlights = useHighlights(of ?? suggested ?? diff);
   return (
     <View style={{ gap: 8 }}>
       {files.map((file, i) => (
@@ -93,6 +99,8 @@ export function DiffSurface({
           file={file}
           header={header}
           suggested={theirs[i]}
+          // omnidiff read the suggestion, not the user's rewrite of it.
+          highlights={suggested === undefined || file === theirs[i] ? highlights : undefined}
           onChange={onChange && ((edited) => onChange(files.map((f, j) => (j === i ? edited : f)).join('\n')))}
         />
       ))}
@@ -105,15 +113,19 @@ function DiffFile({
   file: piece,
   header,
   suggested,
+  highlights,
   onChange,
 }: {
   file: string;
   header?: ReactNode;
   suggested?: string;
+  highlights?: readonly FileHighlights[];
   onChange?: (file: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [file] = parseDiff(piece);
+  const highlighted = highlights?.find((h) => h.path === file?.path);
+  const marks = useMemo(() => marksOf(highlighted), [highlighted]);
   // Each side of the file is highlighted on its own, so a line reads as it does in its version.
   const language = languageOf(file?.path ?? '');
   const side = (kind: DiffLine['kind']) => (file?.lines ?? []).filter((line) => line.kind === 'ctx' || line.kind === kind);
@@ -162,8 +174,14 @@ function DiffFile({
             </View>
           </View>
         ))
-      : file.lines.map((line, i) =>
-          line.kind === 'hunk' ? (
+      : file.lines.map((line, i) => {
+          const lineMarks =
+            line.kind === 'add'
+              ? marks?.after.get(line.number!)
+              : line.kind === 'del'
+                ? marks?.before.get(line.old!)
+                : undefined;
+          return line.kind === 'hunk' ? (
             <Text key={i} style={styles.hunk}>
               {'  ⋯  '}
               {line.text}
@@ -173,8 +191,7 @@ function DiffFile({
               key={i}
               style={[
                 styles.diffLine,
-                line.kind === 'add' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' },
-                line.kind === 'del' && { backgroundColor: 'rgba(242, 109, 109, 0.12)' },
+                line.kind !== 'ctx' && { backgroundColor: lineTint(line.kind, marks !== undefined && !lineMarks) },
               ]}
             >
               <Text numberOfLines={1} style={[styles.gutter, gutter]}>
@@ -187,11 +204,16 @@ function DiffFile({
                   line.kind === 'del' && { color: '#FCA5A5' },
                 ]}
               >
-                {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} <Tokens tokens={tokens[i]} text={line.text} />
+                {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}{' '}
+                {line.kind === 'ctx' ? (
+                  <Tokens tokens={tokens[i]} text={line.text} />
+                ) : (
+                  <Painted tokens={tokens[i]} text={line.text} marks={lineMarks} kind={line.kind} />
+                )}
               </Text>
             </View>
-          ),
-        );
+          );
+        });
   return (
     <CodeSurface
       path={file.path}
@@ -203,6 +225,7 @@ function DiffFile({
             <Icon icon={Undo2} size={12} />
           </Pressable>
         )}
+          {!editing && <HighlightNote file={highlighted} />}
           {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
           {hunks && (
             <View style={[styles.segmented, { marginLeft: 4 }]}>

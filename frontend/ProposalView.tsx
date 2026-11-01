@@ -5,6 +5,7 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import './ProposalView.css';
 
 import type { Proposal } from './view-types';
+import { withHeader } from './patch';
 import {
   Clamp,
   ClosesTag,
@@ -35,15 +36,20 @@ export function bySubject(list: readonly Proposal[]): (readonly Proposal[])[] {
   return [...groups.values()];
 }
 
-// The last lines of a review comment's diff hunk, ending at the line it is on, as a one-file diff.
+// The last lines of a review comment's diff hunk, ending at the line it is on, as a one-file diff
+// numbered as the whole hunk is.
 function anchorDiff(path: string, hunk: string, lines = 6): string {
   const [header, ...body] = hunk.split('\n');
   const kept = body.slice(-lines);
-  // The new side's start moves past every dropped line the new file has: context and additions.
-  // An empty line is context whose leading space was stripped.
-  const start = Number(/\+(\d+)/.exec(header)?.[1] ?? 1) + body.slice(0, -lines).filter((l) => /^([ +]|$)/.test(l)).length;
+  const dropped = body.slice(0, -lines);
+  // Each side's start moves past every dropped line that side has: context, and its deletions or
+  // additions. An empty line is context whose leading space was stripped.
+  const [, from = 1, to = 1] = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(header) ?? [];
+  const old = /^([ -]|$)/;
+  const now = /^([ +]|$)/;
+  const start = (side: RegExp, at: string | number) => Number(at) + dropped.filter((l) => side.test(l)).length;
   const count = (side: RegExp) => kept.filter((l) => side.test(l)).length;
-  return `--- a/${path}\n+++ b/${path}\n@@ -0,${count(/^([ -]|$)/)} +${start},${count(/^([ +]|$)/)} @@\n${kept.join('\n')}`;
+  return withHeader(path, `@@ -${start(old, from)},${count(old)} +${start(now, to)},${count(now)} @@\n${kept.join('\n')}`);
 }
 
 // The repository name and number of the pull request at `url`.
@@ -235,6 +241,7 @@ function ProposalView({
           {anchored && !inline && comment?.diffHunk && (
             <DiffSurface
               diff={anchorDiff(comment.path, comment.diffHunk)}
+              of={withHeader(comment.path, comment.diffHunk)}
               header={<Text style={styles.meta}>{comment.line ? `line ${comment.line}` : 'outdated'}</Text>}
             />
           )}
