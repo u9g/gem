@@ -4,6 +4,7 @@
   "main": "index.ts",
   "dependencies": {
     "@bufbuild/protobuf": "^2.16.0",
+    "@noble/hashes": "^2.4.0",
     "@pierre/highlights": "^0.3.0",
     "@rn-primitives/portal": "^1.5.3",
     "@rn-primitives/select": "^1.5.2",
@@ -16,7 +17,8 @@
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-native": "0.88.0",
-    "react-native-web": "^0.21.4"
+    "react-native-web": "^0.21.4",
+    "xitdb": "^0.26.0"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.16.0",

@@ -1,6 +1,7 @@
 // gem's MCP servers. `server mcp --state <dir>` speaks MCP over stdio, so agents can read the
-// clusters gem shows, and answers from the snapshot the running server keeps in <dir>'s database. The server
-// registers it with Claude Code, as the user-scope server `gem`, whenever it starts.
+// clusters gem shows, and answers from the view the running server keeps in <dir>'s view.xitdb,
+// the same one frontends replicate. The server registers it with Claude Code, as the user-scope
+// server `gem`, whenever it starts.
 //
 // The agents gem starts to propose answers get `gem-agent` instead, over HTTP on the loopback
 // interface, as the user-scope server is not there when they run in Claude Cloud: T3 Code relays
@@ -29,33 +30,12 @@ use serde_json::{Value, json};
 
 use crate::investigations;
 use crate::proposals::{self, GitHub};
-use crate::proto::{ListOpenPullRequestsResponse, PullRequestCluster};
+use crate::proto::PullRequestCluster;
 use crate::sandbox;
 use crate::tokens::{Subject, Tokens};
+use crate::view;
 
 const NAME: &str = "gem";
-
-// Called after every refresh.
-pub async fn save(response: &ListOpenPullRequestsResponse) {
-    save_to(crate::db(), response);
-}
-
-// In the database's moment, the clusters as gem last showed them, with their names and proposals:
-// the ListOpenPullRequestsResponse, as JSON.
-const SNAPSHOT: &str = "snapshot";
-
-fn save_to(db: &Db, response: &ListOpenPullRequestsResponse) {
-    let saved = db.write(|moment| moment.put(SNAPSHOT, serde_json::to_string(response).unwrap()));
-    if let Err(error) = saved {
-        tracing::warn!(%error, "cannot save the snapshot");
-    }
-}
-
-// The snapshot's JSON, once the server saved one. An error says why it can't be read, e.g. a
-// layout of another build of gem.
-fn snapshot(db: &Db) -> Result<Option<String>, String> {
-    db.read(|moment| moment.get_string(SNAPSHOT, None))
-}
 
 // Points Claude Code's `gem` MCP server at this build and this state directory, unless it
 // already does. Builds are replaced on every update, so each one registers itself.
@@ -99,7 +79,7 @@ pub fn register() {
 pub fn serve(args: &[String]) {
     let db = match args {
         [flag, dir] if flag == "--state" => {
-            Db::open_reader(Path::new(dir).join(crate::DB_FILE), crate::layout::migrations())
+            Db::open_reader(Path::new(dir).join(view::FILE), view::migrations())
         }
         _ => {
             eprintln!("usage: server mcp --state <the server's working directory>");
@@ -122,7 +102,8 @@ pub fn serve(args: &[String]) {
     }
 }
 
-fn handle(db: &Db, request: &Value) -> Result<Value, (i64, String)> {
+// Answers from the view, `view`.
+fn handle(view: &Db, request: &Value) -> Result<Value, (i64, String)> {
     let params = &request["params"];
     match request["method"].as_str().unwrap_or_default() {
         "initialize" => Ok(initialize(
@@ -137,8 +118,8 @@ fn handle(db: &Db, request: &Value) -> Result<Value, (i64, String)> {
         "tools/call" => Ok(tool_result(
             match params["name"].as_str().unwrap_or_default() {
                 "execute" => code(&params["arguments"]).and_then(|code| {
-                    let db = db.clone();
-                    sandbox::run(code, READS, move |op, args| read(&db, op, &args))
+                    let view = view.clone();
+                    sandbox::run(code, READS, move |op, args| read(&view, op, &args))
                 }),
                 tool => Err(format!("no tool {tool}")),
             },
@@ -209,68 +190,72 @@ fn code(arguments: &Value) -> Result<&str, String> {
     }
 }
 
-// The snapshot's types, as pbjson writes them: camelCase, with fields that are false, 0 or empty
-// left out.
+// The clusters' types, as the view's structs serialize: camelCase, every field present, an unset
+// time or message null, times in milliseconds since the epoch, enums by their names, and the
+// rendered HTML and file diffs only gem's own view shows left out.
 const TYPES: &str = r#"// A cluster of the user's open pull requests, linked by stacking or mentions.
 interface Cluster {
-  name?: string; // Short name for its shared work.
-  updatedAt: string; // RFC 3339.
-  mergeBy?: MergeBy; // Left out when it cannot merge.
+  name: string; // Short name for its shared work, or "" until one is chosen.
+  updatedAt: number | null; // Milliseconds since the epoch.
+  mergeBy: MergeBy;
   pullRequests: PullRequest[]; // Oldest first.
-  agents?: Agent[]; // The agents gem started on its pull requests, newest first.
+  agents: Agent[]; // The agents gem started on its pull requests, newest first.
 }
-type MergeBy = "MERGE_BY_APPROVAL" | "MERGE_BY_ADMIN";
+type MergeBy = "unspecified" | "approval" | "admin"; // "unspecified": it cannot merge.
 interface PullRequest {
   url: string;
   title: string;
-  repository: { owner: string; name: string };
+  repository: { owner: string; name: string } | null;
   number: number;
   base: string; // The branch it merges into.
   headOid: string;
-  createdAt: string;
-  approved?: boolean;
-  checks?: { total?: number; done?: number; failed?: number };
-  checksPassing?: boolean;
-  checksFailing?: boolean;
-  behind?: boolean; // It must be rebased onto `base` before it can merge.
-  conflicts?: boolean;
-  mergeBy?: MergeBy;
-  rebasing?: boolean;
-  merging?: boolean;
+  createdAt: number | null;
+  approved: boolean;
+  checks: { total: number; done: number; failed: number } | null;
+  checksPassing: boolean;
+  checksFailing: boolean;
+  behind: boolean; // It must be rebased onto `base` before it can merge.
+  conflicts: boolean;
+  mergeBy: MergeBy;
+  rebasing: boolean;
+  rebased: boolean; // A rebase was pushed; GitHub hasn't listed the new commit yet.
+  merging: boolean;
   // What agents propose answering the conversations and failed checks waiting on the user.
-  proposals?: Proposal[];
-  noProposalReason?: string; // Why the agent answering its failed checks proposed nothing.
+  proposals: Proposal[];
+  noProposalReason: string; // Why the agent answering its failed checks proposed nothing.
 }
 interface Agent {
   id: string;
   title: string;
-  state?: "AGENT_STATE_QUEUED" | "AGENT_STATE_WAITING"; // Left out while it works.
+  state: "working" | "queued" | "waiting";
   pullRequestUrls: string[];
-  reply?: string; // Its latest reply, in markdown.
-  proposals?: Proposal[];
-  startedAt: string;
+  reply: string; // Its latest reply, in markdown.
+  proposals: Proposal[];
+  startedAt: number | null;
 }
 interface Proposal {
   id: string;
   summary: string;
   pullRequestUrl: string;
-  comment?: Comment; // The comment it answers.
-  earlierComments?: Comment[]; // The comments before it in its review thread.
-  checkFailure?: { id: string; headOid: string; checks: FailedCheck[] }; // The checks it answers.
-  patch?: Patch;
-  otherPatches?: Patch[];
-  openPullRequest?: { repository: string; base: string; branch: string; title: string; body: string; patch: Patch };
-  reply?: string;
-  resolveThread?: boolean;
-  followUp?: string;
-  rerun?: boolean;
-  closePullRequest?: boolean;
-  requestedTool?: string;
-  error?: string; // Why approving it last failed.
+  comment: Comment | null; // The comment it answers.
+  threadId: string;
+  earlierComments: Comment[]; // The comments before it in its review thread.
+  checkFailure: { id: string; headOid: string; checks: FailedCheck[] } | null; // The checks it answers.
+  patch: Patch | null;
+  otherPatches: Patch[];
+  openPullRequest: { repository: string; base: string; branch: string; title: string; body: string; patch: Patch | null } | null;
+  reply: string;
+  resolveThread: boolean;
+  followUp: string;
+  rerun: boolean;
+  closePullRequest: boolean;
+  requestedTool: string;
+  investigationId: string;
+  error: string; // Why approving it last failed.
 }
-interface Comment { id: string; author: string; body: string; url: string; path?: string; line?: number; diffHunk?: string }
-interface FailedCheck { id: string; name: string; conclusion: string; url: string; workflowRunId?: string; excerpt?: string }
-interface Patch { diff: string; commitMessage: string; headOid: string; pullRequestUrl?: string }"#;
+interface Comment { id: string; author: string; body: string; url: string; path: string; line: number; diffHunk: string }
+interface FailedCheck { id: string; name: string; conclusion: string; url: string; workflowRunId: number; excerpt: string }
+interface Patch { diff: string; commitMessage: string; headOid: string; pullRequestUrl: string }"#;
 
 const USER_API: &str = "declare const gem: {
   // Every cluster gem shows, most recently updated first.
@@ -282,56 +267,48 @@ const USER_API: &str = "declare const gem: {
 // What both servers' scripts can read.
 const READS: &[&str] = &["clusters", "cluster"];
 
-// Answers `gem.<op>(...args)` from the snapshot.
-fn read(db: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
-    let snapshot = snapshot(db)
-        .map_err(|error| format!("cannot read gem's clusters: {error}"))?
-        .ok_or("gem has not listed any clusters yet; is its server running?".to_string())?;
-    let mut snapshot: Value = serde_json::from_str(&snapshot).map_err(|e| e.to_string())?;
-    // Rendered HTML repeats the markdown next to it.
-    strip_view(&mut snapshot);
-    let clusters = snapshot["clusters"].as_array().cloned().unwrap_or_default();
-    match op {
-        "clusters" => Ok(Value::Array(clusters)),
+// Answers `gem.<op>(...args)` from the view.
+fn read(view: &Db, op: &str, args: &[Value]) -> Result<Value, String> {
+    // In the order gem shows them. An error says why they can't be read, e.g. no server has
+    // written the view yet, or one of another build of gem.
+    let clusters = view.read(view::clusters).map_err(|error| {
+        format!("cannot read gem's clusters ({error}); is its server running?")
+    })?;
+    let cluster = match op {
+        "clusters" => return Ok(Value::Array(clusters.iter().map(cluster_value).collect())),
         "cluster" => {
             let url = (args.first().and_then(Value::as_str))
                 .ok_or("gem.cluster takes a pull request's URL")?;
             let url = url.trim().trim_end_matches('/');
-            Ok(clusters
-                .into_iter()
-                .find(|cluster| {
-                    let prs = cluster["pullRequests"].as_array();
-                    prs.is_some_and(|prs| prs.iter().any(|pr| pr["url"].as_str() == Some(url)))
-                })
-                .unwrap_or_default())
+            (clusters.into_iter())
+                .find(|cluster| cluster.pull_requests.iter().any(|pr| pr.url == url))
         }
-        op => Err(format!("no function gem.{op}")),
-    }
+        op => return Err(format!("no function gem.{op}")),
+    };
+    Ok(cluster.as_ref().map(cluster_value).unwrap_or_default())
 }
 
-// The URLs of the pull requests in the snapshot's cluster holding `pr`, or none when it holds none.
-fn cluster_of(db: &Db, pr: &str) -> Vec<String> {
+// The URLs of the pull requests in the view's cluster holding `pr`, or none when it holds none.
+fn cluster_of(view: &Db, pr: &str) -> Vec<String> {
     let pr = pr.trim().trim_end_matches('/');
-    let snapshot: ListOpenPullRequestsResponse = (snapshot(db).ok().flatten())
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
-    (snapshot.clusters.into_iter())
-        .map(|cluster| {
-            cluster
-                .pull_requests
-                .into_iter()
-                .map(|p| p.url)
-                .collect::<Vec<_>>()
-        })
-        .find(|urls| urls.iter().any(|url| url == pr))
-        .unwrap_or_default()
+    let clusters = view.read(view::clusters).unwrap_or_default();
+    let cluster = (clusters.into_iter())
+        .find(|cluster| cluster.pull_requests.iter().any(|other| other.url == pr));
+    let prs = cluster.map(|cluster| cluster.pull_requests).unwrap_or_default();
+    prs.into_iter().map(|pr| pr.url).collect()
+}
+
+// A cluster as a script reads it, as the view stores it, with only what agents need.
+fn cluster_value(cluster: &view::Cluster) -> Value {
+    let mut cluster = serde_json::to_value(cluster).unwrap();
+    // Rendered HTML repeats the markdown next to it.
+    strip_view(&mut cluster);
+    cluster
 }
 
 // A cluster as `gem.cluster` returns it, for prompts of agents that may not reach this server.
 pub fn cluster_json(cluster: &PullRequestCluster) -> String {
-    let mut cluster = serde_json::to_value(cluster).unwrap();
-    strip_view(&mut cluster);
-    serde_json::to_string_pretty(&cluster).unwrap()
+    serde_json::to_string_pretty(&cluster_value(&view::Cluster::from(cluster))).unwrap()
 }
 
 // Drops what only gem's own view shows: rendered HTML, and PRs' file diffs.
@@ -378,8 +355,8 @@ pub async fn agent_config(subject: &Subject) -> Result<String, String> {
 
 // Serves `gem-agent` on the loopback interface until the server stops. A server restarting for an
 // update can start before the one it replaces has let go of the port, so it keeps trying.
-pub async fn listen() {
-    let app = router(crate::db().clone(), Tokens::here(), proposals::Live);
+pub async fn listen(view: Db) {
+    let app = router(crate::db().clone(), view, Tokens::here(), proposals::Live);
     let port = port();
     let listener = loop {
         match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
@@ -397,15 +374,17 @@ pub async fn listen() {
 }
 
 struct Endpoint<G> {
-    // With the snapshot, proposals and investigations.
+    // With proposals and investigations.
     db: Db,
+    // With the clusters.
+    view: Db,
     tokens: Tokens,
     github: G,
 }
 
 // Streamable HTTP without streams: each POST to /mcp is one JSON-RPC message, answered with JSON.
-fn router(db: Db, tokens: Tokens, github: impl GitHub) -> Router {
-    let endpoint = Arc::new(Endpoint { db, tokens, github });
+fn router(db: Db, view: Db, tokens: Tokens, github: impl GitHub) -> Router {
+    let endpoint = Arc::new(Endpoint { db, view, tokens, github });
     Router::new()
         .route("/mcp", post(answer))
         .with_state(endpoint)
@@ -491,7 +470,7 @@ async fn execute<G: GitHub>(
                 let proposal = args.into_iter().next().unwrap_or_default();
                 runtime.block_on(propose(&endpoint, &subject, proposal))
             }
-            op => read(&endpoint.db, op, &args),
+            op => read(&endpoint.view, op, &args),
         })
     })
     .await
@@ -505,7 +484,7 @@ async fn propose<G: GitHub>(
 ) -> Result<Value, String> {
     let request: proposals::Request =
         serde_json::from_value(proposal).map_err(|e| e.to_string())?;
-    let cluster = cluster_of(&endpoint.db, &request.pr);
+    let cluster = cluster_of(&endpoint.view, &request.pr);
     let proposed =
         proposals::propose(&endpoint.github, &endpoint.db, subject, &cluster, request).await;
     match &proposed {
@@ -594,7 +573,7 @@ mod tests {
 
     use super::*;
     use crate::proposals::FetchedComment;
-    use crate::proto::{CheckFailure, Comment, FailedCheck, Proposal};
+    use crate::proto::{CheckFailure, Comment, FailedCheck, ListOpenPullRequestsResponse, Proposal};
     use crate::tokens::tests::{db, temp_dir, token};
 
     const PR: &str = "https://github.com/o/r/pull/1";
@@ -665,6 +644,8 @@ mod tests {
 
     struct Server {
         db: Db,
+        view: view::Live,
+        view_path: PathBuf,
         tokens: Tokens,
         app: Router,
     }
@@ -672,10 +653,14 @@ mod tests {
     impl Server {
         fn new(name: &str) -> Self {
             let db = db();
+            let view_path = temp_dir(name).join(view::FILE);
+            let view = view::Live::open(&view_path).unwrap();
             let tokens = Tokens::new(db.clone(), temp_dir(name));
             Self {
-                app: router(db.clone(), tokens.clone(), Fake),
+                app: router(db.clone(), view.db().clone(), tokens.clone(), Fake),
                 db,
+                view,
+                view_path,
                 tokens,
             }
         }
@@ -1099,11 +1084,8 @@ mod tests {
             ..Default::default()
         };
         const ELSEWHERE: &str = "https://github.com/o/r/pull/3";
-        let snapshot = ListOpenPullRequestsResponse {
-            clusters: vec![cluster(&[PR, OTHER]), cluster(&[ELSEWHERE])],
-            ..Default::default()
-        };
-        save_to(server.db(), &snapshot);
+        let clusters = vec![cluster(&[PR, OTHER]), cluster(&[ELSEWHERE])];
+        server.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
         let token = server.token(&in_thread()).await;
         let other_patch = |pr: &str| {
             json!({
@@ -1140,23 +1122,121 @@ mod tests {
         assert_eq!(patch.head_oid, "abc");
     }
 
+    // Scripts get exactly the fields `TYPES` declares for each type, every one of them present,
+    // with times as numbers and enums by their names.
     #[tokio::test]
-    async fn scripts_read_the_snapshot() {
+    async fn scripts_get_the_declared_types() {
+        use crate::proto::{Agent, Checks, NewPullRequest, Patch, PullRequest, Repository};
+        let server = Server::new("types");
+        let comment = Comment { id: "c".into(), author: "a".into(), ..Default::default() };
+        let patch = Patch { diff: "d".into(), ..Default::default() };
+        let proposal = Proposal {
+            id: "p".into(),
+            comment: Some(comment.clone()),
+            earlier_comments: vec![comment],
+            patch: Some(patch.clone()),
+            other_patches: vec![patch.clone()],
+            check_failure: Some(CheckFailure {
+                checks: vec![FailedCheck { workflow_run_id: 7, ..Default::default() }],
+                ..Default::default()
+            }),
+            open_pull_request: Some(NewPullRequest { patch: Some(patch), ..Default::default() }),
+            ..Default::default()
+        };
+        let pr = PullRequest {
+            url: PR.into(),
+            repository: Some(Repository { owner: "o".into(), name: "r".into() }),
+            checks: Some(Checks { total: 2, done: 1, failed: 0 }),
+            created_at: Some(pbjson_types::Timestamp { seconds: 5, nanos: 0 }),
+            merge_by: crate::proto::MergeBy::Approval as i32,
+            proposals: vec![proposal],
+            ..Default::default()
+        };
+        let agent = Agent {
+            id: "a".into(),
+            state: crate::proto::AgentState::Waiting as i32,
+            ..Default::default()
+        };
+        let cluster = PullRequestCluster {
+            pull_requests: vec![pr],
+            agents: vec![agent],
+            ..Default::default()
+        };
+        let clusters = vec![cluster];
+        server.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
+        let token = server.token(&in_thread()).await;
+        let result = server.execute(&token, "async () => gem.clusters()").await;
+        let clusters: Value = serde_json::from_str(text(&result)).unwrap();
+
+        // The members `TYPES` declares for `name`, at the top level of its braces.
+        let declared = |name: &str| -> Vec<String> {
+            // Without the comments.
+            let types: Vec<&str> =
+                TYPES.lines().map(|line| line.split("//").next().unwrap()).collect();
+            let types = types.join("\n");
+            let start = types.find(&format!("interface {name} {{")).unwrap() + name.len() + 12;
+            let (mut depth, mut members, mut word) = (1, Vec::new(), String::new());
+            for c in types[start..].chars() {
+                match c {
+                    '{' => depth += 1,
+                    '}' if depth == 1 => break,
+                    '}' => depth -= 1,
+                    ':' if depth == 1 && !word.is_empty() => {
+                        members.push(std::mem::take(&mut word));
+                    }
+                    c if c.is_alphanumeric() && depth == 1 => word.push(c),
+                    _ => word.clear(),
+                }
+            }
+            members.sort();
+            members
+        };
+        let keys = |value: &Value| -> Vec<String> {
+            let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        let cluster = &clusters[0];
+        let pr = &cluster["pullRequests"][0];
+        let proposal = &pr["proposals"][0];
+        assert_eq!(keys(cluster), declared("Cluster"));
+        assert_eq!(keys(pr), declared("PullRequest"));
+        assert_eq!(keys(&cluster["agents"][0]), declared("Agent"));
+        assert_eq!(keys(proposal), declared("Proposal"));
+        assert_eq!(keys(&proposal["comment"]), declared("Comment"));
+        assert_eq!(keys(&proposal["patch"]), declared("Patch"));
+        assert_eq!(keys(&proposal["checkFailure"]["checks"][0]), declared("FailedCheck"));
+        assert_eq!(pr["createdAt"], 5000);
+        assert_eq!(pr["mergeBy"], "approval");
+        assert_eq!(cluster["mergeBy"], "unspecified");
+        assert_eq!(cluster["updatedAt"], Value::Null);
+        assert_eq!(cluster["agents"][0]["state"], "waiting");
+        assert_eq!(proposal["checkFailure"]["checks"][0]["workflowRunId"], 7);
+    }
+
+    #[tokio::test]
+    async fn scripts_read_the_view() {
         let server = Server::new("cluster");
-        let snapshot = json!({ "clusters": [{
-            "name": "Renames",
-            "pullRequests": [{ "url": PR, "title": "Rename", "titleHtml": "<p>Rename</p>" }],
-        }] });
-        (server.db())
-            .write(|moment| moment.put(SNAPSHOT, snapshot.to_string()))
-            .unwrap();
+        let pr = crate::proto::PullRequest {
+            url: PR.to_string(),
+            title: "Rename".to_string(),
+            files: vec![crate::proto::FileDiff { path: "a".to_string(), patch: "+".to_string() }],
+            ..Default::default()
+        };
+        let cluster = PullRequestCluster {
+            name: "Renames".to_string(),
+            pull_requests: vec![pr],
+            ..Default::default()
+        };
+        let clusters = vec![cluster];
+        server.view.publish(&ListOpenPullRequestsResponse { clusters, ..Default::default() });
         let token = server.token(&in_thread()).await;
         let result = server
             .execute(&token, &format!("async () => gem.cluster('{PR}/')"))
             .await;
         let cluster: Value = serde_json::from_str(text(&result)).unwrap();
         assert_eq!(cluster["name"], "Renames");
-        assert_eq!(cluster["pullRequests"][0]["titleHtml"], Value::Null);
+        assert_eq!(cluster["pullRequests"][0]["files"], Value::Null);
 
         let script = format!(
             "const none = gem.cluster('{OTHER}');
@@ -1169,14 +1249,19 @@ mod tests {
             serde_json::to_string_pretty(&json!({ "none": null, "titles": ["Rename"] })).unwrap()
         );
 
-        // The user's own server reads the same snapshot.
+        // The user's own server, `server mcp` in another process, reads the same view.xitdb.
         let request = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": { "name": "execute", "arguments": { "code": "gem.clusters()[0].name" } },
         });
-        assert_eq!(text(&handle(server.db(), &request).unwrap()), "Renames");
+        let reader = Db::open_reader(&server.view_path, view::migrations());
+        assert_eq!(text(&handle(&reader, &request).unwrap()), "Renames");
+        // Before any server wrote it, a script is told why it can't read it.
+        let missing = Db::open_reader(temp_dir("no-view").join(view::FILE), view::migrations());
+        let result = handle(&missing, &request).unwrap();
+        assert!(text(&result).contains("is its server running?"), "{result}");
     }
 
     #[tokio::test]

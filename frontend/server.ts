@@ -3,6 +3,9 @@ import { ConnectionState, Room, RoomEvent } from 'livekit-client';
 import { SignJWT } from 'jose';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
+import type { Db } from './db';
+import { Replica, type ViewBytes } from './view';
+
 const PROFILES_KEY = 'gem.profiles';
 const SELECTED_KEY = 'gem.profile';
 // Where the one project was saved before there were profiles, when every server joined the room gem.
@@ -11,8 +14,15 @@ const PROJECT_KEY = 'gem.project';
 const SERVER = 'server';
 // Approving pushes a commit and posts to GitHub before it answers.
 const RESPONSE_TIMEOUT_MS = 5 * 60_000;
-// The server sends what `/prs` answers on this topic whenever it changes.
-const SNAPSHOT_TOPIC = 'prs';
+// The frontend asks for the bytes its replica of the server's view lacks with an RPC call to this
+// method: when it connects, when the server joins, and when a change doesn't follow on from its
+// replica. The server sends them, like every change to the view, as a byte stream on VIEW_TOPIC.
+const SYNC_METHOD = 'view-sync';
+const VIEW_TOPIC = 'view';
+// The server sends the bytes before it answers, and the first copy can take a while.
+const SYNC_TIMEOUT_MS = 60_000;
+// How many changes that arrived ahead of the replica are kept until it catches up to them.
+const AHEAD = 16;
 
 // The user's own LiveKit project, the one their gem server is configured with. It never leaves
 // this browser: tokens are minted here.
@@ -58,8 +68,8 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
-  // The latest snapshot the server sent since connecting, as JSON.
-  const [snapshot, setSnapshot] = useState<JsonValue>();
+  // This connection's replica of the server's view, which components read through `useDb`.
+  const [db, setDb] = useState<Db>();
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -92,25 +102,85 @@ export function useServer() {
             ? 'online'
             : 'offline',
       );
+    // Another connection, to this profile or another, starts from an empty replica.
+    const replica = new Replica();
+    setDb(replica);
+    let closed = false;
+    // While a sync is in flight, a change that doesn't follow on doesn't ask again: LiveKit
+    // delivers the server's data in order, so the bytes it asked for arrive before its answer.
+    let syncing = false;
+    const sync = () => {
+      if (closed || syncing) return;
+      syncing = true;
+      room.localParticipant
+        .performRpc({
+          destinationIdentity: SERVER,
+          method: SYNC_METHOD,
+          payload: JSON.stringify(replica.state()),
+          responseTimeout: SYNC_TIMEOUT_MS,
+        })
+        .catch(() => {})
+        .finally(() => {
+          syncing = false;
+        });
+    };
+    // Changes that arrived ahead of the replica, like those committed while a sync was read and
+    // sent, applied once it has caught up to them.
+    let ahead: { sent: ViewBytes; bytes: Uint8Array }[] = [];
+    // Streams are applied in the order they start, one at a time.
+    let applying = Promise.resolve();
+    room.registerByteStreamHandler(VIEW_TOPIC, (reader) => {
+      applying = applying
+        .then(async () => {
+          // The stream's chunks, joined.
+          const bytes = new Uint8Array(await new Blob((await reader.readAll()) as BlobPart[]).arrayBuffer());
+          // Which bytes they are, as the server says in the stream's attributes.
+          const { fileId, start, end } = reader.info.attributes ?? {};
+          if (closed || !fileId || !start || !end) return;
+          const sent = { fileId, start: Number(start), end: Number(end) };
+          const applied = replica.apply(sent, bytes);
+          if (applied === 'gap') {
+            ahead = [...ahead, { sent, bytes }].slice(-AHEAD);
+            sync();
+            return;
+          }
+          // The replica tells the components reading it about each change it applies.
+          for (let caughtUp = applied === 'applied'; caughtUp; ) {
+            caughtUp = false;
+            ahead = ahead.filter((change) => {
+              const result = replica.apply(change.sent, change.bytes);
+              if (result === 'applied') caughtUp = true;
+              return result === 'gap';
+            });
+          }
+        })
+        .catch(() => {});
+    });
+    // The server sends a participant data only once it is active.
     room
       .on(RoomEvent.ConnectionStateChanged, update)
-      .on(RoomEvent.ParticipantConnected, update)
+      .on(RoomEvent.ParticipantConnected, (participant) => {
+        update();
+        if (participant.identity === SERVER) void participant.waitUntilActive().then(sync);
+      })
       .on(RoomEvent.ParticipantDisconnected, update);
-    room.registerTextStreamHandler(SNAPSHOT_TOPIC, (reader) =>
-      reader.readAll().then((text) => setSnapshot(JSON.parse(text))),
-    );
     mintToken(connection)
       .then((jwt) => room.connect(connection.url, jwt))
+      .then(() => {
+        void room.remoteParticipants.get(SERVER)?.waitUntilActive().then(sync);
+      })
       // A project that refuses the token can still be edited or switched away from.
       .catch(() => setStatus('unreachable'));
     return () => {
+      closed = true;
       room.removeAllListeners();
-      room.unregisterTextStreamHandler(SNAPSHOT_TOPIC);
+      room.unregisterByteStreamHandler(VIEW_TOPIC);
       room.disconnect();
       setStatus('connecting');
-      setSnapshot(undefined);
+      setDb(undefined);
     };
   }, [room, connection, visible]);
+
 
   const selectProfile = useCallback((id: string) => {
     localStorage.setItem(SELECTED_KEY, id);
@@ -155,5 +225,5 @@ export function useServer() {
     [room],
   );
 
-  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, snapshot };
+  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, db };
 }
