@@ -447,6 +447,50 @@ mod tests {
         assert!(delta.bytes.len() < cluster, "{} bytes", delta.bytes.len());
     }
 
+    // As the server builds the view each tick, from the cached pull requests with their diffs
+    // filled in, a restart and a diff that can't be fetched show the files shown before: a view
+    // that showed none for a while and then them again wrote every PR's files again. Production's
+    // view.xitdb did on every restart, appending 130 KB to a 660 KB view.
+    #[tokio::test]
+    async fn a_restart_or_a_failed_fetch_keeps_the_files_shown() {
+        // Built fresh each tick: no diffs in it yet, and proposals about files. With no
+        // repository, fetching a diff fails at once, without asking GitHub.
+        let fresh = || {
+            let mut response = response(3);
+            let prs = response.clusters.iter_mut().flat_map(|c| &mut c.pull_requests);
+            for pr in prs {
+                pr.url = format!("{}/files-kept", pr.url);
+                pr.repository = None;
+                pr.proposals[0].comment = Some(crate::proto::Comment {
+                    path: "server/src/view.rs".to_string(),
+                    ..Default::default()
+                });
+            }
+            response
+        };
+        let mut view = View::new().unwrap();
+        let mut shown = fresh();
+        for pr in shown.clusters.iter_mut().flat_map(|c| &mut c.pull_requests) {
+            pr.files = vec![crate::proto::FileDiff {
+                path: "server/src/view.rs".to_string(),
+                patch: "@@ -1 +1 @@
+-a
++b
+".repeat(200),
+            }];
+        }
+        view.write(&shown).unwrap().unwrap();
+        // The server restarts with the view it showed.
+        crate::files::seed(&view.live.db.read(clusters).unwrap()).await;
+        for _ in 0..3 {
+            let mut response = fresh();
+            crate::files::fill(&mut response.clusters).await;
+            assert_eq!(view.write(&response).unwrap(), None);
+            // Each failed fetch is noted before the next tick.
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[test]
     fn a_new_replica_is_sent_the_whole_view() {
         let mut view = View::new().unwrap();
