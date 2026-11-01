@@ -349,7 +349,7 @@ mod tests {
         }
 
         fn sync(&mut self, view: &View) -> Delta {
-            let delta = view.live.db.replicate(self.replica()).unwrap();
+            let delta = view.live.db.replicate(self.replica(), true).unwrap();
             assert!(self.receive(&delta));
             delta
         }
@@ -414,9 +414,9 @@ mod tests {
     fn an_unchanged_view_commits_nothing() {
         let mut view = View::new().unwrap();
         assert!(view.write(&response(5)).unwrap().is_some());
-        let size = view.live.db.replicate(None).unwrap().end;
+        let size = view.live.db.replicate(None, true).unwrap().end;
         assert_eq!(view.write(&response(5)).unwrap(), None);
-        assert_eq!(view.live.db.replicate(None).unwrap().end, size);
+        assert_eq!(view.live.db.replicate(None, true).unwrap().end, size);
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
         view.write(&response(3)).unwrap();
         let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         let delta = frontend.sync(&view);
-        assert_eq!((delta.start, delta.end), (0, view.live.db.replicate(None).unwrap().end));
+        assert_eq!((delta.start, delta.end), (0, view.live.db.replicate(None, true).unwrap().end));
         assert_eq!(frontend.shown(), Shown::from(&response(3)));
     }
 
@@ -508,7 +508,7 @@ mod tests {
         assert!(frontend.receive(&delta));
         assert_eq!(frontend.shown(), Shown::from(&shown));
         // One it already has, from a sync that raced the change, is not applied twice.
-        let synced = view.live.db.replicate(frontend.replica()).unwrap();
+        let synced = view.live.db.replicate(frontend.replica(), true).unwrap();
         assert_eq!(synced.start, synced.end);
         assert!(!frontend.receive(&delta));
     }
@@ -534,19 +534,19 @@ mod tests {
         view.write(&response(3)).unwrap();
         let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         frontend.sync(&view);
-        let file_id = view.live.db.replicate(None).unwrap().file_id;
+        let file_id = view.live.db.replicate(None, true).unwrap().file_id;
         // Growing past the threshold compacts it; each change is still sent from the old file.
         let mut shown = response(3);
         for i in 0..20_000 {
             shown.clusters[0].name = format!("name {i}");
             let delta = view.write(&shown).unwrap().unwrap();
             assert!(frontend.receive(&delta));
-            if view.live.db.replicate(None).unwrap().file_id != file_id {
+            if view.live.db.replicate(None, true).unwrap().file_id != file_id {
                 break;
             }
         }
-        assert_ne!(view.live.db.replicate(None).unwrap().file_id, file_id);
-        assert!(view.live.db.replicate(None).unwrap().end < GROWTH);
+        assert_ne!(view.live.db.replicate(None, true).unwrap().file_id, file_id);
+        assert!(view.live.db.replicate(None, true).unwrap().end < GROWTH);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
         assert_eq!(frontend.shown(), Shown::from(&shown));
@@ -578,10 +578,11 @@ mod tests {
     fn publishing_sends_each_change_to_every_frontend() {
         let view = View::new().unwrap();
         let mut changes = view.live.changes().subscribe();
-        let before = view.live.db.replicate(None).unwrap().end;
+        let before = view.live.db.replicate(None, true).unwrap().end;
         assert!(view.live.publish(&response(2)));
         let delta = changes.try_recv().unwrap();
-        assert_eq!((delta.start, delta.end), (before, view.live.db.replicate(None).unwrap().end));
+        let end = view.live.db.replicate(None, false).unwrap().end;
+        assert_eq!((delta.start, delta.end), (before, end));
         assert!(!view.live.publish(&response(2)));
         assert!(changes.try_recv().is_err());
     }
@@ -609,12 +610,12 @@ mod tests {
         view.write(&response(3)).unwrap();
         let mut frontend = Frontend { db: Database::in_memory().unwrap(), file_id: None };
         frontend.sync(&view);
-        let file_id = view.live.db.replicate(None).unwrap().file_id;
+        let file_id = view.live.db.replicate(None, true).unwrap().file_id;
         // The file outlives the server, and is compacted, with a new file ID, when it opens.
         let path = view.dir.join(FILE);
         view.live = Live::open(view.dir.join("other.xitdb")).unwrap();
         view.live = Live::open(&path).unwrap();
-        assert_ne!(view.live.db.replicate(None).unwrap().file_id, file_id);
+        assert_ne!(view.live.db.replicate(None, true).unwrap().file_id, file_id);
         let delta = frontend.sync(&view);
         assert_eq!(delta.start, 0);
         assert_eq!(frontend.shown(), Shown::from(&response(3)));
@@ -634,7 +635,7 @@ mod tests {
         let first = response(3);
         let full = {
             view.write(&first).unwrap();
-            view.live.db.replicate(None).unwrap()
+            view.live.db.replicate(None, true).unwrap()
         };
         let mut second = first.clone();
         second.clusters.swap(0, 2);

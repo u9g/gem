@@ -3,7 +3,7 @@ use std::{
     env,
     error::Error,
     future::Future,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -24,7 +24,7 @@ use tokio::sync::{
 use tracing::Instrument;
 
 mod frontends;
-use frontends::Frontends;
+use frontends::{Frontends, Out, Queued};
 
 // The frontend sends every request to this participant, as an RPC call to this method.
 const IDENTITY: &str = "server";
@@ -155,27 +155,72 @@ where
     let handler = handler.clone();
     register(&room, METHOD, move |payload, _| handler(payload));
     let mut frontends = Frontends::default();
-    // Bytes for one frontend alone, such as a whole copy, are sent on tasks of their own, so
-    // changes and events go on meanwhile, and each task says when it's done.
-    let (done, mut sent) = mpsc::unbounded_channel::<String>();
-    let send_to = |id: String, delta: Delta| {
-        let (participant, done) = (room.local_participant(), done.clone());
-        let sending = async move {
-            let to = vec![ParticipantIdentity(id.clone())];
-            match send(&participant, &delta, to).await {
-                Ok(()) => tracing::info!(frontend = id, size = delta.bytes.len(), "view sent"),
-                Err(error) => tracing::warn!(frontend = id, %error, "cannot send the view"),
-            }
-            let _ = done.send(id);
-        };
-        tokio::spawn(sending.in_current_span());
+    // Each frontend's streams are sent in order by a task of its own, so a change follows the
+    // copy before it, and the event loop goes on while a big copy is sent. Each task says when
+    // each stream finished sending, to the file ID and size it brings a replica to.
+    type Finished = (String, u64, Option<(u64, i64, usize)>);
+    let (done, mut finished) = mpsc::unbounded_channel::<Finished>();
+    let mut queues: HashMap<String, mpsc::UnboundedSender<Queued>> = HashMap::new();
+    // The last whole copy read, for each frontend that is sent one of the same bytes.
+    let copy: Arc<Mutex<Option<Arc<Delta>>>> = Arc::default();
+    let enqueue = |queues: &mut HashMap<String, mpsc::UnboundedSender<Queued>>, id: &str, queued| {
+        let queue = queues.entry(id.to_string()).or_insert_with(|| {
+            let (queue, mut queued) = mpsc::unbounded_channel::<Queued>();
+            let (participant, done) = (room.local_participant(), done.clone());
+            let (view, copy, id) = (view.clone(), copy.clone(), id.to_string());
+            let sending = async move {
+                while let Some(Queued { seq, out }) = queued.recv().await {
+                    let delta = match out {
+                        Out::Change(delta) => Ok(delta),
+                        // Reading a copy can take a while, so not on the runtime's threads.
+                        Out::Lacking(replica) => {
+                            let view = view.clone();
+                            let copy = copy.clone();
+                            let read = tokio::task::spawn_blocking(move || {
+                                let lacks = view.replicate(replica, false)?;
+                                let mut copy = copy.lock().unwrap_or_else(PoisonError::into_inner);
+                                let end = (lacks.file_id, lacks.end);
+                                let whole = (lacks.start == 0).then_some(end);
+                                let read = (copy.as_ref())
+                                    .filter(|copy| whole == Some((copy.file_id, copy.end)));
+                                if let Some(read) = read {
+                                    return Ok(read.clone());
+                                }
+                                let delta = Arc::new(view.replicate(replica, true)?);
+                                if delta.start == 0 {
+                                    *copy = Some(delta.clone());
+                                }
+                                Ok(delta)
+                            });
+                            read.await.unwrap_or_else(|error| Err(error.to_string()))
+                        }
+                    };
+                    let to = vec![ParticipantIdentity(id.clone())];
+                    let sent = match delta {
+                        Ok(delta) => match send(&participant, &delta, to).await {
+                            Ok(()) => Some((delta.file_id, delta.end, delta.bytes.len())),
+                            Err(error) => {
+                                tracing::warn!(frontend = id, %error, "cannot send the view");
+                                None
+                            }
+                        },
+                        Err(error) => {
+                            tracing::error!(frontend = id, %error, "cannot read the view");
+                            None
+                        }
+                    };
+                    let _ = done.send((id.clone(), seq, sent));
+                }
+            };
+            tokio::spawn(sending.in_current_span());
+            queue
+        });
+        let _ = queue.send(queued);
     };
     // Frontends in the room before the server are active already.
     for id in room.remote_participants().keys() {
-        match frontends.active(id.as_str(), view) {
-            Ok(Some(delta)) => send_to(id.to_string(), delta),
-            Ok(None) => {}
-            Err(error) => tracing::warn!(%error, "cannot read the view"),
+        if let Some(queued) = frontends.active(id.as_str()) {
+            enqueue(&mut queues, id.as_str(), queued);
         }
     }
     let mut check = tokio::time::interval(CHECK_INTERVAL);
@@ -185,15 +230,17 @@ where
         tokio::select! {
             change = changes.recv() => match change {
                 Ok(delta) => {
-                    if let Err(error) = send(&room.local_participant(), &delta, vec![]).await {
-                        tracing::warn!(%error, "cannot send a change to the view");
+                    for (id, queued) in frontends.changed(&delta) {
+                        enqueue(&mut queues, &id, queued);
                     }
-                    frontends.changed(&delta, Instant::now());
                 }
-                // A frontend that misses a change is sent the bytes it lacks once it reports a
-                // replica that's behind, or doesn't report for long enough.
+                // Changes were committed that are queued for no frontend, and maybe nothing
+                // commits after them, so each is sent what it lacks.
                 Err(RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "changes to the view were not sent");
+                    for (id, queued) in frontends.lagged() {
+                        enqueue(&mut queues, &id, queued);
+                    }
                 }
                 Err(RecvError::Closed) => return Err("the view is gone".into()),
             },
@@ -208,10 +255,8 @@ where
                 // is sent the view then.
                 Some(RoomEvent::ParticipantActive(p)) => {
                     tracing::info!(frontend = %p.identity(), "frontend active");
-                    match frontends.active(p.identity().as_str(), view) {
-                        Ok(Some(delta)) => send_to(p.identity().to_string(), delta),
-                        Ok(None) => {}
-                        Err(error) => tracing::warn!(%error, "cannot read the view"),
+                    if let Some(queued) = frontends.active(p.identity().as_str()) {
+                        enqueue(&mut queues, p.identity().as_str(), queued);
                     }
                 }
                 Some(RoomEvent::DataReceived { payload, topic, participant: Some(p), .. })
@@ -225,17 +270,21 @@ where
                             .map_err(|error| error.to_string()),
                         Err(error) => Err(error.to_string()),
                     };
-                    let delta = replica.and_then(|replica| {
-                        frontends.report(&id, replica, view, Instant::now())
-                    });
-                    match delta {
-                        Ok(Some(delta)) => send_to(id, delta),
+                    let Ok(replica) = replica.inspect_err(|error| {
+                        tracing::warn!(frontend = id, %error, "not a replica's state");
+                    }) else {
+                        continue;
+                    };
+                    match frontends.report(&id, replica, view, Instant::now()) {
+                        Ok(Some(queued)) => enqueue(&mut queues, &id, queued),
                         Ok(None) => {}
-                        Err(error) => tracing::warn!(frontend = id, %error, "bad report"),
+                        Err(error) => tracing::error!(%error, "cannot read the view"),
                     }
                 }
                 Some(RoomEvent::ParticipantDisconnected(p)) => {
                     frontends.left(p.identity().as_str());
+                    // Its task stops once it has sent what's queued.
+                    queues.remove(p.identity().as_str());
                     let frontends = room.remote_participants().len();
                     tracing::info!(frontend = %p.identity(), frontends, "frontend disconnected");
                     if frontends == 0 {
@@ -247,11 +296,18 @@ where
                 Some(_) => {}
                 None => return Err("room closed".into()),
             },
-            Some(id) = sent.recv() => frontends.sent(&id, Instant::now()),
-            _ = check.tick() => match frontends.due(view, Instant::now()) {
-                Ok(due) => due.into_iter().for_each(|(id, delta)| send_to(id, delta)),
-                Err(error) => tracing::warn!(%error, "cannot read the view"),
-            },
+            Some((id, seq, sent)) = finished.recv() => {
+                frontends.finished(&id, seq, sent, Instant::now());
+            }
+            _ = check.tick() => {
+                let (due, errors) = frontends.due(view, Instant::now());
+                for (id, queued) in due {
+                    enqueue(&mut queues, &id, queued);
+                }
+                for error in errors {
+                    tracing::error!(%error, "cannot read the view");
+                }
+            }
             _ = terminate.recv() => left = Some(Left::Terminated),
         }
     }
