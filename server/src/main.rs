@@ -581,10 +581,9 @@ async fn run_server() {
     investigations::watch();
     agents::watch(conversations);
     let changes = live.changes();
-    let sync = move |payload: &str| live.sync(payload);
     gem_room::serve(
         move |request| gem_http::respond(app.clone(), request),
-        sync,
+        live.db().clone(),
         changes,
     )
     .await;
