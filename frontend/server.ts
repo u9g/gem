@@ -1,5 +1,5 @@
 import type { JsonValue } from '@bufbuild/protobuf';
-import { ConnectionState, Room, RoomEvent } from 'livekit-client';
+import { ConnectionState, Room, RoomEvent, RpcError } from 'livekit-client';
 import { SignJWT } from 'jose';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
@@ -226,4 +226,17 @@ export function useServer() {
   );
 
   return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, db };
+}
+
+// Why a request `post` sent failed: what the server answered, or LiveKit's reason it got no
+// answer.
+export function failureMessage(error: unknown): string {
+  if (!(error instanceof RpcError)) return error instanceof Error ? error.message : String(error);
+  // Approving can outlast the wait, and the server goes on with it.
+  if (error.code === RpcError.ErrorCode.RESPONSE_TIMEOUT) return "the server didn't answer in time; it may still finish";
+  if (error.code === RpcError.ErrorCode.RECIPIENT_NOT_FOUND) return "the server isn't connected";
+  if (error.code === RpcError.ErrorCode.RECIPIENT_DISCONNECTED) return 'the server disconnected before answering';
+  // The server answers with the HTTP response's status as the code and its body, which can be
+  // empty, as the message.
+  return error.message || `the server answered ${error.code}`;
 }

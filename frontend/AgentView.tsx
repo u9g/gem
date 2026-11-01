@@ -67,7 +67,7 @@ export function Composer({
   onSend,
 }: {
   placeholder: string;
-  // Resolves once the message is sent.
+  // Resolves once the message is sent, and rejects if it wasn't, after showing why.
   onSend: (message: string) => Promise<unknown>;
 }) {
   const [message, setMessage] = useState('');
@@ -75,8 +75,12 @@ export function Composer({
   const send = () => {
     if (!message.trim()) return;
     setSending(true);
+    // A message that wasn't sent stays, to send again.
     onSend(message)
-      .then(() => setMessage(''))
+      .then(
+        () => setMessage(''),
+        () => {},
+      )
       .finally(() => setSending(false));
   };
   return (

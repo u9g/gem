@@ -13,10 +13,10 @@ import { ClusterView, timeAgo } from './ClusterView';
 import { DbContext, emptyDb, useDb, usePending } from './db';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
-import { type Profile, useServer } from './server';
+import { failureMessage, type Profile, useServer } from './server';
 import { shown } from './view';
 import type { Cluster, Repository } from './view-types';
-import { Login, RenderMarkdown } from './surfaces';
+import { type Failure, FailureBanner, Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
@@ -119,6 +119,11 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   // each pending before it runs and refuses a second of the same, so they're greyed out
   // everywhere at once.
   const busy = usePending();
+  // The last action that failed and why, until it's dismissed or another fails. What an action
+  // does shows in the view, so one that failed would otherwise look like it did nothing. Approve
+  // answers once it's done, and shows how it failed on the proposal, so it fails here only when
+  // the server didn't answer.
+  const [failure, setFailure] = useState<Failure>();
   const phone = usePhone();
   const search = useSearch(post);
   const render = useCallback(
@@ -157,6 +162,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   const shownProfile = useRef(profileId);
   useEffect(() => {
     setRepoFilter(undefined);
+    setFailure(undefined);
     if (shownProfile.current && shownProfile.current !== profileId) go({}, true);
     shownProfile.current = profileId;
   }, [profileId, go]);
@@ -167,73 +173,91 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
     return () => removeEventListener('popstate', restore);
   }, []);
 
+  // Shows why `request` fails, if it does. It's returned for callers that wait on it.
+  function act<T>(action: string, request: Promise<T>): Promise<T> {
+    request.catch((error: unknown) => setFailure({ action, message: failureMessage(error) }));
+    return request;
+  }
+
   function approve(id: string, reply: string, followUp: string, diff: string) {
-    void post(
-      '/proposals/approve',
-      toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp, diff })),
+    void act(
+      'approve',
+      post(
+        '/proposals/approve',
+        toJson(ApproveProposalRequestSchema, create(ApproveProposalRequestSchema, { id, reply, followUp, diff })),
+      ),
     );
   }
 
   function dismiss(id: string) {
-    void post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id })));
+    void act('dismiss', post('/proposals/dismiss', toJson(DismissProposalRequestSchema, create(DismissProposalRequestSchema, { id }))));
   }
 
   function restart(cluster: Cluster) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    void post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls })));
+    void act('restart', post('/clusters/restart', toJson(RestartClusterRequestSchema, create(RestartClusterRequestSchema, { pullRequestUrls }))));
   }
 
   // Starts an agent merging the cluster's PRs, without opening its thread.
   function merge(cluster: Cluster, admin: boolean) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    void post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin })));
+    void act('merge', post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin }))));
   }
 
   // Closes every PR of the cluster without merging it.
   function closeCluster(cluster: Cluster) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    void post('/clusters/close', toJson(CloseClusterRequestSchema, create(CloseClusterRequestSchema, { pullRequestUrls })));
+    void act('close', post('/clusters/close', toJson(CloseClusterRequestSchema, create(CloseClusterRequestSchema, { pullRequestUrls }))));
   }
 
   // Starts an agent rebasing the PR, without opening its thread.
   function rebase(url: string) {
-    void post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url })));
+    void act('rebase', post('/prs/rebase', toJson(RebasePullRequestRequestSchema, create(RebasePullRequestRequestSchema, { url }))));
   }
 
   // Starts one agent rebasing every PR of the cluster, without opening its thread.
   function rebaseCluster(cluster: Cluster) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    void post('/clusters/rebase', toJson(RebaseClusterRequestSchema, create(RebaseClusterRequestSchema, { pullRequestUrls })));
+    void act('rebase', post('/clusters/rebase', toJson(RebaseClusterRequestSchema, create(RebaseClusterRequestSchema, { pullRequestUrls }))));
   }
 
   function investigate(proposalId: string) {
-    void post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId })));
+    void act('investigate', post('/investigations/start', toJson(InvestigateRequestSchema, create(InvestigateRequestSchema, { proposalId }))));
   }
 
   // Starts an agent on the message, then opens it, where the conversation goes on.
   function messageCluster(cluster: Cluster, message: string) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
-    return post(
-      '/clusters/message',
-      toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
-    )
-      .then((json) => fromJson(MessageClusterResponseSchema, json).agentId)
-      .then((id) => go({ cluster: place.cluster, agent: id }));
+    return act(
+      'message',
+      post(
+        '/clusters/message',
+        toJson(MessageClusterRequestSchema, create(MessageClusterRequestSchema, { pullRequestUrls, message })),
+      )
+        .then((json) => fromJson(MessageClusterResponseSchema, json).agentId)
+        .then((id) => go({ cluster: place.cluster, agent: id })),
+    );
   }
 
   function messageAgent(id: string, message: string) {
-    return post('/agents/message', toJson(MessageAgentRequestSchema, create(MessageAgentRequestSchema, { id, message }))).then(
-      () => {},
+    return act(
+      'message',
+      post('/agents/message', toJson(MessageAgentRequestSchema, create(MessageAgentRequestSchema, { id, message }))).then(
+        () => {},
+      ),
     );
   }
 
   function closeAgent(id: string) {
-    void post('/agents/close', toJson(CloseAgentRequestSchema, create(CloseAgentRequestSchema, { id }))).then(() => {
-      // The agent is gone, so its entry is not kept. Nothing moves if something else was opened
-      // meanwhile.
-      const now = currentPlace();
-      if (now.agent === id) go({ cluster: now.cluster }, true);
-    });
+    void act(
+      'close agent',
+      post('/agents/close', toJson(CloseAgentRequestSchema, create(CloseAgentRequestSchema, { id }))).then(() => {
+        // The agent is gone, so its entry is not kept. Nothing moves if something else was opened
+        // meanwhile.
+        const now = currentPlace();
+        if (now.agent === id) go({ cluster: now.cluster }, true);
+      }),
+    );
   }
 
   const openAgent = (id: string) => go({ cluster: place.cluster, agent: id });
@@ -262,6 +286,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   // A cluster is linked to by its oldest PR, and any of its PRs opens it, so a link still opens it
   // after an agent joins it to an older cluster.
   const opened = clusters.find((cluster) => cluster.pullRequests.some((pr) => pr.url === place.cluster));
+  const failed = failure && <FailureBanner failure={failure} onDismiss={() => setFailure(undefined)} />;
 
   const filters = (
     <View style={styles.filters}>
@@ -351,6 +376,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
     return (
       <Contexts login={login} render={render}>
         <View style={styles.phone}>
+          {failed}
           {agentView || opened ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={closeDrawer}>
@@ -417,6 +443,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>{filters}</View>
+      {failed}
       <Contexts login={login} render={render}>
         <Board
           clusters={visible}

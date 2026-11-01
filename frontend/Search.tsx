@@ -1,6 +1,6 @@
 import { create, fromJson, type JsonValue, toJson } from '@bufbuild/protobuf';
 import { Search as SearchIcon } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { SearchPullRequestsRequestSchema, SearchPullRequestsResponseSchema } from './gen/gem_pb';
@@ -20,20 +20,24 @@ export type SearchStatus = 'idle' | 'typing' | 'searching' | 'done' | 'failed';
 export function useSearch(post: (path: string, body: JsonValue) => Promise<JsonValue>) {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState<string>();
-  const [result, setResult] = useState<{ query: string; urls?: ReadonlySet<string>; error?: string }>();
+  // `sent` counts the searches sent before it, so an answer that arrives after a later search's is
+  // dropped: searches take as long as the model does, so they can finish out of order.
+  const [result, setResult] = useState<{ query: string; sent: number; urls?: ReadonlySet<string>; error?: string }>();
+  const searches = useRef(0);
   const trimmed = query.trim();
 
   useEffect(() => {
     if (!trimmed) return;
     const timer = setTimeout(() => {
+      const sent = searches.current++;
       setSearching(trimmed);
       post('/prs/search', toJson(SearchPullRequestsRequestSchema, create(SearchPullRequestsRequestSchema, { query: trimmed })))
         .then(
-          (json) => ({ query: trimmed, urls: new Set(fromJson(SearchPullRequestsResponseSchema, json).pullRequestUrls) }),
-          (error: Error) => ({ query: trimmed, error: error.message }),
+          (json) => ({ query: trimmed, sent, urls: new Set(fromJson(SearchPullRequestsResponseSchema, json).pullRequestUrls) }),
+          (error: Error) => ({ query: trimmed, sent, error: error.message }),
         )
         .then((finished) => {
-          setResult(finished);
+          setResult((shown) => (shown && shown.sent > finished.sent ? shown : finished));
           setSearching((current) => (current === trimmed ? undefined : current));
         });
     }, TYPING_PAUSE_MS);
