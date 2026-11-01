@@ -1,6 +1,7 @@
 import {
   Bot,
   CheckCheck,
+  CircleAlert,
   CircleX,
   ExternalLink,
   FileCode,
@@ -9,6 +10,7 @@ import {
   Hammer,
   RotateCcw,
   Undo2,
+  X,
 } from 'lucide-react';
 import { createContext, type CSSProperties, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -740,7 +742,41 @@ export function ToolRequestBanner({ proposal }: { proposal: Proposal }) {
   );
 }
 
+// An action that failed, and why.
+export type Failure = { action: string; message: string };
+
+// Why the last action failed, until it's dismissed.
+export function FailureBanner({ failure, onDismiss }: { failure: Failure; onDismiss: () => void }) {
+  return (
+    <View role="alert" style={styles.failure}>
+      <CircleAlert size={14} color={t3.deletion} />
+      <Text style={styles.failureText}>
+        {failure.action} failed: {failure.message}
+      </Text>
+      <Pressable accessibilityLabel="Dismiss" hitSlop={8} onPress={onDismiss}>
+        <X size={14} color={t3.muted} />
+      </Pressable>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  failure: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(242, 109, 109, 0.28)',
+    backgroundColor: 'rgba(242, 109, 109, 0.08)',
+  },
+  failureText: {
+    flex: 1,
+    color: t3.foreground,
+    fontSize: 12,
+    lineHeight: 16,
+  },
   more: {
     color: t3.muted,
     fontSize: 12,
