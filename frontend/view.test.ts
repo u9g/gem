@@ -15,7 +15,7 @@ import { MemoryDb } from './memory';
 import type { Cluster, Moment } from './view-types';
 import { blank } from './stories/fixtures';
 import { followView, type ServerStatus } from './server';
-import { Replica, shown, type ViewBytes } from './view';
+import { Replica, type ReplicaState, shown, type ViewBytes } from './view';
 
 // On the web, Metro resolves the node crypto xitdb's hasher imports to an empty module, as here:
 // the replica looks keys up with its own SHA-1 alone.
@@ -211,23 +211,21 @@ test('same compares what reads return', () => {
   assert.ok(!same([1], [2]));
 });
 
-// A room as `followView` uses one, with the server in it, whose syncs `answer` answers: by sending
-// bytes on the view's topic and resolving, or by rejecting, as LiveKit does for a method the
-// server hasn't registered yet.
-function fakeRoom(answer: (call: number, send: (sent: ViewBytes, bytes: Uint8Array) => void) => Promise<string>) {
+// A room as `followView` uses one, which the server joins with the frontend, keeping what the
+// frontend reports and sending it streams as the server does.
+function fakeRoom() {
   const listeners = new Map<string, (participant: unknown) => void>();
   let handler: ((reader: unknown) => void) | undefined;
-  const server = { identity: 'server', waitUntilActive: () => Promise.resolve() };
-  const send = (sent: ViewBytes, bytes: Uint8Array) =>
-    handler!({
-      readAll: async () => [bytes],
-      info: { attributes: { fileId: sent.fileId, start: String(sent.start), end: String(sent.end) } },
-    });
   const room = {
     state: 'disconnected',
-    calls: 0,
+    reports: [] as ((NonNullable<ReplicaState> & { fileId: string }) | null)[],
     remoteParticipants: new Map<string, unknown>(),
-    localParticipant: { performRpc: () => answer(++room.calls, send) },
+    localParticipant: {
+      publishData: async (payload: Uint8Array, options: { topic: string; destinationIdentities: string[] }) => {
+        assert.deepEqual([options.topic, options.destinationIdentities], ['view-state', ['server']]);
+        room.reports.push(JSON.parse(new TextDecoder().decode(payload)));
+      },
+    },
     on(event: string, listener: (participant: unknown) => void) {
       listeners.set(event, listener);
       return room;
@@ -236,45 +234,65 @@ function fakeRoom(answer: (call: number, send: (sent: ViewBytes, bytes: Uint8Arr
     unregisterByteStreamHandler: () => {},
     removeAllListeners: () => listeners.clear(),
     disconnect: async () => {},
-    // Connects with the server already in the room.
     connect: async () => {
       room.state = 'connected';
-      room.remoteParticipants.set('server', server);
+      room.remoteParticipants.set('server', { identity: 'server' });
     },
+    send: ({ sent, bytes }: { sent: ViewBytes; bytes: Uint8Array }) =>
+      handler!({
+        readAll: async () => [bytes],
+        info: { attributes: { fileId: sent.fileId, start: String(sent.start), end: String(sent.end) } },
+      }),
   };
   return room;
 }
 
 const until = async (done: () => boolean) => {
-  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(done());
 };
 
-test('a sync the server refuses is asked again until the replica has a copy', { skip }, async () => {
-  const { full } = fixture();
-  const room = fakeRoom(async (call, send) => {
-    if (call === 1) throw new Error('Method not supported at destination');
-    send(full.sent, full.bytes);
-    return '';
-  });
+test('the frontend applies what the server sends and reports what it has', { skip }, async () => {
+  const { full, delta } = fixture();
+  const room = fakeRoom();
   const replica = new Replica();
   const statuses: ServerStatus[] = [];
   const stop = followView(room as any, replica, (status) => statuses.push(status), room.connect);
-  await until(() => statuses.at(-1) === 'online');
+  // An empty replica reports null when it connects.
+  await until(() => room.reports.length === 1);
+  assert.equal(room.reports[0], null);
+  // The server sends a whole copy once the frontend is active.
+  room.send(full);
+  await until(() => room.reports.length === 2);
+  assert.deepEqual(room.reports[1], { fileId: full.sent.fileId, ...replica.state() });
+  assert.equal(room.reports[1]!.committedSize, full.sent.end);
+  // The change after it is lost on its way. The server, seeing the last report behind once it has
+  // waited, sends the bytes from the replica's committed size, which are the change again.
+  const last = room.reports.at(-1)!;
+  assert.equal(last!.committedSize, delta.sent.start);
+  room.send(delta);
+  await until(() => room.reports.length === 3);
+  assert.equal(room.reports[2]!.committedSize, delta.sent.end);
+  // A change sent again, as when a resend raced the change, is had already.
+  room.send(delta);
+  await until(() => room.reports.length === 4);
+  assert.deepEqual(room.reports[3], room.reports[2]);
   stop();
-  assert.equal(room.calls, 2);
-  assert.ok(replica.moment());
   assert.deepEqual(statuses, ['syncing', 'online']);
 });
 
-test('leaving the room stops asking again', async () => {
-  const room = fakeRoom(async () => {
-    throw new Error('Method not supported at destination');
-  });
+test("bytes that don't follow on are left out and reported", { skip }, async () => {
+  const { full, delta } = fixture();
+  const room = fakeRoom();
   const statuses: ServerStatus[] = [];
   const stop = followView(room as any, new Replica(), (status) => statuses.push(status), room.connect);
-  await until(() => room.calls === 1);
+  // A change that reaches an empty replica before the whole copy.
+  room.send(delta);
+  await until(() => room.reports.length === 2);
+  assert.deepEqual([...room.reports], [null, null]);
+  room.send(full);
+  await until(() => room.reports.length === 3);
+  assert.equal(room.reports[2]!.committedSize, full.sent.end);
   stop();
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  assert.equal(room.calls, 1);
-  assert.deepEqual(statuses, ['syncing']);
+  assert.deepEqual(statuses, ['syncing', 'online']);
 });

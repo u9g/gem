@@ -788,6 +788,8 @@ dependencies = [
  "gem-db",
  "livekit",
  "livekit-api",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]
