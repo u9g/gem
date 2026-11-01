@@ -125,6 +125,9 @@ where
         frontends = room.remote_participants().len(),
         "joined the room"
     );
+    // Frontends see the server as soon as it's in the room, before these are registered: the SDK
+    // registers a method only on a connected room's session, so a frontend's first call can be
+    // refused as an unsupported method, and frontends ask again until one is answered.
     let handler = handler.clone();
     register(&room, METHOD, move |payload, _| handler(payload));
     let (sync, participant) = (sync.clone(), room.local_participant());
