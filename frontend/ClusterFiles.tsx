@@ -2,7 +2,7 @@ import { FileCode, MessagesSquare } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { ClusterAgents, type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
+import { ClusterAgents, CloseClusterButton, type ClusterView, MergeBanner, RebaseClusterButton, timeAgo } from './ClusterView';
 import { Composer } from './AgentView';
 import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
@@ -52,7 +52,7 @@ type Props = Parameters<typeof ClusterView>[0] & {
 // their conversations are on, and the chosen file's diff with each conversation inside it, after
 // the line its review comment is on.
 export function ClusterReview(props: Props) {
-  const { cluster, onOpenAgent, busy, onRestart, onRebase, onRebaseCluster, onMerge, onMessage } = props;
+  const { cluster, onOpenAgent, busy, onRestart, onRebase, onRebaseCluster, onMerge, onCloseCluster, onMessage } = props;
   const pullRequests = cluster.pullRequests;
   const sections = pullRequests.flatMap(sectionsOf);
   const [chosen, setChosen] = useState<string>();
@@ -84,6 +84,7 @@ export function ClusterReview(props: Props) {
             disabled={restarting || merging}
             onPress={() => onRestart(cluster)}
           />
+          <CloseClusterButton cluster={cluster} busy={busy} onCloseCluster={onCloseCluster} />
         </View>
         <MergeBanner cluster={cluster} busy={busy} onMerge={onMerge} stacked />
         <View style={styles.tree}>

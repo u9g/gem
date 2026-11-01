@@ -168,6 +168,7 @@ function Shown({ initial }: { initial?: string }) {
               onRebase={noop}
               onRebaseCluster={noop}
               onMerge={noop}
+              onCloseCluster={noop}
               onInvestigate={noop}
               onMessage={() => Promise.resolve()}
             />

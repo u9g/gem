@@ -27,8 +27,9 @@ use gem_changes::Changes;
 use names::Names;
 use proto::{
     ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest,
-    CloseAgentResponse, DismissProposalRequest, DismissProposalResponse, InvestigateRequest,
-    InvestigateResponse, ListOpenPullRequestsResponse, MergeBy,
+    CloseAgentResponse, CloseClusterRequest, CloseClusterResponse, DismissProposalRequest,
+    DismissProposalResponse, InvestigateRequest, InvestigateResponse,
+    ListOpenPullRequestsResponse, MergeBy,
     MergeClusterRequest, MergeClusterResponse, MessageAgentRequest, MessageAgentResponse,
     MessageClusterRequest, MessageClusterResponse, PullRequest, PullRequestCluster,
     RebaseClusterRequest,
@@ -447,6 +448,40 @@ async fn run_server() {
                     .map_err(|error| (StatusCode::BAD_REQUEST, error))
             })
         })
+        .route("/clusters/close", {
+            let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
+            post(|Json(request): Json<CloseClusterRequest>| async move {
+                let response = filled(&prs, &names, &conversations).await;
+                let cluster = acted_on(response.as_ref(), &request.pull_request_urls)?;
+                let urls: Vec<String> = (cluster.pull_requests.iter())
+                    .map(|pr| pr.url.clone())
+                    .collect();
+                // Tries every pull request, so one that fails does not keep the rest open.
+                let (mut closed, mut errors) = (Vec::new(), Vec::new());
+                for url in urls {
+                    match gem_github::command("gh", &["pr", "close", &url], None).await {
+                        Ok(_) => closed.push(url),
+                        Err(error) => errors.push(format!("{url}: {error}")),
+                    }
+                }
+                tracing::info!(closed = ?closed, errors = ?errors, "cluster closed");
+                // Nothing else on a closed PR needs answering, and search can list a PR as open
+                // for a while after it closes, so drop it here rather than wait for the next
+                // refresh.
+                proposals::remove_on(&closed).await;
+                if let Some(response) = &mut *prs.write().await {
+                    for cluster in &mut response.clusters {
+                        cluster.pull_requests.retain(|pr| !closed.contains(&pr.url));
+                    }
+                    response.clusters.retain(|c| !c.pull_requests.is_empty());
+                }
+                if errors.is_empty() {
+                    Ok(Json(CloseClusterResponse {}))
+                } else {
+                    Err((StatusCode::BAD_GATEWAY, errors.join("\n")))
+                }
+            })
+        })
         .route("/clusters/rebase", {
             let (prs, names, conversations) = (prs.clone(), names.clone(), conversations.clone());
             post(|Json(request): Json<RebaseClusterRequest>| async move {
@@ -614,7 +649,7 @@ async fn pending_while(State(actions): State<Actions>, request: Request, next: N
         return StatusCode::BAD_REQUEST.into_response();
     };
     // The key the frontend names the action by: the proposal's ID, the cluster's key (its oldest
-    // pull request's URL), `merge` or `rebase` and the cluster's key, a pull request's URL, or an
+    // pull request's URL), `merge`, `rebase` or `close` and the cluster's key, a pull request's URL, or an
     // agent's ID. Messages have none: they can run side by side.
     #[derive(Deserialize, Default)]
     #[serde(default, rename_all = "camelCase")]
@@ -634,6 +669,7 @@ async fn pending_while(State(actions): State<Actions>, request: Request, next: N
         "/clusters/restart" => cluster,
         "/clusters/merge" if !cluster.is_empty() => format!("merge {cluster}"),
         "/clusters/rebase" if !cluster.is_empty() => format!("rebase {cluster}"),
+        "/clusters/close" if !cluster.is_empty() => format!("close {cluster}"),
         _ => String::new(),
     };
     let pending = match key.as_str() {
