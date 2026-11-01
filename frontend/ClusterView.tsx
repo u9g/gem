@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { active } from './agents';
@@ -16,7 +17,7 @@ export function timeAgo(date: Date): string {
   return relativeTime.format(Math.trunc(seconds / size), unit);
 }
 
-// A cluster's title, a button to rebase it, its PRs, a button to merge them once the server says they can (forcing the
+// A cluster's title, buttons to rebase or close it, its PRs, a button to merge them once the server says they can (forcing the
 // unapproved ones in as an admin, said plainly, when that is how), the
 // conversations waiting on u9g. The phone docks the box to ask an agent about it below.
 export function ClusterView({
@@ -29,6 +30,7 @@ export function ClusterView({
   onRebase,
   onRebaseCluster,
   onMerge,
+  onCloseCluster,
   onInvestigate,
 }: {
   cluster: Cluster;
@@ -41,6 +43,7 @@ export function ClusterView({
   onRebaseCluster: (cluster: Cluster) => void;
   // `admin`: the user chose to force the unapproved pull requests in as an admin.
   onMerge: (cluster: Cluster, admin: boolean) => void;
+  onCloseCluster: (cluster: Cluster) => void;
   onInvestigate: (id: string) => void;
 }) {
   const phone = usePhone();
@@ -66,6 +69,7 @@ export function ClusterView({
           disabled={restarting || merging}
           onPress={() => onRestart(cluster)}
         />
+        <CloseClusterButton cluster={cluster} busy={busy} onCloseCluster={onCloseCluster} />
       </View>
       <View style={styles.pullRequests}>
         <PullRequestList pullRequests={pullRequests} agents={cluster.agents} busy={busy} onRebase={onRebase} />
@@ -119,6 +123,40 @@ export function RebaseClusterButton({
         starting || pullRequests.some((pr) => pr.rebasing || pr.rebased || busy?.has(pr.url))
       }
       onPress={() => onRebaseCluster(cluster)}
+    />
+  );
+}
+
+// Closes every PR of the cluster without merging it, keeping their branches. The first press only
+// asks to press again, since a closed PR leaves gem.
+export function CloseClusterButton({
+  cluster,
+  busy,
+  onCloseCluster,
+}: {
+  cluster: Cluster;
+  busy?: ReadonlySet<string>;
+  onCloseCluster: (cluster: Cluster) => void;
+}) {
+  const key = cluster.pullRequests[0].url;
+  const closing = busy?.has(`close ${key}`);
+  const [confirming, setConfirming] = useState(false);
+  // The ask lapses, so a stray press later does not close the cluster.
+  useEffect(() => {
+    if (!confirming) return;
+    const timer = setTimeout(() => setConfirming(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirming]);
+  const count = cluster.pullRequests.length;
+  return (
+    <Button
+      label={closing ? 'Closing…' : confirming ? `Close ${count} pull request${count === 1 ? '' : 's'}?` : 'Close cluster'}
+      disabled={closing || busy?.has(`merge ${key}`) || cluster.pullRequests.some((pr) => pr.merging)}
+      onPress={() => {
+        if (!confirming) return setConfirming(true);
+        setConfirming(false);
+        onCloseCluster(cluster);
+      }}
     />
   );
 }

@@ -21,6 +21,7 @@ import { usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
   CloseAgentRequestSchema,
+  CloseClusterRequestSchema,
   DismissProposalRequestSchema,
   InvestigateRequestSchema,
   MergeClusterRequestSchema,
@@ -113,8 +114,8 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Each action in progress, from any frontend, as the view holds it: proposals being approved,
   // dismissed or investigated, the oldest PR's URL of clusters being restarted, `merge` and that
-  // URL for ones whose merge is starting, `rebase` and that URL for clusters whose rebase is
-  // starting, the URLs of PRs whose rebase is starting, and agents being closed. The server marks
+  // URL for ones whose merge is starting, `close` and that URL for ones being closed, `rebase` and
+  // that URL for clusters whose rebase is starting, the URLs of PRs whose rebase is starting, and agents being closed. The server marks
   // each pending before it runs and refuses a second of the same, so they're greyed out
   // everywhere at once.
   const busy = usePending();
@@ -186,6 +187,12 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   function merge(cluster: Cluster, admin: boolean) {
     const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
     void post('/clusters/merge', toJson(MergeClusterRequestSchema, create(MergeClusterRequestSchema, { pullRequestUrls, admin })));
+  }
+
+  // Closes every PR of the cluster without merging it.
+  function closeCluster(cluster: Cluster) {
+    const pullRequestUrls = cluster.pullRequests.map((pr) => pr.url);
+    void post('/clusters/close', toJson(CloseClusterRequestSchema, create(CloseClusterRequestSchema, { pullRequestUrls })));
   }
 
   // Starts an agent rebasing the PR, without opening its thread.
@@ -362,6 +369,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
                     onRebase={rebase}
                     onRebaseCluster={rebaseCluster}
                     onMerge={merge}
+                    onCloseCluster={closeCluster}
                     onInvestigate={investigate}
                   />
                 )}
@@ -432,6 +440,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
                 onRebase={rebase}
                 onRebaseCluster={rebaseCluster}
                 onMerge={merge}
+                onCloseCluster={closeCluster}
                 onInvestigate={investigate}
                 onMessage={(message) => messageCluster(opened, message)}
               />

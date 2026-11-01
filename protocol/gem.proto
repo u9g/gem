@@ -364,6 +364,14 @@ message MergeClusterRequest {
 
 message MergeClusterResponse {}
 
+// Closes each of the cluster's pull requests without merging it, keeping their branches.
+message CloseClusterRequest {
+  // The cluster's pull requests, oldest first.
+  repeated string pull_request_urls = 1;
+}
+
+message CloseClusterResponse {}
+
 // Asks a model, for each open pull request, whether its title and description match the query.
 message SearchPullRequestsRequest {
   string query = 1;

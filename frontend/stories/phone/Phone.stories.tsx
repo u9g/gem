@@ -146,6 +146,7 @@ function Cluster({ cluster }: { cluster: ClusterShape }) {
         onRebase={() => {}}
         onRebaseCluster={() => {}}
         onMerge={() => {}}
+        onCloseCluster={() => {}}
         onInvestigate={() => {}}
       />
     </ScrollView>
