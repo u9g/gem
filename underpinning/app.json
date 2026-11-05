@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "underpinning",
+    "slug": "underpinning",
+    "version": "1.0.0",
+    "platforms": ["web"],
+    "userInterfaceStyle": "light",
+    "web": {
+      "output": "single"
+    }
+  }
+}
