@@ -762,6 +762,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gem-omnidiff"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "gem-proto"
 version = "0.1.0"
 dependencies = [
@@ -2641,6 +2650,7 @@ dependencies = [
  "gem-http",
  "gem-launcher",
  "gem-merges",
+ "gem-omnidiff",
  "gem-proto",
  "gem-rebases",
  "gem-room",
@@ -2654,6 +2664,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha1",
  "tokio",
  "tower",
  "tracing",

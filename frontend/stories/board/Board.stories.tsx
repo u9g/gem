@@ -9,7 +9,15 @@ import { DbContext, useDb } from '../../db';
 import { MemoryDb } from '../../memory';
 import type { Agent, Cluster, Proposal, PullRequest } from '../../view-types';
 import { shown } from '../../view';
-import { agentInputs as followed, blank, clusterMergeBy, mergeBy, prFiles, proposalInputs as proposals } from '../fixtures';
+import {
+  agentInputs as followed,
+  blank,
+  clusterMergeBy,
+  highlights,
+  mergeBy,
+  prFiles,
+  proposalInputs as proposals,
+} from '../fixtures';
 
 // Made-up clusters, at least one in each column. Stories render at the window's width, so view
 // them at a laptop's.
@@ -111,12 +119,13 @@ const holding = (agents: readonly Agent[]): Cluster[] =>
     agents: agents.filter((a) => c.pullRequests?.some((pr) => a.pullRequestUrls?.includes(pr.url ?? ''))),
   }));
 
-// The board as the app shows it, read from a database holding the clusters and agents.
-function Desktop({ initial, agents = false }: { initial?: Cluster; agents?: boolean }) {
+// The board as the app shows it, read from a database holding the clusters and agents, and with
+// `omnidiff`, what it makes of their diffs.
+function Desktop({ initial, agents = false, omnidiff = false }: { initial?: Cluster; agents?: boolean; omnidiff?: boolean }) {
   const db = useMemo(() => {
     const all = agents ? [...followed, ...clusterAgents] : clusterAgents;
-    return new MemoryDb({ clusters: holding(all), agents: agents ? [orphan] : [] });
-  }, [agents]);
+    return new MemoryDb({ clusters: holding(all), agents: agents ? [orphan] : [], diffs: omnidiff ? highlights : {} });
+  }, [agents, omnidiff]);
   return (
     <DbContext value={db}>
       <Shown initial={initial?.pullRequests[0].url} />
@@ -186,6 +195,7 @@ export const Clusters: StoryObj = { render: () => <Desktop /> };
 export const WithAgents: StoryObj = { render: () => <Desktop agents /> };
 export const ReadyToMergeOpen: StoryObj = { render: () => <Desktop initial={ready1} /> };
 export const NeedsYouOpen: StoryObj = { render: () => <Desktop initial={needsYou} /> };
+export const NeedsYouOpenWithOmnidiff: StoryObj = { render: () => <Desktop initial={needsYou} omnidiff /> };
 // Agents waiting on the user, listed in the drawer of the cluster they wait in.
 export const NeedsYouWithAgentsOpen: StoryObj = { render: () => <Desktop initial={needsYou} agents /> };
 export const BehindOpen: StoryObj = { render: () => <Desktop initial={behind} /> };

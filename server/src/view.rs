@@ -21,7 +21,9 @@
 // - `order`: the clusters' keys, in the order they show;
 // - `login`, `search` and `agents`, the rest of what the UI shows;
 // - `pending`: the actions in progress, by the key the frontend names each by, each with its
-//   route, so every frontend greys out what's in progress, not only the one that started it.
+//   route, so every frontend greys out what's in progress, not only the one that started it;
+// - `diffs`: what omnidiff makes of each diff shown, by a hash of the diff, apart from the
+//   clusters so agents reading them through `server mcp` aren't given it.
 
 use std::{
     collections::HashSet,
@@ -50,6 +52,7 @@ const ORDER: &str = "order";
 const LOGIN: &str = "login";
 const SEARCH: &str = "search";
 const AGENTS: &str = "agents";
+const DIFFS: &str = "diffs";
 const PENDING: Map<str, String> = Map::new("pending");
 
 // How much the file grows past twice its compacted size before it is compacted again. A
@@ -198,6 +201,8 @@ fn write_view<C: Core>(moment: &mut WriteHashMap<'_, C>, shown: &Shown) -> Resul
     put_structured(moment, LOGIN, &shown.login)?;
     put_structured(moment, SEARCH, &shown.search)?;
     put_structured(moment, AGENTS, &shown.agents)?;
+    // Writes the diffs that are new, and removes the ones no longer shown.
+    put_structured(moment, DIFFS, &shown.diffs)?;
     Ok(())
 }
 
@@ -210,8 +215,9 @@ mod tests {
 
     use super::*;
     use crate::proto::{
-        Agent, AgentState, CheckFailure, Checks, FailedCheck, MergeBy, Proposal, PullRequest,
-        PullRequestCluster, Repository,
+        Agent, AgentState, CheckFailure, Checks, DiffHighlights, DiffSummary, FailedCheck,
+        FileHighlights, MergeBy, Proposal, PullRequest, PullRequestCluster, Repository,
+        SideHighlights,
     };
 
     // A pull request as gem shows one: enums, timestamps, bools both ways, fields left at their
@@ -277,6 +283,9 @@ mod tests {
         }
     }
 
+    // A diff whose key the frontend computes as the server does: in UTF-8, across lines.
+    const DIFF: &str = "--- a/src/view.rs\n+++ b/src/view.rs\n@@ -1 +1 @@\n-// héllo\n+// 👋\n";
+
     fn response(clusters: usize) -> ListOpenPullRequestsResponse {
         ListOpenPullRequestsResponse {
             clusters: (0..clusters)
@@ -290,6 +299,18 @@ mod tests {
                 started_at: Some(Timestamp { seconds: 1_790_000_900, nanos: 0 }),
                 ..Default::default()
             }],
+            diffs: [(
+                crate::diffs::key(DIFF),
+                DiffHighlights {
+                    files: vec![FileHighlights {
+                        path: "src/view.rs".to_string(),
+                        summary: DiffSummary::MovesOnly as i32,
+                        before: Some(SideHighlights { changed: vec![], moved: vec![12, 4, 30] }),
+                        after: Some(SideHighlights { changed: vec![3, 0, 8, 3, 10, 14], moved: vec![] }),
+                    }],
+                },
+            )]
+            .into(),
         }
     }
 
@@ -363,6 +384,7 @@ mod tests {
                 login: get_structured(&moment, LOGIN).unwrap().unwrap(),
                 search: get_structured(&moment, SEARCH).unwrap().unwrap(),
                 agents: get_structured(&moment, AGENTS).unwrap().unwrap(),
+                diffs: get_structured(&moment, DIFFS).unwrap().unwrap(),
             }
         }
     }
@@ -661,6 +683,7 @@ mod tests {
                 "login": shown.login,
                 "search": shown.search,
                 "agents": shown.agents,
+                "diffs": shown.diffs,
             })
         };
         let fixture = serde_json::json!({
@@ -668,6 +691,7 @@ mod tests {
             "delta": attributes(&delta),
             "first": json(&first),
             "second": json(&second),
+            "diff": DIFF,
         });
         std::fs::write(dir.join("fixture.json"), fixture.to_string()).unwrap();
     }

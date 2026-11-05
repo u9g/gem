@@ -40,6 +40,7 @@ use proto::{
 
 mod agents;
 mod conversations;
+mod diffs;
 mod files;
 mod investigations;
 mod layout;
@@ -785,6 +786,8 @@ async fn filled(
     files::fill(&mut response.clusters).await;
     rebases::fill(&mut response.clusters);
     merges::fill(&mut response.clusters);
+    // Of the diffs filled in above.
+    diffs::fill(&mut response).await;
     Some(response)
 }
 
@@ -820,6 +823,7 @@ async fn open_pull_requests(
         login: login().to_string(),
         search,
         agents: Vec::new(),
+        diffs: Default::default(),
     })
 }
 

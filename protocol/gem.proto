@@ -20,6 +20,49 @@ message ListOpenPullRequestsResponse {
   // The agents acting on no open pull request, most recently started first. Every other agent is in
   // the cluster holding its pull requests, so each agent is listed once.
   repeated Agent agents = 5;
+  // What omnidiff makes of each diff the clusters and agents show, by the SHA-1 of the diff's text
+  // in lowercase hex. The text is a patch's diff, or a file's hunks or a review comment's, after
+  // the header lines `--- a/<path>` and `+++ b/<path>`. A diff is missing until omnidiff has
+  // diffed it, and when it can't, as when it isn't installed.
+  map<string, DiffHighlights> diffs = 6;
+}
+
+// What omnidiff (https://github.com/ivankovic/omnidiff) makes of a diff: in the lines each file's
+// diff deletes and adds, the parts that changed and the parts that only moved, as it reads the two
+// sides by their syntax trees.
+message DiffHighlights {
+  // The files with hunks it could diff.
+  repeated FileHighlights files = 1;
+}
+
+message FileHighlights {
+  // As the file's header names it: its new path, or its old one when it's deleted.
+  string path = 1;
+  DiffSummary summary = 2;
+  // On the old side's lines and the new side's.
+  SideHighlights before = 3;
+  SideHighlights after = 4;
+}
+
+// The marked parts of one side's lines, in order, three numbers each: the line's number on its
+// side, as the diff's hunk headers count them, and where the part starts and ends in the line's
+// text, in UTF-16 code units, as JavaScript indexes a string.
+message SideHighlights {
+  // Text the other side hasn't, or has edited, like a renamed variable.
+  repeated uint32 changed = 1;
+  // Text the other side has elsewhere.
+  repeated uint32 moved = 2;
+}
+
+// How omnidiff sums up a file's change, when it's all of one kind.
+enum DiffSummary {
+  DIFF_SUMMARY_MIXED = 0;
+  DIFF_SUMMARY_NO_CHANGES = 1;
+  DIFF_SUMMARY_NEW_FILE = 2;
+  DIFF_SUMMARY_DELETED_FILE = 3;
+  DIFF_SUMMARY_WHITESPACE_ONLY = 4;
+  DIFF_SUMMARY_COMMENTS_ONLY = 5;
+  DIFF_SUMMARY_MOVES_ONLY = 6;
 }
 
 // A T3 Code agent gem started: answering a conversation or failed checks, rebasing or merging pull

@@ -3,7 +3,7 @@
 //
 //   UPDATE_VIEW_TYPES=1 cargo test view_types
 
-export type Moment = { clusters: { [key in string]: Cluster }, order: Array<string>, login: string, search: string, agents: Array<Agent>, pending: { [key in string]: string }, };
+export type Moment = { clusters: { [key in string]: Cluster }, order: Array<string>, login: string, search: string, agents: Array<Agent>, pending: { [key in string]: string }, diffs: { [key in string]: DiffHighlights }, };
 
 export type Cluster = { pullRequests: Array<PullRequest>, updatedAt?: number, name: string, mergeBy: MergeBy, agents: Array<Agent>, };
 
@@ -32,3 +32,11 @@ export type FailedCheck = { id: string, name: string, conclusion: string, url: s
 export type NewPullRequest = { repository: string, base: string, branch: string, title: string, body: string, bodyHtml: string, patch?: Patch, };
 
 export type FileDiff = { path: string, patch: string, };
+
+export type DiffHighlights = { files: Array<FileHighlights>, };
+
+export type FileHighlights = { path: string, summary: DiffSummary, before: SideHighlights, after: SideHighlights, };
+
+export type SideHighlights = { changed: Array<number>, moved: Array<number>, };
+
+export type DiffSummary = "mixed" | "noChanges" | "newFile" | "deletedFile" | "whitespaceOnly" | "commentsOnly" | "movesOnly";

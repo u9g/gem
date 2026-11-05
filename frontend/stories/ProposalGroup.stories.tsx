@@ -5,7 +5,7 @@ import { DbContext, usePending } from '../db';
 import { MemoryDb } from '../memory';
 import { bySubject, ProposalGroup } from '../ProposalView';
 import { t3 } from '../t3';
-import { checkProposals, permalinkProposals, proposals } from './fixtures';
+import { checkProposals, highlights, moveProposal, permalinkProposals, proposals } from './fixtures';
 
 const meta: Meta = { title: 'Proposals', parameters: { layout: 'fullscreen' } };
 export default meta;
@@ -67,5 +67,21 @@ export const Permalink: StoryObj = {
     <View style={{ minHeight: '100%', padding: 24, backgroundColor: t3.background }}>
       <ProposalGroup proposals={permalinkProposals} onApprove={() => {}} onDismiss={() => {}} />
     </View>
+  ),
+};
+
+// As a server with omnidiff shows them: in each changed line, what changed, and in blue what moved.
+const read = new MemoryDb({ diffs: highlights });
+
+export const Omnidiff: StoryObj = {
+  name: 'Omnidiff',
+  render: () => (
+    <DbContext value={read}>
+      <View style={{ minHeight: '100%', padding: 24, gap: 28, backgroundColor: t3.background }}>
+        {bySubject([...proposals, ...checkProposals, moveProposal]).map((group) => (
+          <ProposalGroup key={group[0].id} proposals={group} onApprove={() => {}} onDismiss={() => {}} />
+        ))}
+      </View>
+    </DbContext>
   ),
 };

@@ -1,5 +1,16 @@
 import { MemoryDb } from '../memory';
-import type { Agent, Cluster, Comment, MergeBy, Patch, Proposal, PullRequest } from '../view-types';
+import { diffKey, withHeader } from '../patch';
+import type {
+  Agent,
+  Cluster,
+  Comment,
+  DiffHighlights,
+  MergeBy,
+  Patch,
+  Proposal,
+  PullRequest,
+  SideHighlights,
+} from '../view-types';
 
 // Each type with every field at its default, as the server writes a field nothing set: made-up
 // values spread one and set only what they're about.
@@ -489,3 +500,67 @@ export const agentInputs: Agent[] = [
 
 export const checkProposals = checkProposalInputs.map(stored);
 export const agents = agentInputs.map(stored);
+
+// A helper moved below the function that follows it, losing its parentheses on the way.
+const moveDiff = `diff --git a/livekit-agents/livekit/agents/voice/tts_retry.py b/livekit-agents/livekit/agents/voice/tts_retry.py
+--- a/livekit-agents/livekit/agents/voice/tts_retry.py
++++ b/livekit-agents/livekit/agents/voice/tts_retry.py
+@@ -4,10 +4,11 @@ import asyncio
+ from .errors import APIConnectionError
+ 
+-
+-def _backoff(conn_options, attempt):
+-    return conn_options.retry_interval * (2**attempt)
+ 
+ 
+ async def stream_with_retry(tts, text, *, conn_options):
+     async for chunk in tts.stream(text, conn_options=conn_options):
+         yield chunk
++
++
++def _backoff(conn_options, attempt):
++    return conn_options.retry_interval * 2**attempt
+`;
+
+export const moveProposal = stored({
+  ...blank.proposal,
+  id: 'move-helper',
+  summary: 'Move the backoff helper below the code that uses it',
+  summaryHtml: '<p dir="auto">Move the backoff helper below the code that uses it</p>',
+  pullRequestUrl: pr.url,
+  patch: { ...blank.patch, diff: moveDiff, commitMessage: 'refactor(voice): move _backoff below stream_with_retry' },
+});
+
+// What omnidiff makes of the diffs above, by `diffKey`, as the server's view holds it: gem-omnidiff's
+// output on them.
+const read = (diff: string, path: string, before: SideHighlights, after: SideHighlights): [string, DiffHighlights] => [
+  diffKey(diff),
+  { files: [{ path, summary: 'mixed', before, after }] },
+];
+const retry = 'livekit-agents/livekit/agents/voice/tts_retry.py';
+export const highlights: Record<string, DiffHighlights> = Object.fromEntries([
+  read(
+    diff,
+    retry,
+    { changed: [44, 19, 20, 44, 21, 22, 46, 28, 31], moved: [] },
+    { changed: [44, 19, 21, 44, 22, 44, 46, 28, 55, 47, 8, 87], moved: [] },
+  ),
+  read(jsDiff, 'agents/src/voice/tts_retry.ts', { changed: [40, 16, 19], moved: [] }, { changed: [40, 16, 43], moved: [] }),
+  read(
+    flushDiff,
+    'livekit-agents/livekit/agents/voice/room_io/room_io.py',
+    { changed: [], moved: [] },
+    { changed: [213, 14, 31, 213, 68, 80], moved: [] },
+  ),
+  read(lintDiff, retry, { changed: [2, 0, 11], moved: [] }, { changed: [], moved: [] }),
+  read(
+    withHeader(prFiles[0].path, prFiles[0].patch),
+    retry,
+    { changed: [], moved: [] },
+    {
+      changed: [2, 0, 14, 36, 4, 64, 37, 4, 8, 38, 8, 68, 39, 4, 30, 40, 8, 23, 41, 12, 17, 42, 8, 32, 43, 8, 101],
+      moved: [],
+    },
+  ),
+  read(moveDiff, retry, { changed: [8, 41, 42, 8, 52, 53], moved: [8, 42, 52] }, { changed: [], moved: [14, 41, 51] }),
+]);
