@@ -66,7 +66,9 @@ export function followView(
   connect: () => Promise<void>,
 ): () => void {
   let closed = false;
-  // Whether the replica has had a whole copy yet.
+  // Whether the server has said the replica is up to date with it: a stream it sent the replica is
+  // of the replica's file, and doesn't go past it. Not since the server last joined, as after a
+  // restart its view is another file, nor once it sends bytes of another file than the replica's.
   let synced = false;
   const update = () =>
     setStatus(
@@ -81,6 +83,7 @@ export function followView(
   // Its file ID, a u64, as a decimal string, with xitdb's serde form of its state, or null while
   // it's empty.
   const report = () => {
+    if (closed) return;
     const state = replica.state();
     const payload = new TextEncoder().encode(JSON.stringify(state && { fileId: replica.fileId, ...state }));
     room.localParticipant
@@ -100,8 +103,9 @@ export function followView(
         if (closed || !fileId || !start || !end) return;
         // Bytes that don't follow on from the replica are left out; the report says what it has.
         replica.apply({ fileId, start: Number(start), end: Number(end) }, bytes);
-        if (!synced && replica.moment()) {
-          synced = true;
+        const current = replica.fileId === fileId && replica.committedSize >= Number(end);
+        if (current !== synced) {
+          synced = current;
           update();
         }
         report();
@@ -112,6 +116,7 @@ export function followView(
     .on(RoomEvent.ConnectionStateChanged, update)
     .on(RoomEvent.ParticipantConnected, (participant) => {
       if (participant.identity !== SERVER) return;
+      synced = false;
       update();
       report();
     })

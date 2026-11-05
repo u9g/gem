@@ -238,6 +238,8 @@ function fakeRoom() {
       room.state = 'connected';
       room.remoteParticipants.set('server', { identity: 'server' });
     },
+    // The server leaves and joins again.
+    rejoin: () => listeners.get('participantConnected')?.({ identity: 'server' }),
     send: ({ sent, bytes }: { sent: ViewBytes; bytes: Uint8Array }) =>
       handler!({
         readAll: async () => [bytes],
@@ -252,8 +254,17 @@ const until = async (done: () => boolean) => {
   assert.ok(done());
 };
 
-test('the frontend applies what the server sends and reports what it has', { skip }, async () => {
-  const { full, delta } = fixture();
+// A server's view as two moments: the whole of it after the first, and the change the second
+// appended.
+function served() {
+  const view = new MemoryDb({ clusters: [{ ...blank.cluster, pullRequests: [{ ...blank.pullRequest, url: 'u' }] }] });
+  const full = view.committed();
+  view.show({ clusters: [{ ...blank.cluster, name: 'renamed', pullRequests: [{ ...blank.pullRequest, url: 'u' }] }] });
+  return { view, full, delta: view.committed(full.sent.end) };
+}
+
+test('the frontend applies what the server sends and reports what it has', async () => {
+  const { full, delta } = served();
   const room = fakeRoom();
   const replica = new Replica();
   const statuses: ServerStatus[] = [];
@@ -268,11 +279,11 @@ test('the frontend applies what the server sends and reports what it has', { ski
   assert.equal(room.reports[1]!.committedSize, full.sent.end);
   // The change after it is lost on its way. The server, seeing the last report behind once it has
   // waited, sends the bytes from the replica's committed size, which are the change again.
-  const last = room.reports.at(-1)!;
-  assert.equal(last!.committedSize, delta.sent.start);
+  assert.equal(room.reports.at(-1)!.committedSize, delta.sent.start);
   room.send(delta);
   await until(() => room.reports.length === 3);
   assert.equal(room.reports[2]!.committedSize, delta.sent.end);
+  assert.equal(shown(replica.moment()).clusters[0].name, 'renamed');
   // A change sent again, as when a resend raced the change, is had already.
   room.send(delta);
   await until(() => room.reports.length === 4);
@@ -281,8 +292,8 @@ test('the frontend applies what the server sends and reports what it has', { ski
   assert.deepEqual(statuses, ['syncing', 'online']);
 });
 
-test("bytes that don't follow on are left out and reported", { skip }, async () => {
-  const { full, delta } = fixture();
+test("bytes that don't follow on are left out and reported", async () => {
+  const { full, delta } = served();
   const room = fakeRoom();
   const statuses: ServerStatus[] = [];
   const stop = followView(room as any, new Replica(), (status) => statuses.push(status), room.connect);
@@ -295,4 +306,40 @@ test("bytes that don't follow on are left out and reported", { skip }, async () 
   assert.equal(room.reports[2]!.committedSize, full.sent.end);
   stop();
   assert.deepEqual(statuses, ['syncing', 'online']);
+});
+
+test('a server that rejoins is syncing until it says the replica is up to date', async () => {
+  const { view, full, delta } = served();
+  const room = fakeRoom();
+  const statuses: ServerStatus[] = [];
+  const stop = followView(room as any, new Replica(), (status) => statuses.push(status), room.connect);
+  room.send(full);
+  await until(() => statuses.at(-1) === 'online');
+  // It reports again, and the server sends what it lacks: nothing, as a stream of no bytes.
+  room.rejoin();
+  assert.equal(statuses.at(-1), 'syncing');
+  await until(() => room.reports.length === 3);
+  room.send({ sent: { ...full.sent, start: full.sent.end }, bytes: new Uint8Array(0) });
+  await until(() => statuses.at(-1) === 'online');
+  // Restarted, its view is another file: bytes of it show the replica stale until a copy of it.
+  const restarted = new MemoryDb({ clusters: [] });
+  room.send({ ...restarted.committed(), sent: { ...restarted.committed().sent, start: 100 } });
+  await until(() => statuses.at(-1) === 'syncing');
+  room.send(restarted.committed());
+  await until(() => statuses.at(-1) === 'online');
+  stop();
+  assert.notEqual(restarted.committed().sent.fileId, view.committed().sent.fileId);
+  assert.ok(delta.bytes.length > 0);
+});
+
+test('a frontend that stops reports nothing more', async () => {
+  const { full } = served();
+  const room = fakeRoom();
+  const stop = followView(room as any, new Replica(), () => {}, room.connect);
+  await until(() => room.reports.length === 1);
+  stop();
+  room.send(full);
+  room.rejoin();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(room.reports.length, 1);
 });

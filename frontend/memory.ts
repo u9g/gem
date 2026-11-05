@@ -1,6 +1,7 @@
 import { Bytes, CoreMemory, Database, Float, Int, ReadArrayList, Uint, WriteArrayList, type WriteCursor, WriteHashMap } from 'xitdb';
 
 import { BrowserSha1, type Db, Views } from './db';
+import type { ViewBytes } from './view';
 import type { Agent, Cluster, Moment } from './view-types';
 
 // A view database in memory, written from plain values the way the server's `Structured` codec
@@ -57,6 +58,17 @@ export class MemoryDb implements Db {
   put<T>(value: T): T {
     this.append(value);
     return this.views.read(new ReadArrayList(this.db.rootCursor()).getCursor(-1)) as T;
+  }
+
+  // The committed bytes from `start`, and which they are, as the server sends its view's, for
+  // tests to replicate this one.
+  committed(start = 0): { sent: ViewBytes; bytes: Uint8Array } {
+    const end = this.db.committedSize();
+    let bytes = new Uint8Array(0);
+    this.db.readCommitted(start, end, {
+      write: (chunk) => void (bytes = new Uint8Array([...bytes, ...chunk])),
+    });
+    return { sent: { fileId: this.db.header.fileId.toString(), start, end }, bytes };
   }
 
   private append(value: unknown) {
