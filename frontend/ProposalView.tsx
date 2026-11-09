@@ -221,7 +221,7 @@ function ProposalView({
         </View>
       )}
       <View style={[styles.columns, stacked && styles.stacked]}>
-        <View style={[styles.column, stacked && styles.columnStacked]}>
+        <View style={[styles.column, stacked ? styles.columnStacked : styles.message]}>
           <Text style={styles.where}>
             {repository}#{number} ·{' '}
             {comment
@@ -255,7 +255,7 @@ function ProposalView({
           {checkFailure && <FailedChecks failure={checkFailure} />}
         </View>
         {comment && (
-          <View style={[styles.column, stacked && styles.columnStacked]}>
+          <View style={[styles.column, stacked ? styles.columnStacked : styles.message]}>
             {reply ? (
               <>
                 <Text style={[styles.meta, styles.author]}>{login}</Text>
@@ -279,7 +279,7 @@ function ProposalView({
             )}
           </View>
         )}
-        <View style={[styles.column, stacked && styles.columnStacked]}>
+        <View style={[styles.column, stacked ? styles.columnStacked : styles.change]}>
           {suggestedFollowUp !== '' && (
             <FollowUpCard
               pr={pullRequestUrl}
@@ -398,14 +398,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
   },
+  // The change wraps under the conversation, across all of it, when the band is too narrow for
+  // every column's minWidth.
   columns: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 16,
     alignItems: 'flex-start',
   },
   column: {
     flex: 1,
     gap: 6,
+  },
+  message: {
+    minWidth: 220,
+  },
+  change: {
+    minWidth: 360,
   },
   where: {
     color: t3.faint,
