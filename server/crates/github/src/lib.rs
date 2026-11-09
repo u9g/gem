@@ -37,6 +37,13 @@ pub async fn gh_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T
 // errors, e.g. a repository behind SAML enforcement the token is not authorized for, but still
 // prints the other fields' data, which a query over many PRs wants rather than nothing.
 pub async fn gh_partial_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> Option<T> {
+    serde_json::from_slice(&gh_partial(what, args).await?)
+        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
+        .ok()
+}
+
+// gh's output whatever its exit status; see `gh_partial_json`.
+pub async fn gh_partial(what: &str, args: &[&str]) -> Option<Vec<u8>> {
     let output = Command::new("gh")
         .args(args)
         .kill_on_drop(true)
@@ -48,9 +55,7 @@ pub async fn gh_partial_json<T: DeserializeOwned>(what: &str, args: &[&str]) -> 
         let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::warn!(stderr = %stderr.trim(), what, "gh failed; reading what it printed");
     }
-    serde_json::from_slice(&output.stdout)
-        .inspect_err(|error| tracing::warn!(%error, what, "cannot read gh's output"))
-        .ok()
+    Some(output.stdout)
 }
 
 // The GitHub user gh is authenticated as: whose PRs are listed, and who proposals are run as.

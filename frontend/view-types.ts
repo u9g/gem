@@ -7,7 +7,11 @@ export type Moment = { clusters: { [key in string]: Cluster }, order: Array<stri
 
 export type Cluster = { pullRequests: Array<PullRequest>, updatedAt?: number, name: string, mergeBy: MergeBy, agents: Array<Agent>, };
 
-export type PullRequest = { repository?: Repository, number: number, title: string, url: string, approved: boolean, checksPassing: boolean, checksFailing: boolean, proposals: Array<Proposal>, behind: boolean, checks?: Checks, headOid: string, mergeBy: MergeBy, files: Array<FileDiff>, base: string, conflicts: boolean, rebasing: boolean, rebased: boolean, merging: boolean, noProposalReason: string, createdAt?: number, };
+export type PullRequest = { repository?: Repository, number: number, title: string, url: string, approved: boolean, checksPassing: boolean, checksFailing: boolean, proposals: Array<Proposal>, behind: boolean, checks?: Checks, headOid: string, mergeBy: MergeBy, files: Array<FileDiff>, base: string, conflicts: boolean, rebasing: boolean, rebased: boolean, merging: boolean, noProposalReason: string, createdAt?: number, events: Array<Event>, };
+
+export type Event = { kind: EventKind, actor: string, at?: number, body: string, bodyHtml: string, url: string, detail: string, comments: Array<Comment>, };
+
+export type EventKind = "unspecified" | "committed" | "forcePushed" | "commented" | "reviewed" | "approved" | "changesRequested" | "reviewRequested" | "reviewDismissed" | "readyForReview" | "convertedToDraft" | "baseChanged" | "closed" | "reopened" | "merged";
 
 export type Checks = { total: number, done: number, failed: number, };
 

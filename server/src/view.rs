@@ -210,8 +210,8 @@ mod tests {
 
     use super::*;
     use crate::proto::{
-        Agent, AgentState, CheckFailure, Checks, FailedCheck, MergeBy, Proposal, PullRequest,
-        PullRequestCluster, Repository,
+        Agent, AgentState, CheckFailure, Checks, Comment, Event, EventKind, FailedCheck, MergeBy,
+        Proposal, PullRequest, PullRequestCluster, Repository,
     };
 
     // A pull request as gem shows one: enums, timestamps, bools both ways, fields left at their
@@ -254,6 +254,14 @@ mod tests {
             head_oid: "89abcdef0123456789abcdef0123456789abcdef".to_string(),
             base: "main".to_string(),
             created_at: Some(Timestamp { seconds: 1_790_000_000 + i64::from(n), nanos: 0 }),
+            events: vec![Event {
+                kind: EventKind::Reviewed as i32,
+                actor: "theo".to_string(),
+                at: Some(Timestamp { seconds: 1_790_000_100 + i64::from(n), nanos: 0 }),
+                url: format!("{url}{n}#pullrequestreview-{n}"),
+                comments: vec![Comment { id: format!("review-comment-{n}"), ..Default::default() }],
+                ..Default::default()
+            }],
             ..Default::default()
         }
     }
@@ -406,7 +414,7 @@ mod tests {
         fields.sort();
         assert_eq!(keys, fields);
         // The Nones: the repository, checks and creation time, which this one hasn't set.
-        assert_eq!(fields.len() + 3, 20);
+        assert_eq!(fields.len() + 3, 21);
         assert!(keys.contains(&"approved".to_string()) && keys.contains(&"number".to_string()));
     }
 
