@@ -338,6 +338,29 @@ pub const AGENT_NAME: &str = "gem-agent";
 pub const EXECUTE: &str = "The `execute` tool of the `gem-agent` MCP server runs JavaScript with \
 a `gem` object, which its description declares in TypeScript. One script can read, filter and \
 propose, and returns only what you pick.";
+// What a proposal about one of a cluster's pull requests can do, as agents' prompts list it.
+pub fn steps() -> String {
+    format!(
+        "- change its code, with `patch` and `message`: clone its repository into a temporary directory, \
+run `gh pr checkout <number>` in it, edit, and pass what `git diff` prints as `patch`, and the \
+matching change to other pull requests of the cluster the same way as `other_patches`. Never \
+commit or push.
+- open a new pull request, with `open_pull_request`: such as a fix on a base branch. Make its \
+`patch` the same way against the latest `origin/<base branch>`, and link the pull request the \
+proposal is about in its description.
+- reply as {login}, in the first person, with `reply`: the markdown is posted in the review \
+thread the proposal answers, or else as a top-level comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
+first lines before approving.
+- hand the work to another agent, with `follow_up`: when the work is too big to review as \
+patches or one new pull request, such as matching changes in other repositories with no pull \
+request in the cluster, write a prompt for a T3 Code agent. It must stand alone: the repositories (checked out under \
+~/code), the branches or pull requests to build on, what to change and why, and how to verify it. The agent must be able to finish without \
+anyone else reviewing, merging or releasing something first.
+- close the pull request without merging it, with `close_pull_request`. Pair it with a reply \
+saying why.",
+        login = crate::login(),
+    )
+}
 // A thread keeps the URL it was started with across server restarts, so the port stays the same.
 // GEM_MCP_PORT overrides it.
 const DEFAULT_PORT: u16 = 47474;

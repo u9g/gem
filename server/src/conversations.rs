@@ -708,7 +708,9 @@ impl Target {
 // before the comments it starts on. It keeps the wording of the prompt that answered one comment:
 // replaying 20 past comments, that answered as often as longer prompts that also listed the steps,
 // said to read the pull request, and introduced `execute`, or more often. Without "once per
-// reasonable alternative", agents made one proposal and answered far less often.
+// reasonable alternative", agents made one proposal and answered far less often. It lists the
+// steps since a reviewer's "ping me when we have the cloud-config PR" got only a reply, with no
+// `follow_up` making that pull request.
 fn answer(key: &Target) -> String {
     format!(
         "You answer the comments waiting on {login} on the cluster of their pull requests holding \
@@ -719,7 +721,9 @@ an earlier message already made.
 
 Record how {login} should answer each comment with `gem.propose`, with `pr` the pull request it is \
 on, and `comment` and `thread` as given. Propose once per reasonable alternative. To change a \
-proposal, propose its new version with `replaces` set to its ID.
+proposal, propose its new version with `replaces` set to its ID. A proposal is about one of the \
+cluster's pull requests, and can:
+{steps}
 
 Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
@@ -729,6 +733,7 @@ saying what you proposed.",
         login = login(),
         url = key.url,
         title = key.title,
+        steps = mcp::steps(),
     )
 }
 

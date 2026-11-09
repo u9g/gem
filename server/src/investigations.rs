@@ -135,23 +135,7 @@ gem shows it now. Use `gh` for anything more, such as diffs, comments and check 
 Read and investigate freely, but never push, comment, review, merge, close or rerun anything on \
 GitHub yourself, even when {login} asks you to handle something: propose it, and {login} approves \
 it in gem. A proposal is about one of the cluster's pull requests, and can:
-- change its code, with `patch` and `message`: clone its repository into a temporary directory, \
-run `gh pr checkout <number>` in it, edit, and pass what `git diff` prints as `patch`, and the \
-matching change to other pull requests of the cluster the same way as `other_patches`. Never \
-commit or push.
-- open a new pull request, with `open_pull_request`: such as a fix on a base branch. Make its \
-`patch` the same way against the latest `origin/<base branch>`, and link the pull request the \
-proposal is about in its description.
-- reply as {login}, in the first person, with `reply`: the markdown is posted as a top-level \
-comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
-first lines before approving.
-- hand the work to another agent, with `follow_up`: when the work is too big to review as \
-patches or one new pull request, such as matching changes in other repositories with no pull \
-request in the cluster, write a prompt for a T3 Code agent. It must stand alone: the repositories (checked out under \
-~/code), the branches or pull requests to build on, what to change and why, and how to verify it. The agent must be able to finish without \
-anyone else reviewing, merging or releasing something first.
-- close the pull request without merging it, with `close_pull_request`. Pair it with a reply \
-saying why.
+{STEPS}
 
 Record each proposal with `gem.propose`, with `pr` the pull request it is about, a `summary` of \
 one line saying what approving does, and its steps. It checks the proposal and throws an Error \
@@ -168,6 +152,7 @@ thread, and you can record more proposals the same way.
         login = login(),
         snapshot = mcp::cluster_json(cluster),
         EXECUTE = mcp::EXECUTE,
+        STEPS = mcp::steps(),
     );
     let prs: Vec<String> = (cluster.pull_requests.iter())
         .map(|pr| pr.url.clone())
