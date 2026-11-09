@@ -175,6 +175,8 @@ function ProposalView({
   const comment = proposal.comment;
   const stacked = phone || anchored;
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
+  // Comments are cut only where the screen is too small to show them in full.
+  const commentMax = anchored || !phone ? undefined : 110;
   const investigate = onInvestigate &&
     proposal.rerun &&
     !patch &&
@@ -239,12 +241,12 @@ function ProposalView({
             />
           )}
           {proposal.earlierComments.map((earlier) => (
-            <Theirs key={earlier.id} comment={earlier} max={anchored ? undefined : 110} />
+            <Theirs key={earlier.id} comment={earlier} max={commentMax} />
           ))}
           {comment && (
             <Theirs
               comment={comment}
-              max={anchored ? undefined : 110}
+              max={commentMax}
               trailing={
                 <Pressable accessibilityLabel="Open on GitHub" onPress={() => Linking.openURL(comment.url)}>
                   <Icon icon={ExternalLink} size={12} />
@@ -265,7 +267,7 @@ function ProposalView({
                   html={proposal.replyHtml}
                   draft={draft}
                   onChange={setDraft}
-                  max={anchored ? undefined : 110}
+                  max={commentMax}
                 />
               </>
             ) : (
