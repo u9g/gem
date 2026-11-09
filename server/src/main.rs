@@ -34,13 +34,15 @@ use proto::{
     MessageClusterRequest, MessageClusterResponse, PullRequest, PullRequestCluster,
     RebaseClusterRequest,
     RebaseClusterResponse, RebasePullRequestRequest, RebasePullRequestResponse,
-    RenderMarkdownRequest, RenderMarkdownResponse, Repository, RestartClusterRequest,
+    PullRequestHistoryRequest, PullRequestHistoryResponse, RenderMarkdownRequest,
+    RenderMarkdownResponse, Repository, RestartClusterRequest,
     RestartClusterResponse, SearchPullRequestsRequest, SearchPullRequestsResponse,
 };
 
 mod agents;
 mod conversations;
 mod files;
+mod history;
 mod investigations;
 mod layout;
 mod mcp;
@@ -600,6 +602,13 @@ async fn run_server() {
                     .await
                     .map(|pull_request_urls| Json(SearchPullRequestsResponse { pull_request_urls }))
                     .map_err(|error| (StatusCode::BAD_GATEWAY, error))
+            }),
+        )
+        .route(
+            "/prs/history",
+            post(|Json(request): Json<PullRequestHistoryRequest>| async move {
+                let pull_requests = history::of(request.pull_request_urls).await;
+                Json(PullRequestHistoryResponse { pull_requests })
             }),
         )
         .route(

@@ -8,6 +8,7 @@ import { ClusterTimeline } from './ClusterTimeline';
 import { AgentView } from './AgentView';
 import { timeAgo } from './ClusterView';
 import { DbContext, emptyDb, useDb, usePending } from './db';
+import { History } from './History';
 import { Inbox } from './Inbox';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
@@ -26,6 +27,8 @@ import {
   MessageClusterRequestSchema,
   MessageAgentRequestSchema,
   MessageClusterResponseSchema,
+  PullRequestHistoryRequestSchema,
+  PullRequestHistoryResponseSchema,
   RebaseClusterRequestSchema,
   RebasePullRequestRequestSchema,
   RenderMarkdownRequestSchema,
@@ -50,8 +53,9 @@ function Contexts({
 }
 
 // What is open lives in the page's query, so the browser's back and forward move between what was
-// opened and a link reopens it. An agent is shown in place of the cluster while both are set.
-type Place = { cluster?: string; agent?: string };
+// opened and a link reopens it. An agent is shown in place of the cluster while both are set, and
+// either in place of every PR's history.
+type Place = { cluster?: string; agent?: string; history?: boolean };
 
 const GITHUB = 'https://github.com/';
 
@@ -65,6 +69,7 @@ function currentPlace(): Place {
     cluster: cluster?.includes('://') ? cluster : number && `${GITHUB}${owner}/${repo}/pull/${number}`,
     // Links from before every agent was one still open their investigation.
     agent: params.get('agent') ?? params.get('investigation') ?? undefined,
+    history: params.has('history') || undefined,
   };
 }
 
@@ -75,6 +80,7 @@ function placeSearch(place: Place): string {
   const params = [
     cluster && `cluster=${cluster}`,
     place.agent && `agent=${encodeURIComponent(place.agent)}`,
+    place.history && 'history',
   ].filter(Boolean);
   return params.length > 0 ? `?${params.join('&')}` : '';
 }
@@ -120,6 +126,14 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       ).then((json) => fromJson(RenderMarkdownResponseSchema, json).html),
     [post],
   );
+  const loadHistory = useCallback(
+    (pullRequestUrls: string[]) =>
+      post(
+        '/prs/history',
+        toJson(PullRequestHistoryRequestSchema, create(PullRequestHistoryRequestSchema, { pullRequestUrls })),
+      ).then((json) => fromJson(PullRequestHistoryResponseSchema, json).pullRequests),
+    [post],
+  );
 
   // Labels the profile with what its server last reported.
   useEffect(() => {
@@ -141,6 +155,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   const closeDrawer = useCallback(() => go({}), [go]);
   const openCluster = useCallback((key: string) => go({ cluster: key }), [go]);
   const openAgentAlone = useCallback((id: string) => go({ agent: id }), [go]);
+  const openHistory = useCallback(() => go({ history: true }), [go]);
 
   // Another profile is another server: nothing shown belongs to it. The place a page was loaded
   // with is kept, since it was opened for the profile selected then.
@@ -266,12 +281,16 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   // A cluster is linked to by its oldest PR, and any of its PRs opens it, so a link still opens it
   // after an agent joins it to an older cluster.
   const opened = clusters.find((cluster) => cluster.pullRequests.some((pr) => pr.url === place.cluster));
+  const historyView = !agentView && !opened && place.history && <History clusters={visible} load={loadHistory} />;
   const failed = failure && <FailureBanner failure={failure} onDismiss={() => setFailure(undefined)} />;
 
   const filters = (
     <View style={styles.filters}>
       <Pressable accessibilityLabel="Change profile" onPress={() => setEditing(profile)}>
         <Text style={styles.filter}>server: {status}</Text>
+      </Pressable>
+      <Pressable accessibilityLabel="Every pull request's history" onPress={openHistory}>
+        <Text style={styles.filter}>history</Text>
       </Pressable>
       {!phone && profile && (
         <ProfileChip profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
@@ -315,14 +334,14 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       <Contexts login={login} render={render}>
         <View style={styles.phone}>
           {failed}
-          {agentView || opened ? (
+          {agentView || opened || historyView ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={closeDrawer}>
                 <ChevronLeft size={22} color="#8FA8F5" />
                 <Text style={styles.backText}>Clusters</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
-                {agentView || (
+                {agentView || historyView || (
                   <ClusterTimeline
                     cluster={opened!}
                     onOpenAgent={openAgent}
@@ -372,9 +391,10 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
           onOpenCluster={openCluster}
           onOpenAgent={openAgentAlone}
           onClose={closeDrawer}
-          wide={!agentView && opened !== undefined}
+          wide={!agentView && (opened !== undefined || !!historyView)}
         >
           {agentView ||
+            historyView ||
             (opened && (
               <ClusterTimeline
                 cluster={opened}

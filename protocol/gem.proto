@@ -414,3 +414,50 @@ message CloseAgentRequest {
 }
 
 message CloseAgentResponse {}
+
+// Each pull request's history on GitHub: its pushes and the checks on each, reviews, comments,
+// review requests, and changes of state and base. Read from GitHub when asked, not kept in the view.
+message PullRequestHistoryRequest {
+  repeated string pull_request_urls = 1;
+}
+
+message PullRequestHistoryResponse {
+  // One per URL asked for, in the same order.
+  repeated PullRequestHistory pull_requests = 1;
+}
+
+message PullRequestHistory {
+  string url = 1;
+  // Oldest first: the latest 100.
+  repeated PullRequestEvent events = 2;
+  // Why GitHub gave no history. Empty when it did.
+  string error = 3;
+}
+
+message PullRequestEvent {
+  // GitHub's GraphQL type of the timeline item, e.g. PullRequestReview, IssueComment,
+  // PullRequestCommit, HeadRefForcePushedEvent, ReviewRequestedEvent, MergedEvent.
+  string kind = 1;
+  // GitHub login of who did it; a commit's author's git name when it has no GitHub user.
+  string actor = 2;
+  google.protobuf.Timestamp at = 3;
+  // A review's state, e.g. APPROVED or CHANGES_REQUESTED, or the rollup of the checks on a pushed
+  // commit, e.g. SUCCESS or FAILURE. Empty for a commit without checks.
+  string state = 4;
+  // A review's or comment's body, as GitHub renders it.
+  string body_html = 5;
+  string url = 6;
+  // A commit's headline, a requested reviewer, a dismissed review's author, or a base change as
+  // `old → new`.
+  string text = 7;
+  // A pushed commit's abbreviated SHA.
+  string oid = 8;
+  // A review's comments on lines of the diff.
+  repeated ReviewComment comments = 9;
+}
+
+message ReviewComment {
+  string path = 1;
+  string body_html = 2;
+  string url = 3;
+}
