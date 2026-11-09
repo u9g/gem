@@ -933,6 +933,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proposing_the_same_answer_again_returns_the_recorded_one() {
+        let server = Server::new("again");
+        let token = server.token(&in_thread()).await;
+        let reply = |text: &str| {
+            json!({ "pr": PR, "comment": "IC_1", "summary": text, "reply": text })
+        };
+        let first = server.propose(&token, reply("Keep it.")).await;
+        let again = server.propose(&token, reply("Keep it.")).await;
+        assert_eq!(text(&again), text(&first));
+        let other = server.propose(&token, reply("Change it.")).await;
+        assert_ne!(text(&other), text(&first));
+        assert_eq!(server.proposals().len(), 2);
+    }
+
+    #[tokio::test]
     async fn an_investigation_proposes_on_any_of_its_clusters_pull_requests() {
         let server = Server::new("investigation");
         let subject = Subject::Investigation {
