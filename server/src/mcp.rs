@@ -223,6 +223,20 @@ interface PullRequest {
   // What agents propose answering the conversations and failed checks waiting on the user.
   proposals: Proposal[];
   noProposalReason: string; // Why the agent answering its failed checks proposed nothing.
+  events: Event[]; // What happened on it on GitHub, oldest first: the last 100 items of its timeline.
+}
+// One item of a pull request's timeline on GitHub.
+interface Event {
+  kind: "committed" | "forcePushed" | "commented" | "reviewed" | "approved" | "changesRequested" | "reviewRequested"
+    | "reviewDismissed" | "readyForReview" | "convertedToDraft" | "baseChanged" | "closed" | "reopened" | "merged";
+  actor: string; // Login of who did it.
+  at: number | null;
+  body: string; // The markdown of a comment or review.
+  url: string;
+  // A commit's abbreviated OID and message headline; the reviewer a review was requested from; a base
+  // change's old and new branch; why a review was dismissed.
+  detail: string;
+  comments: Comment[]; // The comments a review left on lines of the diff.
 }
 interface Agent {
   id: string;
@@ -1150,6 +1164,10 @@ mod tests {
             created_at: Some(pbjson_types::Timestamp { seconds: 5, nanos: 0 }),
             merge_by: crate::proto::MergeBy::Approval as i32,
             proposals: vec![proposal],
+            events: vec![crate::proto::Event {
+                kind: crate::proto::EventKind::Approved as i32,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let agent = Agent {
@@ -1206,6 +1224,8 @@ mod tests {
         assert_eq!(keys(&proposal["comment"]), declared("Comment"));
         assert_eq!(keys(&proposal["patch"]), declared("Patch"));
         assert_eq!(keys(&proposal["checkFailure"]["checks"][0]), declared("FailedCheck"));
+        assert_eq!(keys(&pr["events"][0]), declared("Event"));
+        assert_eq!(pr["events"][0]["kind"], "approved");
         assert_eq!(pr["createdAt"], 5000);
         assert_eq!(pr["mergeBy"], "approval");
         assert_eq!(cluster["mergeBy"], "unspecified");

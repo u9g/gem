@@ -1,9 +1,10 @@
 import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft } from 'lucide-react';
+import { Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { Activity } from './Activity';
 import { ClusterTimeline } from './ClusterTimeline';
 import { AgentView } from './AgentView';
 import { timeAgo } from './ClusterView';
@@ -50,8 +51,9 @@ function Contexts({
 }
 
 // What is open lives in the page's query, so the browser's back and forward move between what was
-// opened and a link reopens it. An agent is shown in place of the cluster while both are set.
-type Place = { cluster?: string; agent?: string };
+// opened and a link reopens it. An agent is shown in place of the cluster while both are set, and
+// the activity screen in place of the inbox while nothing is open.
+type Place = { cluster?: string; agent?: string; activity?: boolean };
 
 const GITHUB = 'https://github.com/';
 
@@ -65,6 +67,7 @@ function currentPlace(): Place {
     cluster: cluster?.includes('://') ? cluster : number && `${GITHUB}${owner}/${repo}/pull/${number}`,
     // Links from before every agent was one still open their investigation.
     agent: params.get('agent') ?? params.get('investigation') ?? undefined,
+    activity: params.has('activity') || undefined,
   };
 }
 
@@ -75,6 +78,7 @@ function placeSearch(place: Place): string {
   const params = [
     cluster && `cluster=${cluster}`,
     place.agent && `agent=${encodeURIComponent(place.agent)}`,
+    place.activity && 'activity',
   ].filter(Boolean);
   return params.length > 0 ? `?${params.join('&')}` : '';
 }
@@ -141,6 +145,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   const closeDrawer = useCallback(() => go({}), [go]);
   const openCluster = useCallback((key: string) => go({ cluster: key }), [go]);
   const openAgentAlone = useCallback((id: string) => go({ agent: id }), [go]);
+  const openActivity = useCallback(() => go({ activity: true }), [go]);
 
   // Another profile is another server: nothing shown belongs to it. The place a page was loaded
   // with is kept, since it was opened for the profile selected then.
@@ -276,6 +281,10 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       {!phone && profile && (
         <ProfileChip profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
       )}
+      <Pressable accessibilityLabel="Activity" style={styles.filterRow} onPress={openActivity}>
+        <ActivityIcon size={12} color="#D0CFD4" />
+        <Text style={styles.filter}>activity</Text>
+      </Pressable>
       <SearchBox
         value={search.query}
         onChange={search.setQuery}
@@ -308,6 +317,19 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
     );
   }
 
+  // The activity screen under a bar back to the inbox, on both layouts.
+  const activity = place.activity && !agentView && !opened && (
+    <>
+      <Pressable accessibilityLabel="Back to inbox" style={styles.back} onPress={closeDrawer}>
+        <ChevronLeft size={22} color="#8FA8F5" />
+        <Text style={styles.backText}>Inbox</Text>
+      </Pressable>
+      <ScrollView contentContainerStyle={phone ? styles.phoneContent : styles.screenContent}>
+        <Activity clusters={visible} onOpenCluster={openCluster} />
+      </ScrollView>
+    </>
+  );
+
   // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
   // it, with the box to ask about it under the scrolling content.
   if (phone) {
@@ -315,7 +337,9 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       <Contexts login={login} render={render}>
         <View style={styles.phone}>
           {failed}
-          {agentView || opened ? (
+          {activity ? (
+            activity
+          ) : agentView || opened ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={closeDrawer}>
                 <ChevronLeft size={22} color="#8FA8F5" />
@@ -364,34 +388,36 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
     <View style={styles.container}>
       {failed}
       <Contexts login={login} render={render}>
-        <Inbox
-          clusters={visible}
-          agents={agents}
-          toolbar={filters}
-          openKey={agent ? `agent:${agent.id}` : opened?.pullRequests[0].url}
-          onOpenCluster={openCluster}
-          onOpenAgent={openAgentAlone}
-          onClose={closeDrawer}
-          wide={!agentView && opened !== undefined}
-        >
-          {agentView ||
-            (opened && (
-              <ClusterTimeline
-                cluster={opened}
-                onOpenAgent={openAgent}
-                busy={busy}
-                onApprove={approve}
-                onDismiss={dismiss}
-                onRestart={restart}
-                onRebase={rebase}
-                onRebaseCluster={rebaseCluster}
-                onMerge={merge}
-                onCloseCluster={closeCluster}
-                onInvestigate={investigate}
-                onMessage={(message) => messageCluster(opened, message)}
-              />
-            ))}
-        </Inbox>
+        {activity || (
+          <Inbox
+            clusters={visible}
+            agents={agents}
+            toolbar={filters}
+            openKey={agent ? `agent:${agent.id}` : opened?.pullRequests[0].url}
+            onOpenCluster={openCluster}
+            onOpenAgent={openAgentAlone}
+            onClose={closeDrawer}
+            wide={!agentView && opened !== undefined}
+          >
+            {agentView ||
+              (opened && (
+                <ClusterTimeline
+                  cluster={opened}
+                  onOpenAgent={openAgent}
+                  busy={busy}
+                  onApprove={approve}
+                  onDismiss={dismiss}
+                  onRestart={restart}
+                  onRebase={rebase}
+                  onRebaseCluster={rebaseCluster}
+                  onMerge={merge}
+                  onCloseCluster={closeCluster}
+                  onInvestigate={investigate}
+                  onMessage={(message) => messageCluster(opened, message)}
+                />
+              ))}
+          </Inbox>
+        )}
 </Contexts>
       <StatusBar style="auto" />
     </View>
@@ -419,6 +445,10 @@ const styles = StyleSheet.create({
     padding: 12,
     paddingBottom: 24,
   },
+  screenContent: {
+    padding: 24,
+    paddingBottom: 48,
+  },
   container: {
     flex: 1,
     backgroundColor: '#19212A',
@@ -429,6 +459,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 6,
     padding: 10,
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingLeft: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
   },
   filter: {
     color: '#D0CFD4',

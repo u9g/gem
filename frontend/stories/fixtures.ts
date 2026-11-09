@@ -1,5 +1,5 @@
 import { MemoryDb } from '../memory';
-import type { Agent, Cluster, Comment, MergeBy, Patch, Proposal, PullRequest } from '../view-types';
+import type { Agent, Cluster, Comment, Event, MergeBy, Patch, Proposal, PullRequest } from '../view-types';
 
 // Each type with every field at its default, as the server writes a field nothing set: made-up
 // values spread one and set only what they're about.
@@ -23,7 +23,9 @@ export const blank = {
     rebased: false,
     merging: false,
     noProposalReason: '',
+    events: [],
   } satisfies PullRequest,
+  event: { kind: 'unspecified', actor: '', body: '', bodyHtml: '', url: '', detail: '', comments: [] } satisfies Event,
   agent: { id: '', title: '', state: 'working', pullRequestUrls: [], reply: '', replyHtml: '', proposals: [] } satisfies Agent,
   proposal: {
     id: '',

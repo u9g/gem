@@ -115,6 +115,47 @@ message PullRequest {
   // Empty until it finishes, and when it proposed something.
   string no_proposal_reason = 22;
   google.protobuf.Timestamp created_at = 23;
+  // What happened on it on GitHub, oldest first: its commits, reviews, comments and changes of
+  // state. The last 100.
+  repeated Event events = 24;
+}
+
+// One thing that happened on a pull request, from GitHub's timeline.
+message Event {
+  EventKind kind = 1;
+  // Login of who did it. Empty for a commit whose author has no GitHub account.
+  string actor = 2;
+  google.protobuf.Timestamp at = 3;
+  // The markdown of a comment or review. Empty for a review that only left comments on lines.
+  string body = 4;
+  // `body` as GitHub renders it.
+  string body_html = 5;
+  string url = 6;
+  // What the kind needs besides who and when: a commit's abbreviated OID and message headline,
+  // separated by a space; the reviewer a review was requested from; the old and new base branch of
+  // a base change, separated by a space; why a review was dismissed.
+  string detail = 7;
+  // The comments a review left on lines of the diff.
+  repeated Comment comments = 8;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_COMMITTED = 1;
+  EVENT_KIND_FORCE_PUSHED = 2;
+  EVENT_KIND_COMMENTED = 3;
+  // A review that left comments without approving or requesting changes.
+  EVENT_KIND_REVIEWED = 4;
+  EVENT_KIND_APPROVED = 5;
+  EVENT_KIND_CHANGES_REQUESTED = 6;
+  EVENT_KIND_REVIEW_REQUESTED = 7;
+  EVENT_KIND_REVIEW_DISMISSED = 8;
+  EVENT_KIND_READY_FOR_REVIEW = 9;
+  EVENT_KIND_CONVERTED_TO_DRAFT = 10;
+  EVENT_KIND_BASE_CHANGED = 11;
+  EVENT_KIND_CLOSED = 12;
+  EVENT_KIND_REOPENED = 13;
+  EVENT_KIND_MERGED = 14;
 }
 
 // How a pull request can merge, decided by the server.

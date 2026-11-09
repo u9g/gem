@@ -77,6 +77,42 @@ pub struct PullRequest {
     pub merging: bool,
     pub no_proposal_reason: String,
     pub created_at: Option<i64>,
+    pub events: Vec<Event>,
+}
+
+#[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+#[ts(optional_fields)]
+pub struct Event {
+    pub kind: EventKind,
+    pub actor: String,
+    pub at: Option<i64>,
+    pub body: String,
+    pub body_html: String,
+    pub url: String,
+    pub detail: String,
+    pub comments: Vec<Comment>,
+}
+
+#[derive(Serialize, Deserialize, TS, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum EventKind {
+    #[default]
+    Unspecified,
+    Committed,
+    ForcePushed,
+    Commented,
+    Reviewed,
+    Approved,
+    ChangesRequested,
+    ReviewRequested,
+    ReviewDismissed,
+    ReadyForReview,
+    ConvertedToDraft,
+    BaseChanged,
+    Closed,
+    Reopened,
+    Merged,
 }
 
 #[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
@@ -287,6 +323,39 @@ impl From<&proto::PullRequest> for PullRequest {
             merging: pr.merging,
             no_proposal_reason: pr.no_proposal_reason.clone(),
             created_at: millis(&pr.created_at),
+            events: pr.events.iter().map(Event::from).collect(),
+        }
+    }
+}
+
+impl From<&proto::Event> for Event {
+    fn from(event: &proto::Event) -> Event {
+        use proto::EventKind as Kind;
+        Event {
+            kind: match Kind::try_from(event.kind) {
+                Ok(Kind::Committed) => EventKind::Committed,
+                Ok(Kind::ForcePushed) => EventKind::ForcePushed,
+                Ok(Kind::Commented) => EventKind::Commented,
+                Ok(Kind::Reviewed) => EventKind::Reviewed,
+                Ok(Kind::Approved) => EventKind::Approved,
+                Ok(Kind::ChangesRequested) => EventKind::ChangesRequested,
+                Ok(Kind::ReviewRequested) => EventKind::ReviewRequested,
+                Ok(Kind::ReviewDismissed) => EventKind::ReviewDismissed,
+                Ok(Kind::ReadyForReview) => EventKind::ReadyForReview,
+                Ok(Kind::ConvertedToDraft) => EventKind::ConvertedToDraft,
+                Ok(Kind::BaseChanged) => EventKind::BaseChanged,
+                Ok(Kind::Closed) => EventKind::Closed,
+                Ok(Kind::Reopened) => EventKind::Reopened,
+                Ok(Kind::Merged) => EventKind::Merged,
+                _ => EventKind::Unspecified,
+            },
+            actor: event.actor.clone(),
+            at: millis(&event.at),
+            body: event.body.clone(),
+            body_html: event.body_html.clone(),
+            url: event.url.clone(),
+            detail: event.detail.clone(),
+            comments: event.comments.iter().map(Comment::from).collect(),
         }
     }
 }
@@ -403,6 +472,8 @@ mod tests {
             Moment::decl(&cfg),
             Cluster::decl(&cfg),
             PullRequest::decl(&cfg),
+            Event::decl(&cfg),
+            EventKind::decl(&cfg),
             Checks::decl(&cfg),
             Repository::decl(&cfg),
             Agent::decl(&cfg),

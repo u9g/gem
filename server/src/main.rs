@@ -54,7 +54,7 @@ mod tokens;
 mod view;
 
 // The server's own layers, each a crate in crates/ that depends on nothing of the server's.
-use gem_github::{gh, gh_json, gh_partial_json, login, render};
+use gem_github::{gh, gh_json, gh_partial, gh_partial_json, login, render};
 use gem_proto as proto;
 use gem_t3 as t3;
 
@@ -160,6 +160,9 @@ struct SearchedPullRequest {
     checks: Checks,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
+    // Set by `timelines`.
+    #[serde(default)]
+    events: Vec<proto::Event>,
 }
 
 fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
@@ -811,6 +814,7 @@ async fn open_pull_requests(
         .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
         .ok()?;
     merge_states(&mut prs).await;
+    timelines(&mut prs).await;
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
@@ -858,6 +862,111 @@ async fn merge_states(prs: &mut [SearchedPullRequest]) {
         };
         pr.conflicts = state["mergeable"] == "CONFLICTING";
         pr.behind = pr.conflicts || state["mergeStateStatus"] == "BEHIND";
+    }
+}
+
+// Each PR's timeline on GitHub carries the bodies of every comment, so it is asked for
+// TIMELINE_CHUNK PRs a request, all at once, as `merge_states` is. A PR whose node errors keeps no
+// events, without taking the rest of its request's PRs with it.
+const TIMELINE_CHUNK: usize = 10;
+
+// The last 100 items of the kinds `Event` has, the most GitHub lists in one request. A review's
+// comments on lines come with it.
+const TIMELINE_FIELDS: &str = r#"
+timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, PULL_REQUEST_REVIEW, ISSUE_COMMENT, REVIEW_REQUESTED_EVENT, REVIEW_DISMISSED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, BASE_REF_CHANGED_EVENT, HEAD_REF_FORCE_PUSHED_EVENT, CLOSED_EVENT, REOPENED_EVENT, MERGED_EVENT]) {
+  nodes {
+    __typename
+    ... on PullRequestCommit { commit { abbreviatedOid messageHeadline committedDate url author { user { login } } } }
+    ... on PullRequestReview {
+      author { login } state body bodyHTML url createdAt
+      comments(first: 100) { nodes { id author { login } body bodyHTML url path line originalLine diffHunk } }
+    }
+    ... on IssueComment { author { login } body bodyHTML url createdAt }
+    ... on ReviewRequestedEvent { actor { login } createdAt requestedReviewer { ... on User { login } ... on Team { name } } }
+    ... on ReviewDismissedEvent { actor { login } createdAt url dismissalMessage }
+    ... on ReadyForReviewEvent { actor { login } createdAt url }
+    ... on ConvertToDraftEvent { actor { login } createdAt url }
+    ... on BaseRefChangedEvent { actor { login } createdAt previousRefName currentRefName }
+    ... on HeadRefForcePushedEvent { actor { login } createdAt afterCommit { abbreviatedOid url } }
+    ... on ClosedEvent { actor { login } createdAt url }
+    ... on ReopenedEvent { actor { login } createdAt }
+    ... on MergedEvent { actor { login } createdAt url }
+  }
+}"#;
+
+// Each node as a `Timeline`, its items as `Event`s in protobuf's JSON form. A review the user has
+// not submitted is PENDING, and only they see it.
+const TIMELINE_JQ: &str = r#".data.nodes[] | select(. != null) | {
+  id,
+  events: [.timelineItems.nodes[] | select(. != null)
+    | (.actor.login // .author.login // .commit.author.user.login // "") as $actor
+    | if .__typename == "PullRequestCommit" then
+        {kind: "EVENT_KIND_COMMITTED", actor: $actor, at: .commit.committedDate, url: .commit.url,
+         detail: "\(.commit.abbreviatedOid) \(.commit.messageHeadline)"}
+      elif .__typename == "PullRequestReview" then
+        select(.state != "PENDING")
+        | {kind: ({APPROVED: "EVENT_KIND_APPROVED", CHANGES_REQUESTED: "EVENT_KIND_CHANGES_REQUESTED"}[.state] // "EVENT_KIND_REVIEWED"),
+           actor: $actor, at: .createdAt, body, bodyHtml: .bodyHTML, url,
+           comments: [.comments.nodes[] | {id, author: (.author.login // ""), body, bodyHtml: .bodyHTML, url, path, line: (.line // .originalLine // 0), diffHunk}]}
+      elif .__typename == "IssueComment" then
+        {kind: "EVENT_KIND_COMMENTED", actor: $actor, at: .createdAt, body, bodyHtml: .bodyHTML, url}
+      elif .__typename == "ReviewRequestedEvent" then
+        {kind: "EVENT_KIND_REVIEW_REQUESTED", actor: $actor, at: .createdAt, detail: (.requestedReviewer.login // .requestedReviewer.name // "")}
+      elif .__typename == "ReviewDismissedEvent" then
+        {kind: "EVENT_KIND_REVIEW_DISMISSED", actor: $actor, at: .createdAt, url, detail: (.dismissalMessage // "")}
+      elif .__typename == "ReadyForReviewEvent" then
+        {kind: "EVENT_KIND_READY_FOR_REVIEW", actor: $actor, at: .createdAt, url}
+      elif .__typename == "ConvertToDraftEvent" then
+        {kind: "EVENT_KIND_CONVERTED_TO_DRAFT", actor: $actor, at: .createdAt, url}
+      elif .__typename == "BaseRefChangedEvent" then
+        {kind: "EVENT_KIND_BASE_CHANGED", actor: $actor, at: .createdAt, detail: "\(.previousRefName) \(.currentRefName)"}
+      elif .__typename == "HeadRefForcePushedEvent" then
+        {kind: "EVENT_KIND_FORCE_PUSHED", actor: $actor, at: .createdAt, url: .afterCommit.url, detail: .afterCommit.abbreviatedOid}
+      elif .__typename == "ClosedEvent" then
+        {kind: "EVENT_KIND_CLOSED", actor: $actor, at: .createdAt, url}
+      elif .__typename == "ReopenedEvent" then
+        {kind: "EVENT_KIND_REOPENED", actor: $actor, at: .createdAt}
+      elif .__typename == "MergedEvent" then
+        {kind: "EVENT_KIND_MERGED", actor: $actor, at: .createdAt, url}
+      else empty end]
+}"#;
+
+#[derive(Deserialize)]
+struct Timeline {
+    id: String,
+    events: Vec<proto::Event>,
+}
+
+// Sets each PR's `events` to its timeline on GitHub.
+async fn timelines(prs: &mut [SearchedPullRequest]) {
+    let mut requests = tokio::task::JoinSet::new();
+    for chunk in prs.chunks(TIMELINE_CHUNK) {
+        let ids = json!(chunk.iter().map(|pr| &pr.id).collect::<Vec<_>>());
+        let query = format!(
+            "query={{ nodes(ids: {ids}) {{ ... on PullRequest {{ id {TIMELINE_FIELDS} }} }} }}"
+        );
+        requests.spawn(async move {
+            gh_partial("timelines", &["api", "graphql", "-f", &query, "--jq", TIMELINE_JQ]).await
+        });
+    }
+    let mut timelines = HashMap::new();
+    while let Some(result) = requests.join_next().await {
+        let Ok(Some(stdout)) = result else {
+            continue;
+        };
+        for timeline in serde_json::Deserializer::from_slice(&stdout).into_iter::<Timeline>() {
+            match timeline {
+                Ok(timeline) => {
+                    timelines.insert(timeline.id, timeline.events);
+                }
+                Err(error) => tracing::warn!(%error, "cannot read a timeline"),
+            }
+        }
+    }
+    for pr in prs {
+        if let Some(events) = timelines.remove(&pr.id) {
+            pr.events = events;
+        }
     }
 }
 
@@ -940,6 +1049,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         merging: false,
                         no_proposal_reason: String::new(),
                         created_at: Some(pr.created_at.clone()),
+                        events: pr.events.clone(),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
@@ -959,6 +1069,30 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+
+    // TIMELINE_JQ writes each event in protobuf's JSON form, which `Event` reads: the kind by its
+    // name, the time as RFC 3339, and the fields a kind lacks left out.
+    #[test]
+    fn a_timeline_reads_as_events() {
+        let timeline: Timeline = serde_json::from_str(
+            r#"{"id": "PR_1", "events": [
+                {"kind": "EVENT_KIND_COMMITTED", "actor": "u9g", "at": "2026-11-09T21:02:21Z",
+                 "url": "https://github.com/u9g/gem/commit/efd4812", "detail": "efd4812 Show activity"},
+                {"kind": "EVENT_KIND_APPROVED", "actor": "theo", "at": "2026-11-09T21:03:15Z",
+                 "body": "", "bodyHtml": "", "url": "https://github.com/u9g/gem/pull/1#pullrequestreview-1",
+                 "comments": [{"id": "c", "author": "theo", "body": "nit", "bodyHtml": "<p>nit</p>",
+                               "url": "u", "path": "a.rs", "line": 0, "diffHunk": "@@"}]}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(timeline.id, "PR_1");
+        let [commit, review] = timeline.events.as_slice() else { panic!() };
+        assert_eq!(commit.kind(), proto::EventKind::Committed);
+        assert_eq!(commit.at.as_ref().unwrap().seconds, 1_794_258_141);
+        assert_eq!(commit.detail, "efd4812 Show activity");
+        assert_eq!(review.kind(), proto::EventKind::Approved);
+        assert_eq!(review.comments[0].path, "a.rs");
+    }
 
     use serde_json::json;
 
