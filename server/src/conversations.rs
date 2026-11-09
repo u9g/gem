@@ -34,7 +34,8 @@ query($ids: [ID!]!) {
       reviewThreads(first: 100) {
         nodes { id isResolved comments(last: 1) { nodes { id body url authorAssociation author { login __typename } path line diffHunk } } }
       }
-      comments(last: 1) { nodes { id body url authorAssociation author { login __typename } } }
+      comments(last: 1) { nodes { id body url authorAssociation author { login __typename } createdAt } }
+      reviews(last: 10) { nodes { id body url authorAssociation author { login __typename } createdAt: submittedAt } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
         __typename
         ... on CheckRun { id name status conclusion detailsUrl checkSuite { workflowRun { databaseId } } }
@@ -45,9 +46,10 @@ query($ids: [ID!]!) {
 }
 "#;
 
-// An unresolved review thread's latest reply, or the PR's latest top-level comment, from a bot or
-// a member of the PR's organization. It waits on the user unless it is the user's own. The head
-// commit's failed checks wait on the user once none of its checks still run.
+// An unresolved review thread's latest reply, or the PR's latest top-level comment or review with a
+// message, whichever came last, from a bot or a member of the PR's organization. It waits on the
+// user unless it is the user's own, so the user's reply in the top-level comments answers a review.
+// The head commit's failed checks wait on the user once none of its checks still run.
 const CONVERSATIONS_JQ: &str = r#".data.nodes[]
 | .commits.nodes[0].commit.oid as $head
 | [.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | if .__typename == "CheckRun" then
@@ -61,7 +63,7 @@ const CONVERSATIONS_JQ: &str = r#".data.nodes[]
   settling: (($failed | length) > 0 and any($checks[]; .done | not)),
   waiting: ([
     (.reviewThreads.nodes[] | select(.isResolved | not) | {thread_id: .id, comment: .comments.nodes[0]}),
-    (.comments.nodes[] | {thread_id: null, comment: .})
+    ([.comments.nodes[], (.reviews.nodes[] | select(.body != ""))] | max_by(.createdAt) // empty | {thread_id: null, comment: .})
     | select(.comment.author.__typename == "Bot" or .comment.authorAssociation == "MEMBER" or .comment.authorAssociation == "OWNER")
     | .comment |= {id, body, url, author: (.author.login // "ghost"), path: (.path // ""), line: (.line // 0), diffHunk: (.diffHunk // "")}
   ] + [
@@ -81,7 +83,7 @@ struct Fetched {
 #[derive(Deserialize, Clone)]
 #[serde(untagged)]
 enum Conversation {
-    // In the PR's top-level comments when `thread_id` is None.
+    // In the PR's top-level comments or reviews when `thread_id` is None.
     Comment {
         thread_id: Option<String>,
         comment: Comment,
@@ -744,7 +746,7 @@ fn ask(
             format!(", `thread` {thread:?}"),
         ),
         None => (
-            "in the pull request's top-level comments".to_string(),
+            "in the pull request's top-level comments or reviews".to_string(),
             String::new(),
         ),
     };
