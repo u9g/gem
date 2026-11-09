@@ -802,23 +802,30 @@ pub async fn propose(
         other_patches: checked,
         open_pull_request,
     };
-    // The proposal it replaces may have been approved or dismissed meanwhile.
+    // A script keeps running after the agent's call to it times out, so an agent that proposes
+    // again gets the proposal already recorded, not a copy of it. The proposal it replaces may
+    // have been approved or dismissed meanwhile.
     let recorded = db.write(|moment| {
+        let same = |p: &Proposal| p == &Proposal { id: p.id.clone(), ..proposal.clone() };
+        for entry in PROPOSALS.iter(moment)? {
+            if let Ok((_, existing)) = entry
+                && same(&existing)
+            {
+                return Ok(Some(existing.id));
+            }
+        }
         if let Some(replaced) = &replaced
             && !PROPOSALS.remove(moment, replaced)?
         {
-            return Ok(false);
+            return Ok(None);
         }
         PROPOSALS.put(moment, &proposal.id, &proposal)?;
-        Ok(true)
+        Ok(Some(proposal.id.clone()))
     })?;
-    if !recorded {
-        return Err(format!(
-            "proposal {} is gone: the user approved or dismissed it",
-            replaced.unwrap_or_default()
-        ));
-    }
-    Ok(proposal.id)
+    recorded.ok_or(format!(
+        "proposal {} is gone: the user approved or dismissed it",
+        replaced.unwrap_or_default()
+    ))
 }
 
 // Checks a pull request to open, proposed about the pull request at `pr`, which its body must link.
