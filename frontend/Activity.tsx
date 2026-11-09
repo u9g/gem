@@ -44,7 +44,7 @@ const kinds: Record<EventKind, { icon: LucideIcon; tone?: string; verb: string; 
   committed: { icon: GitCommitHorizontal, verb: 'pushed to', filter: 'commits' },
   forcePushed: { icon: GitCommitHorizontal, tone: t3.warning, verb: 'force-pushed', filter: 'commits' },
   commented: { icon: MessageSquare, tone: link, verb: 'commented on', filter: 'comments' },
-  // A line of its own only from a server that predates a review's `comments`.
+  // Only inside its review's card, never a line of its own.
   reviewCommented: { icon: MessageSquare, tone: link, verb: 'commented on a line of', filter: 'reviews' },
   approved: { icon: Check, tone: approved, verb: 'approved', filter: 'reviews' },
   changesRequested: { icon: X, tone: changes, verb: 'requested changes on', filter: 'reviews' },
@@ -223,7 +223,7 @@ function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boo
   const { event, pr, cluster } = entry;
   const look = kinds[event.kind];
   const actor = event.actor || 'Someone';
-  const comments = event.comments ?? [];
+  const comments = event.comments;
   const said = event.bodyHtml !== '' || comments.length > 0 || (event.kind === 'committed' && event.body !== '');
   const open = () => (event.url ? Linking.openURL(event.url) : onOpenCluster(cluster.pullRequests[0].url));
   return (
@@ -270,11 +270,6 @@ function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boo
             <View style={styles.card}>
               <View style={styles.cardHead}>
                 <Text style={styles.strong}>{actor}</Text>
-                {event.kind === 'reviewCommented' && event.subject !== '' && (
-                  <Text numberOfLines={1} style={[styles.mono, styles.path]}>
-                    {event.subject}
-                  </Text>
-                )}
                 <Text numberOfLines={1} style={styles.cardTitle}>
                   {pr.title}
                 </Text>
