@@ -296,3 +296,25 @@ test("bytes that don't follow on are left out and reported", { skip }, async () 
   stop();
   assert.deepEqual(statuses, ['syncing', 'online']);
 });
+
+test('a replica kept across reconnects shows its view throughout', { skip }, async () => {
+  const { full, delta } = fixture();
+  const replica = replicaOf(full);
+  const before = replica.moment();
+  const room = fakeRoom();
+  const statuses: ServerStatus[] = [];
+  const stop = followView(room as any, replica, (status) => statuses.push(status), room.connect);
+  // It reports what it has when it connects.
+  await until(() => room.reports.length === 1);
+  assert.deepEqual(room.reports[0], { fileId: full.sent.fileId, ...replica.state() });
+  // The whole copy the server sends once the frontend is active is had already.
+  room.send(full);
+  await until(() => room.reports.length === 2);
+  assert.deepEqual(replica.moment(), before);
+  // One of the view as it grew meanwhile adds only what the replica lacks.
+  room.send({ sent: { ...full.sent, end: delta.sent.end }, bytes: new Uint8Array([...full.bytes, ...delta.bytes]) });
+  await until(() => room.reports.length === 3);
+  assert.equal(room.reports[2]!.committedSize, delta.sent.end);
+  stop();
+  assert.deepEqual(statuses, ['online']);
+});
