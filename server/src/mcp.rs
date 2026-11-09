@@ -311,11 +311,11 @@ pub fn cluster_json(cluster: &PullRequestCluster) -> String {
     serde_json::to_string_pretty(&cluster_value(&view::Cluster::from(cluster))).unwrap()
 }
 
-// Drops what only gem's own view shows: rendered HTML, and PRs' file diffs.
+// Drops what only gem's own view shows: rendered HTML, PRs' file diffs and timelines.
 fn strip_view(value: &mut Value) {
     match value {
         Value::Object(object) => {
-            object.retain(|key, _| !key.ends_with("Html") && key != "files");
+            object.retain(|key, _| !key.ends_with("Html") && key != "files" && key != "events");
             object.values_mut().for_each(strip_view);
         }
         Value::Array(values) => values.iter_mut().for_each(strip_view),

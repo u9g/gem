@@ -115,6 +115,48 @@ message PullRequest {
   // Empty until it finishes, and when it proposed something.
   string no_proposal_reason = 22;
   google.protobuf.Timestamp created_at = 23;
+  // What happened on it, oldest first: its last 50 timeline items, as GitHub's Conversation tab
+  // lists them, with each review's own comments after it.
+  repeated Event events = 24;
+}
+
+// One item of a pull request's timeline.
+message Event {
+  // GraphQL node ID.
+  string id = 1;
+  EventKind kind = 2;
+  // Login of who did it; a commit's author.
+  string actor = 3;
+  google.protobuf.Timestamp at = 4;
+  // What was said: a comment's, review's or dismissal's body in markdown; a commit's message
+  // headline. Empty for the rest.
+  string body = 5;
+  // `body` as GitHub renders it. Empty for a commit.
+  string body_html = 6;
+  string url = 7;
+  // What else it says: a review's state (APPROVED, CHANGES_REQUESTED, COMMENTED or DISMISSED); a
+  // review comment's file; a commit's or force push's abbreviated commit; the reviewer asked for;
+  // the base branch or title it changed to.
+  string detail = 8;
+}
+
+enum EventKind {
+  // A top-level comment.
+  EVENT_KIND_COMMENT = 0;
+  EVENT_KIND_REVIEW = 1;
+  // A comment on a line of the diff, in a review.
+  EVENT_KIND_REVIEW_COMMENT = 2;
+  EVENT_KIND_COMMIT = 3;
+  EVENT_KIND_FORCE_PUSH = 4;
+  EVENT_KIND_READY_FOR_REVIEW = 5;
+  EVENT_KIND_DRAFT = 6;
+  EVENT_KIND_REVIEW_REQUESTED = 7;
+  EVENT_KIND_REVIEW_DISMISSED = 8;
+  // The base branch changed.
+  EVENT_KIND_RETARGETED = 9;
+  EVENT_KIND_RENAMED = 10;
+  EVENT_KIND_CLOSED = 11;
+  EVENT_KIND_REOPENED = 12;
 }
 
 // How a pull request can merge, decided by the server.

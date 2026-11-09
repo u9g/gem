@@ -50,6 +50,7 @@ mod proposals;
 mod rebases;
 mod sandbox;
 mod search;
+mod timelines;
 mod tokens;
 mod view;
 
@@ -160,6 +161,9 @@ struct SearchedPullRequest {
     checks: Checks,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
+    // Set by `timelines::fill`.
+    #[serde(default)]
+    events: Vec<proto::Event>,
 }
 
 fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
@@ -811,6 +815,7 @@ async fn open_pull_requests(
         .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
         .ok()?;
     merge_states(&mut prs).await;
+    timelines::fill(&mut prs).await;
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
@@ -940,6 +945,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         merging: false,
                         no_proposal_reason: String::new(),
                         created_at: Some(pr.created_at.clone()),
+                        events: pr.events.clone(),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
