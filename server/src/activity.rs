@@ -112,7 +112,8 @@ fn time(value: &Value) -> Option<Timestamp> {
     serde_json::from_value(value.clone()).ok()
 }
 
-// The PR's timeline items as events, oldest first. A review's comments on lines follow it.
+// The PR's timeline items as events, oldest first. A review's comments on lines are in its
+// `comments`, as GitHub's Conversation tab shows them inside the review.
 fn parse(pr: &Value) -> Vec<Event> {
     let mut events = Vec::new();
     for item in pr["timelineItems"]["nodes"].as_array().into_iter().flatten() {
@@ -154,10 +155,8 @@ fn parse(pr: &Value) -> Vec<Event> {
                 };
                 event.body = text(&item["body"]);
                 event.body_html = text(&item["bodyHTML"]);
-                event.kind = kind as i32;
-                events.push(event);
-                for comment in item["comments"]["nodes"].as_array().into_iter().flatten() {
-                    events.push(Event {
+                event.comments = (item["comments"]["nodes"].as_array().into_iter().flatten())
+                    .map(|comment| Event {
                         id: text(&comment["id"]),
                         kind: EventKind::ReviewCommented as i32,
                         actor: text(&comment["author"]["login"]),
@@ -166,9 +165,10 @@ fn parse(pr: &Value) -> Vec<Event> {
                         body: text(&comment["body"]),
                         body_html: text(&comment["bodyHTML"]),
                         subject: text(&comment["path"]),
-                    });
-                }
-                continue;
+                        ..Default::default()
+                    })
+                    .collect();
+                kind
             }
             "ReviewDismissedEvent" => EventKind::ReviewDismissed,
             "ReviewRequestedEvent" => {
@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_timeline_reads_as_events_oldest_first_with_review_comments_after_their_review() {
+    fn a_timeline_reads_as_events_oldest_first_with_review_comments_inside_their_review() {
         let pr = json!({ "timelineItems": { "nodes": [
             { "__typename": "PullRequestCommit", "commit": {
                 "oid": "abc", "messageHeadline": "Retry TTS", "committedDate": "2026-11-01T10:00:00Z",
@@ -230,13 +230,15 @@ mod tests {
         assert_eq!(kinds, [
             (EventKind::ReviewRequested as i32, "me"),
             (EventKind::Committed as i32, "Jo"),
-            (EventKind::ReviewCommented as i32, "amy"),
             (EventKind::ChangesRequested as i32, "amy"),
             (EventKind::Commented as i32, "bot"),
         ]);
         assert_eq!(events[0].subject, "voice");
         assert_eq!((events[1].id.as_str(), events[1].body.as_str()), ("abc", "Retry TTS"));
-        assert_eq!((events[2].subject.as_str(), events[2].body_html.as_str()), ("src/tts.py", "<p>nit</p>"));
+        let comments = &events[2].comments;
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].kind, EventKind::ReviewCommented as i32);
+        assert_eq!((comments[0].subject.as_str(), comments[0].body_html.as_str()), ("src/tts.py", "<p>nit</p>"));
         assert!(events.iter().all(|event| event.at.is_some()));
     }
 }

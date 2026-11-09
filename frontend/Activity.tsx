@@ -44,7 +44,8 @@ const kinds: Record<EventKind, { icon: LucideIcon; tone?: string; verb: string; 
   committed: { icon: GitCommitHorizontal, verb: 'pushed to', filter: 'commits' },
   forcePushed: { icon: GitCommitHorizontal, tone: t3.warning, verb: 'force-pushed', filter: 'commits' },
   commented: { icon: MessageSquare, tone: link, verb: 'commented on', filter: 'comments' },
-  reviewCommented: { icon: MessageSquare, tone: link, verb: 'commented on a line of', filter: 'comments' },
+  // A line of its own only from a server that predates a review's `comments`.
+  reviewCommented: { icon: MessageSquare, tone: link, verb: 'commented on a line of', filter: 'reviews' },
   approved: { icon: Check, tone: approved, verb: 'approved', filter: 'reviews' },
   changesRequested: { icon: X, tone: changes, verb: 'requested changes on', filter: 'reviews' },
   reviewed: { icon: Eye, tone: link, verb: 'reviewed', filter: 'reviews' },
@@ -217,12 +218,13 @@ export function Activity({
 }
 
 // One line of the timeline: a badge on the rail, who did what on which PR, when; and under it the
-// comment or review as GitHub renders it, or a commit's message.
+// comment or review as GitHub renders it, a review with its comments on lines, or a commit's message.
 function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boolean; onOpenCluster: (key: string) => void }) {
   const { event, pr, cluster } = entry;
   const look = kinds[event.kind];
   const actor = event.actor || 'Someone';
-  const said = event.bodyHtml !== '' || (event.kind === 'committed' && event.body !== '');
+  const comments = event.comments ?? [];
+  const said = event.bodyHtml !== '' || comments.length > 0 || (event.kind === 'committed' && event.body !== '');
   const open = () => (event.url ? Linking.openURL(event.url) : onOpenCluster(cluster.pullRequests[0].url));
   return (
     <View style={styles.event}>
@@ -277,9 +279,28 @@ function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boo
                   {pr.title}
                 </Text>
               </View>
-              <View style={styles.cardBody}>
-                <Html html={event.bodyHtml} />
-              </View>
+              {event.bodyHtml !== '' && (
+                <View style={styles.cardBody}>
+                  <Html html={event.bodyHtml} />
+                </View>
+              )}
+              {comments.map((comment, i) => (
+                <View key={comment.id} style={(i > 0 || event.bodyHtml !== '') && styles.lineComment}>
+                  <Pressable
+                    disabled={comment.url === ''}
+                    onPress={() => Linking.openURL(comment.url)}
+                    style={styles.lineCommentHead}
+                  >
+                    <Icon icon={MessageSquare} size={12} color={t3.muted} />
+                    <Text numberOfLines={1} style={[styles.mono, styles.path]}>
+                      {comment.subject || 'a line'}
+                    </Text>
+                  </Pressable>
+                  <View style={styles.cardBody}>
+                    <Html html={comment.bodyHtml} />
+                  </View>
+                </View>
+              ))}
             </View>
           )}
         </View>
@@ -579,6 +600,17 @@ const styles = StyleSheet.create({
   },
   path: {
     flexShrink: 1,
+  },
+  lineComment: {
+    borderTopWidth: 1,
+    borderTopColor: t3.border,
+  },
+  lineCommentHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingTop: 10,
   },
   cardTitle: {
     flex: 1,
