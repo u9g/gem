@@ -917,7 +917,7 @@ async fn fetch_comment(id: &str) -> Result<FetchedComment, String> {
     }
     let fields = "id body bodyHTML url author { login } pullRequest { url }";
     let output = graphql(
-        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line diffHunk }} }} }}"),
+        &format!("query($id: ID!) {{ node(id: $id) {{ ... on IssueComment {{ {fields} }} ... on PullRequestReview {{ {fields} }} ... on PullRequestReviewComment {{ {fields} path line diffHunk }} }} }}"),
         &[("id", id)],
     )
     .await?;
