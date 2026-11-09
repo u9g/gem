@@ -23,6 +23,7 @@ export const blank = {
     rebased: false,
     merging: false,
     noProposalReason: '',
+    events: [],
   } satisfies PullRequest,
   agent: { id: '', title: '', state: 'working', pullRequestUrls: [], reply: '', replyHtml: '', proposals: [] } satisfies Agent,
   proposal: {

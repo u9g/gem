@@ -406,7 +406,7 @@ mod tests {
         fields.sort();
         assert_eq!(keys, fields);
         // The Nones: the repository, checks and creation time, which this one hasn't set.
-        assert_eq!(fields.len() + 3, 20);
+        assert_eq!(fields.len() + 3, 21);
         assert!(keys.contains(&"approved".to_string()) && keys.contains(&"number".to_string()));
     }
 

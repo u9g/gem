@@ -26,7 +26,7 @@ use conversations::Conversations;
 use gem_changes::Changes;
 use names::Names;
 use proto::{
-    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest,
+    ApproveProposalRequest, ApproveProposalResponse, Checks, CloseAgentRequest, Event,
     CloseAgentResponse, CloseClusterRequest, CloseClusterResponse, DismissProposalRequest,
     DismissProposalResponse, InvestigateRequest, InvestigateResponse,
     ListOpenPullRequestsResponse, MergeBy,
@@ -38,6 +38,7 @@ use proto::{
     RestartClusterResponse, SearchPullRequestsRequest, SearchPullRequestsResponse,
 };
 
+mod activity;
 mod agents;
 mod conversations;
 mod files;
@@ -160,6 +161,9 @@ struct SearchedPullRequest {
     checks: Checks,
     // URLs of PRs whose description or comments link to this one.
     mentioned_by: Vec<String>,
+    // Set by `activity::fill`.
+    #[serde(default)]
+    events: Vec<Event>,
 }
 
 fn merge_by(pr: &SearchedPullRequest) -> MergeBy {
@@ -811,6 +815,7 @@ async fn open_pull_requests(
         .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
         .ok()?;
     merge_states(&mut prs).await;
+    activity::fill(&mut prs).await;
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
@@ -940,6 +945,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         merging: false,
                         no_proposal_reason: String::new(),
                         created_at: Some(pr.created_at.clone()),
+                        events: pr.events.clone(),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
