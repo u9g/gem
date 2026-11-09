@@ -1,21 +1,19 @@
 import { create, fromJson, toJson } from '@bufbuild/protobuf';
-import * as Select from '@rn-primitives/select';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { Board } from './Board';
 import { ClusterReview } from './ClusterFiles';
 import { AgentView, Composer } from './AgentView';
-import { Legend, PhoneAgentRow, PhoneClusterRow, section, sections, SectionTitle } from './ClusterRow';
 import { ClusterView, timeAgo } from './ClusterView';
 import { DbContext, emptyDb, useDb, usePending } from './db';
+import { Inbox } from './Inbox';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
 import { SearchBox, useSearch } from './Search';
 import { failureMessage, type Profile, useServer } from './server';
 import { shown } from './view';
-import type { Cluster, Repository } from './view-types';
+import type { Cluster } from './view-types';
 import { type Failure, FailureBanner, Login, RenderMarkdown } from './surfaces';
 import { usePhone } from './t3';
 import {
@@ -49,16 +47,6 @@ function Contexts({
       <RenderMarkdown value={render}>{children}</RenderMarkdown>
     </Login>
   );
-}
-
-function sameRepository(a: Repository | undefined, b: Repository | undefined): boolean {
-  return a?.owner === b?.owner && a?.name === b?.name;
-}
-
-// Select options carry string values; this encodes a repository so it can be looked up again by
-// comparing values, never parsed.
-function repositoryValue(repository: Repository): string {
-  return JSON.stringify([repository.owner, repository.name]);
 }
 
 // What is open lives in the page's query, so the browser's back and forward move between what was
@@ -110,8 +98,6 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   // The profile being changed, or 'new' while one is being added.
   const [editing, setEditing] = useState<Profile | 'new'>();
   const [place, setPlace] = useState(currentPlace);
-  const [repoFilter, setRepoFilter] = useState<Repository>();
-  const [highlightedRepo, setHighlightedRepo] = useState<string>();
   // Each action in progress, from any frontend, as the view holds it: proposals being approved,
   // dismissed or investigated, the oldest PR's URL of clusters being restarted, `merge` and that
   // URL for ones whose merge is starting, `close` and that URL for ones being closed, `rebase` and
@@ -161,7 +147,6 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   const profileId = profile?.id;
   const shownProfile = useRef(profileId);
   useEffect(() => {
-    setRepoFilter(undefined);
     setFailure(undefined);
     if (shownProfile.current && shownProfile.current !== profileId) go({}, true);
     shownProfile.current = profileId;
@@ -276,12 +261,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
     />
   );
 
-  const repositories = clusters
-    .flatMap((cluster) => cluster.pullRequests.flatMap((pr) => pr.repository ?? []))
-    .filter((repository, i, all) => all.findIndex((other) => sameRepository(other, repository)) === i)
-    .sort((a, b) => a.name.localeCompare(b.name));
   const visible = clusters
-    .filter((cluster) => !repoFilter || cluster.pullRequests.some((pr) => sameRepository(pr.repository, repoFilter)))
     .filter((cluster) => !search.matches || cluster.pullRequests.some((pr) => search.matches!.has(pr.url)));
   // A cluster is linked to by its oldest PR, and any of its PRs opens it, so a link still opens it
   // after an agent joins it to an older cluster.
@@ -296,45 +276,6 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       {!phone && profile && (
         <ProfileChip profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
       )}
-      <Select.Root
-        value={repoFilter && { value: repositoryValue(repoFilter), label: repoFilter.name }}
-        onValueChange={(option) =>
-          setRepoFilter(repositories.find((repository) => repositoryValue(repository) === option?.value))
-        }
-      >
-        <Select.Trigger>
-          <Text style={styles.filter}>repos: {repoFilter?.name ?? '*'}</Text>
-        </Select.Trigger>
-        <Select.Portal>
-          <Select.Content position="popper" sideOffset={4} style={styles.menu}>
-            <Select.Viewport>
-              {[undefined, ...repositories].map((repository) => {
-                const value = repository ? repositoryValue(repository) : '*';
-                const label = repository?.name ?? '*';
-                return (
-                  <Select.Item
-                    key={value}
-                    value={value}
-                    label={label}
-                    // On web the Item is Radix's DOM element, so its style must be one plain
-                    // object of CSS properties. Radix focuses whichever item the pointer or
-                    // keyboard highlights.
-                    onFocus={() => setHighlightedRepo(value)}
-                    onBlur={() => setHighlightedRepo(undefined)}
-                    style={StyleSheet.flatten([
-                      styles.menuItem,
-                      sameRepository(repository, repoFilter) && styles.menuItemSelected,
-                      highlightedRepo === value && styles.menuItemActive,
-                    ])}
-                  >
-                    <Select.ItemText style={styles.menuText} />
-                  </Select.Item>
-                );
-              })}
-            </Select.Viewport>
-          </Select.Content>
-        </Select.Portal>
-      </Select.Root>
       <SearchBox
         value={search.query}
         onChange={search.setQuery}
@@ -370,9 +311,6 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   // One screen at a time: the cluster list, by what each cluster waits on, or the cluster tapped in
   // it, with the box to ask about it under the scrolling content.
   if (phone) {
-    const listed = sections
-      .map((name) => ({ name, clusters: visible.filter((cluster) => section(cluster) === name) }))
-      .filter(({ clusters }) => clusters.length > 0);
     return (
       <Contexts login={login} render={render}>
         <View style={styles.phone}>
@@ -409,29 +347,15 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
           ) : (
             <>
               <ProfileTitle profiles={profiles} profile={profile} onSelect={selectProfile} onAdd={() => setEditing('new')} />
-              {filters}
-              {/* The legend is the third child: after the agents and the first section's title. */}
-              <ScrollView contentContainerStyle={styles.phoneList} stickyHeaderIndices={[2]}>
-                <View>
-                  {agents.length > 0 && (
-                    <View style={styles.phoneSection}>
-                      <SectionTitle>Agents</SectionTitle>
-                    </View>
-                  )}
-                  {agents.map((a) => (
-                    <PhoneAgentRow key={a.id} agent={a} onPress={openAgentAlone} />
-                  ))}
-                </View>
-                {listed.flatMap(({ name, clusters }, i) => [
-                  <View key={name} style={styles.phoneSection}>
-                    <SectionTitle>{name}</SectionTitle>
-                  </View>,
-                  ...(i === 0 ? [<Legend key="legend" />] : []),
-                  ...clusters.map((cluster) => (
-                    <PhoneClusterRow key={cluster.pullRequests[0].url} cluster={cluster} onPress={openCluster} />
-                  )),
-                ])}
-              </ScrollView>
+              <Inbox
+                phone
+                clusters={visible}
+                agents={agents}
+                toolbar={filters}
+                onOpenCluster={openCluster}
+                onOpenAgent={openAgentAlone}
+                onClose={closeDrawer}
+              />
             </>
           )}
         </View>
@@ -442,16 +366,15 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.topBar}>{filters}</View>
       {failed}
       <Contexts login={login} render={render}>
-        <Board
+        <Inbox
           clusters={visible}
           agents={agents}
-          openUrl={agent || !opened ? undefined : opened.pullRequests[0].url}
-          openAgent={agent?.id}
+          toolbar={filters}
+          openKey={agent ? `agent:${agent.id}` : opened?.pullRequests[0].url}
           onOpenCluster={openCluster}
-          onOpenAgent={openAgent}
+          onOpenAgent={openAgentAlone}
           onClose={closeDrawer}
           wide={!agentView && opened !== undefined}
         >
@@ -472,7 +395,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
                 onMessage={(message) => messageCluster(opened, message)}
               />
             ))}
-        </Board>
+        </Inbox>
 </Contexts>
       <StatusBar style="auto" />
     </View>
@@ -500,26 +423,15 @@ const styles = StyleSheet.create({
     padding: 12,
     paddingBottom: 24,
   },
-  phoneList: {
-    paddingBottom: 24,
-  },
   dock: {
     paddingHorizontal: 12,
     paddingBottom: 12,
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
-  phoneSection: {
-    paddingHorizontal: 8,
-    paddingTop: 8,
-  },
   container: {
     flex: 1,
     backgroundColor: '#19212A',
-  },
-  topBar: {
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
   filters: {
     flexDirection: 'row',
@@ -535,32 +447,5 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 999,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
-  },
-  menu: {
-    minWidth: 200,
-    maxHeight: 320,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#2E3946',
-    backgroundColor: '#19212A',
-  },
-  // Reaches the DOM unconverted (see the Select.Item), so only properties CSS also has.
-  menuItem: {
-    paddingLeft: 12,
-    paddingRight: 12,
-    paddingTop: 6,
-    paddingBottom: 6,
-    // Chrome's focus ring (outline-style: auto) ignores outline-width; a solid 0px one draws nothing.
-    outlineStyle: 'solid',
-    outlineWidth: 0,
-  },
-  menuText: {
-    color: '#D0CFD4',
-  },
-  menuItemActive: {
-    backgroundColor: '#3A4757',
-  },
-  menuItemSelected: {
-    backgroundColor: '#2E3946',
   },
 });
