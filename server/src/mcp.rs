@@ -348,8 +348,8 @@ commit or push.
 - open a new pull request, with `open_pull_request`: such as a fix on a base branch. Make its \
 `patch` the same way against the latest `origin/<base branch>`, and link the pull request the \
 proposal is about in its description.
-- reply as {login}, in the first person, with `reply`: the markdown is posted as a top-level \
-comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
+- reply as {login}, in the first person, with `reply`: the markdown is posted in the review \
+thread the proposal answers, or else as a top-level comment on the pull request. Open with what {login} is doing, then why: {login} reads only the \
 first lines before approving.
 - hand the work to another agent, with `follow_up`: when the work is too big to review as \
 patches or one new pull request, such as matching changes in other repositories with no pull \
