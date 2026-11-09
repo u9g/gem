@@ -158,6 +158,20 @@ const websocket = pullRequest('python-sdks', 1204, 'fix(stt): close the websocke
   ],
 });
 
+// A third cluster whose events fall inside the others' stretches, so the feed shows a cluster
+// broken off by another and picked up again within a day.
+const docs = pullRequest('web', 7005, 'docs(simulations): show scenarios as tabbed charts', {
+  checksPassing: true,
+  createdAt: hoursAgo(28),
+  events: [
+    event('committed', 'u9g', 28, { id: '5ca1ab1e0001', body: 'docs(simulations): show scenarios as tabbed charts', url: 'https://github.com/livekit/web/commit/5ca1ab1' }),
+    event('reviewRequested', 'u9g', 28, { subject: 'bcherry', url: '' }),
+    event('commented', 'bcherry', 5.5, {
+      ...said('Can the tabs keep their place on reload?', '<p dir="auto">Can the tabs keep their place on reload?</p>'),
+    }),
+  ],
+});
+
 const stackPrs = [retry, log];
 const clusters: Cluster[] = [
   stored({
@@ -174,6 +188,7 @@ const clusters: Cluster[] = [
     pullRequests: [websocket],
     mergeBy: clusterMergeBy([websocket]),
   }),
+  stored({ ...blank.cluster, updatedAt: hoursAgo(5.5), pullRequests: [docs], mergeBy: clusterMergeBy([docs]) }),
 ];
 
 const noop = () => {};

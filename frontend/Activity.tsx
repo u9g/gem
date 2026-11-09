@@ -78,6 +78,19 @@ type Entry = { event: Event; pr: PullRequest; cluster: Cluster };
 
 type Actions = Pick<Parameters<typeof ClusterView>[0], 'busy' | 'onApprove' | 'onDismiss' | 'onInvestigate'>;
 
+// One event after another on the same cluster reads as a chat app shows messages from one sender:
+// the first line of the stretch leads it, at full size and ending in a chip that names the cluster;
+// the lines after it follow, closer together under a smaller badge and ending in only the chip's
+// dot, which says "the cluster above".
+
+// A hue per cluster, by its place in the list, so a cluster that comes back further down the
+// timeline is recognizably the one from before. Light enough to read on the background, and none
+// of them a color the badges and PR links already speak in.
+const hues = ['#56D4BC', '#F28BB8', '#C3D66B', '#E8A87C', '#6FD3F2', '#B9A2F5'];
+
+// A cluster of one PR has no name of its own; its PR's title stands for it.
+const nameOf = (cluster: Cluster) => cluster.name || cluster.pullRequests[0]?.title || '';
+
 // The day an event is in, as GitHub's feed heads each day.
 function dayOf(at: number | undefined): string {
   if (at === undefined) return 'Undated';
@@ -129,6 +142,7 @@ export function Activity({
     if (last?.day === day) last.entries.push(entry);
     else days.push({ day, entries: [entry] });
   }
+  const hueOf = (cluster: Cluster) => hues[clusters.indexOf(cluster) % hues.length];
   const latest = entries[0]?.event.at;
   const chosen = prs.find(({ pr }) => pr.url === only);
 
@@ -154,6 +168,7 @@ export function Activity({
           key={pr.url}
           pr={pr}
           cluster={cluster}
+          hue={hueOf(cluster)}
           selected={only === pr.url}
           onPress={() => setOnly(only === pr.url ? undefined : pr.url)}
         />
@@ -209,10 +224,16 @@ export function Activity({
               {days.map(({ day, entries }) => (
                 <View key={day} style={styles.day}>
                   <Divider label={day} />
-                  {entries.map((entry) => (
+                  {entries.map((entry, i) => (
                     <EventLine
                       key={`${entry.pr.url} ${entry.event.id}`}
                       entry={entry}
+                      // Which line is above is asked of what is listed, so a filter or a chosen PR
+                      // that takes away the events between two stretches of a cluster joins them.
+                      // A day's first line always leads: its heading has come between, and the
+                      // line it would follow may be scrolled away.
+                      place={i === 0 ? 'first' : entries[i - 1].cluster === entry.cluster ? 'follows' : 'leads'}
+                      hue={hueOf(entry.cluster)}
                       showPr={!only}
                       onOpenCluster={onOpenCluster}
                       {...actions}
@@ -234,21 +255,34 @@ export function Activity({
 // and under each comment, the agent's answer to it.
 function EventLine({
   entry,
+  place,
+  hue,
   showPr,
   onOpenCluster,
   ...actions
-}: { entry: Entry; showPr: boolean; onOpenCluster: (key: string) => void } & Actions) {
+}: {
+  entry: Entry;
+  // The day's first line, one that leads a new cluster's stretch, or one that follows the line
+  // above on the same cluster.
+  place: 'first' | 'leads' | 'follows';
+  hue: string;
+  showPr: boolean;
+  onOpenCluster: (key: string) => void;
+} & Actions) {
   const { event, pr, cluster } = entry;
   const look = kinds[event.kind];
   const actor = event.actor || 'Someone';
   const comments = event.comments;
   const said = event.bodyHtml !== '' || comments.length > 0 || (event.kind === 'committed' && event.body !== '');
   const open = () => (event.url ? Linking.openURL(event.url) : onOpenCluster(cluster.pullRequests[0].url));
+  const follows = place === 'follows';
   return (
-    <View style={styles.event}>
-      <View style={styles.eventLine}>
-        <View style={[styles.badge, look.tone !== undefined && { borderColor: look.tone }]}>
-          <Icon icon={look.icon} size={14} color={look.tone ?? t3.muted} />
+    <View style={[styles.event, place === 'leads' && styles.leads, follows && styles.follows]}>
+      <View style={[styles.eventLine, follows && styles.eventLineFollows]}>
+        <View style={styles.badgeCell}>
+          <View style={[styles.badge, follows && styles.badgeFollows, look.tone !== undefined && { borderColor: look.tone }]}>
+            <Icon icon={look.icon} size={follows ? 11 : 14} color={look.tone ?? t3.muted} />
+          </View>
         </View>
         <Text style={styles.eventText}>
           <Text style={styles.strong}>{actor}</Text> {look.verb}{' '}
@@ -271,7 +305,17 @@ function EventLine({
             </Text>
           )}
           {event.kind === 'renamed' && event.subject !== '' && <Text> to “{event.subject}”</Text>}
-          {event.at !== undefined && <Text style={styles.when}> · {timeAgo(new Date(event.at))}</Text>}
+          {event.at !== undefined && <Text style={styles.when}> · {timeAgo(new Date(event.at))}</Text>}{' '}
+          {follows ? (
+            <Text accessibilityLabel={nameOf(cluster)} style={[styles.sameCluster, { color: hue }]}>
+              ●
+            </Text>
+          ) : (
+            <Text style={styles.clusterChip} onPress={() => onOpenCluster(cluster.pullRequests[0].url)}>
+              <Text style={{ color: hue }}>● </Text>
+              {nameOf(cluster)}
+            </Text>
+          )}
         </Text>
         {event.url !== '' && <Button label="View" variant="ghost" onPress={open} />}
       </View>
@@ -368,11 +412,14 @@ function Divider({ label }: { label: string }) {
 function PullRequestRow({
   pr,
   cluster,
+  hue,
   selected,
   onPress,
 }: {
   pr: PullRequest;
   cluster: Cluster;
+  // Its cluster's hue on the timeline, which the dot by its name here is the key to.
+  hue: string;
   selected: boolean;
   onPress: () => void;
 }) {
@@ -385,11 +432,10 @@ function PullRequestRow({
       <View style={styles.prHead}>
         <ChecksIcon pr={pr} size={14} />
         <Text style={styles.ref}>{ref(pr)}</Text>
-        {cluster.name !== '' && cluster.pullRequests.length > 1 && (
-          <Text numberOfLines={1} style={styles.clusterName}>
-            {cluster.name}
-          </Text>
-        )}
+        <View style={[styles.clusterDot, { backgroundColor: hue }]} />
+        <Text numberOfLines={1} style={styles.clusterName}>
+          {cluster.pullRequests.length > 1 && cluster.name}
+        </Text>
         <Text style={styles.count}>{events.length}</Text>
       </View>
       <Text numberOfLines={2} style={styles.prTitle}>
@@ -572,11 +618,58 @@ const styles = StyleSheet.create({
   event: {
     gap: 10,
   },
+  // On the day's gap of 14: a line that follows sits closer to the one it follows, and one that
+  // leads stands off from the cluster above it.
+  leads: {
+    marginTop: 10,
+  },
+  follows: {
+    marginTop: -4,
+  },
   eventLine: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     minHeight: BADGE,
+  },
+  eventLineFollows: {
+    minHeight: 20,
+  },
+  // As wide as a full badge, so the smaller one of a line that follows stays on the rail.
+  badgeCell: {
+    width: BADGE,
+    alignItems: 'center',
+  },
+  badgeFollows: {
+    width: 20,
+    height: 20,
+  },
+  // In the line's text, after the time, so it wraps with it on a phone; a name too long for the
+  // line is cut short rather than broken across two.
+  clusterChip: {
+    display: 'inline-block',
+    maxWidth: '100%',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    verticalAlign: 'bottom',
+    marginLeft: 4,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    backgroundColor: t3.input,
+    color: t3.foreground,
+    fontSize: 11,
+    fontWeight: '600',
+  } as object,
+  sameCluster: {
+    marginLeft: 4,
+    fontSize: 11,
+    opacity: 0.7,
+  },
+  clusterDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   badge: {
     width: BADGE,
