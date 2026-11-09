@@ -3,7 +3,6 @@ import { ConnectionState, Room, RoomEvent, RpcError } from 'livekit-client';
 import { SignJWT } from 'jose';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import type { Db } from './db';
 import { Replica } from './view';
 
 const PROFILES_KEY = 'gem.profiles';
@@ -67,7 +66,7 @@ export function followView(
 ): () => void {
   let closed = false;
   // Whether the replica has had a whole copy yet.
-  let synced = false;
+  let synced = replica.moment() !== undefined;
   const update = () =>
     setStatus(
       room.state !== ConnectionState.Connected
@@ -142,8 +141,6 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
-  // This connection's replica of the server's view, which components read through `useDb`.
-  const [db, setDb] = useState<Db>();
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -161,6 +158,10 @@ export function useServer() {
     () => profile,
     [profile?.id, profile?.url, profile?.apiKey, profile?.apiSecret, profile?.room],
   );
+  // The replica of the connection's server's view, which components read through `useDb`. It
+  // outlives leaving the room while the page is hidden, so the view stays shown; another
+  // connection starts from an empty one.
+  const replica = useMemo(() => new Replica(), [connection]);
 
   useEffect(() => {
     if (!connection) {
@@ -168,18 +169,14 @@ export function useServer() {
       return;
     }
     if (!visible) return;
-    // Another connection, to this profile or another, starts from an empty replica.
-    const replica = new Replica();
-    setDb(replica);
     const stop = followView(room, replica, setStatus, () =>
       mintToken(connection).then((jwt) => room.connect(connection.url, jwt)),
     );
     return () => {
       stop();
       setStatus('connecting');
-      setDb(undefined);
     };
-  }, [room, connection, visible]);
+  }, [room, connection, visible, replica]);
 
 
   const selectProfile = useCallback((id: string) => {
@@ -225,7 +222,7 @@ export function useServer() {
     [room],
   );
 
-  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, db };
+  return { status, profiles, profile, selectProfile, saveProfile, removeProfile, reported, post, db: connection ? replica : undefined };
 }
 
 // Why a request `post` sent failed: what the server answered, or LiveKit's reason it got no
