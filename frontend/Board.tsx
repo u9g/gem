@@ -38,13 +38,6 @@ export function Board({
   wide?: boolean;
   children?: ReactNode;
 }) {
-  useEffect(() => {
-    if (!children) return;
-    const close = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    addEventListener('keydown', close);
-    return () => removeEventListener('keydown', close);
-  }, [children, onClose]);
-
   return (
     <View style={styles.board}>
       <View style={styles.columns}>
@@ -78,20 +71,35 @@ export function Board({
         })}
       </View>
       {children && (
-        <>
-          <Pressable accessibilityLabel="Close" style={styles.scrim} onPress={onClose} />
-          <View style={[styles.drawer, wide && styles.wide]}>
-            <ScrollView contentContainerStyle={styles.drawerContent}>{children}</ScrollView>
-            {/* Only a wide drawer covers the space beside it that closes it. */}
-            {wide && (
-              <Pressable accessibilityLabel="Close" style={styles.close} onPress={onClose}>
-                <Icon icon={X} size={16} />
-              </Pressable>
-            )}
-          </View>
-        </>
+        <Drawer wide={wide} onClose={onClose}>
+          {children}
+        </Drawer>
       )}
     </View>
+  );
+}
+
+// The open cluster or agent, sliding over the right edge of what is under it, or over all of it
+// when `wide`. Clicking beside it, the wide drawer's close button or pressing Escape closes it.
+export function Drawer({ wide = false, onClose, children }: { wide?: boolean; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const close = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    addEventListener('keydown', close);
+    return () => removeEventListener('keydown', close);
+  }, [onClose]);
+  return (
+    <>
+      <Pressable accessibilityLabel="Close" style={styles.scrim} onPress={onClose} />
+      <View style={[styles.drawer, wide && styles.wide]}>
+        <ScrollView contentContainerStyle={styles.drawerContent}>{children}</ScrollView>
+        {/* Only a wide drawer covers the space beside it that closes it. */}
+        {wide && (
+          <Pressable accessibilityLabel="Close" style={styles.close} onPress={onClose}>
+            <Icon icon={X} size={16} />
+          </Pressable>
+        )}
+      </View>
+    </>
   );
 }
 
