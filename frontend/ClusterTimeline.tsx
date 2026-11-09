@@ -31,7 +31,7 @@ type Props = Parameters<typeof ClusterView>[0] & {
   onMessage?: (message: string) => Promise<unknown>;
 };
 
-const ref = (pr: PullRequest) => `${pr.repository?.name}#${pr.number}`;
+export const ref = (pr: PullRequest) => `${pr.repository?.name}#${pr.number}`;
 
 // The open cluster as a GitHub pull request's Conversation tab: its title, PRs and actions on top;
 // one timeline across its PRs, ending in what it waits on and a box to message an agent; and beside
@@ -179,21 +179,30 @@ function Timeline(props: Props) {
   dated.sort((a, b) => a.at - b.at || a.key.localeCompare(b.key));
 
   return (
-    <View style={styles.timeline}>
-      <View style={styles.rail} />
+    <Rail>
       {undated}
       {dated.map((d) => d.node)}
       <Divider updatedAt={cluster.updatedAt} />
       {prs.map((pr) => (
         <PullRequestNow key={pr.url} pr={pr} hidden={fromAgents} {...props} />
       ))}
+    </Rail>
+  );
+}
+
+// Events down one line through their badges.
+export function Rail({ children }: { children: ReactNode }) {
+  return (
+    <View style={styles.timeline}>
+      <View style={styles.rail} />
+      {children}
     </View>
   );
 }
 
 // One line of the timeline: a badge on the rail, then what happened. `children` hang under it,
 // beside the rail.
-function Event({
+export function Event({
   icon,
   tone,
   children,
@@ -218,7 +227,7 @@ function Event({
   );
 }
 
-function Badge({ icon, tone }: { icon: LucideIcon; tone?: string }) {
+export function Badge({ icon, tone }: { icon: LucideIcon; tone?: string }) {
   return (
     <View style={[styles.badge, tone !== undefined && { borderColor: tone }]}>
       <Icon icon={icon} size={14} color={tone ?? t3.muted} />
@@ -226,9 +235,9 @@ function Badge({ icon, tone }: { icon: LucideIcon; tone?: string }) {
   );
 }
 
-const Strong = ({ children }: { children: ReactNode }) => <Text style={styles.strong}>{children}</Text>;
-const Mono = ({ children }: { children: ReactNode }) => <Text style={styles.mono}>{children}</Text>;
-const When = ({ at }: { at?: number }) =>
+export const Strong = ({ children }: { children: ReactNode }) => <Text style={styles.strong}>{children}</Text>;
+export const Mono = ({ children }: { children: ReactNode }) => <Text style={styles.mono}>{children}</Text>;
+export const When = ({ at }: { at?: number }) =>
   at === undefined ? null : <Text style={styles.when}> · {timeAgo(new Date(at))}</Text>;
 
 function Opened({ pr, below }: { pr: PullRequest; below?: PullRequest }) {
@@ -263,15 +272,9 @@ function AgentEvent({ agent, busy, onApprove, onDismiss, onInvestigate, onOpenAg
         (agent.reply !== '' || groups.length > 0) && (
           <>
             {agent.reply !== '' && (
-              <View style={styles.card}>
-                <View style={styles.cardHead}>
-                  <Text style={styles.strong}>{agent.title}</Text>
-                  <Text style={styles.when}>replied</Text>
-                </View>
-                <View style={styles.cardBody}>
-                  <Html html={agent.replyHtml} />
-                </View>
-              </View>
+              <Card title={agent.title} meta="replied">
+                <Html html={agent.replyHtml} />
+              </Card>
             )}
             {groups.map((group) => (
               <ProposalGroup
@@ -291,6 +294,19 @@ function AgentEvent({ agent, busy, onApprove, onDismiss, onInvestigate, onOpenAg
       {groups.length > 0 && ` with ${groups.length} ${groups.length === 1 ? 'proposal' : 'proposals'}`}
       <When at={agent.startedAt} />
     </Event>
+  );
+}
+
+// A reply or comment under an event: who and what on top, then its body.
+export function Card({ title, meta, children }: { title: ReactNode; meta?: ReactNode; children: ReactNode }) {
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHead}>
+        <Text style={styles.strong}>{title}</Text>
+        {meta !== undefined && <Text style={styles.when}>{meta}</Text>}
+      </View>
+      <View style={styles.cardBody}>{children}</View>
+    </View>
   );
 }
 
