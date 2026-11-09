@@ -7,7 +7,7 @@ export type Moment = { clusters: { [key in string]: Cluster }, order: Array<stri
 
 export type Cluster = { pullRequests: Array<PullRequest>, updatedAt?: number, name: string, mergeBy: MergeBy, agents: Array<Agent>, };
 
-export type PullRequest = { repository?: Repository, number: number, title: string, url: string, approved: boolean, checksPassing: boolean, checksFailing: boolean, proposals: Array<Proposal>, behind: boolean, checks?: Checks, headOid: string, mergeBy: MergeBy, files: Array<FileDiff>, base: string, conflicts: boolean, rebasing: boolean, rebased: boolean, merging: boolean, noProposalReason: string, createdAt?: number, };
+export type PullRequest = { repository?: Repository, number: number, title: string, url: string, approved: boolean, checksPassing: boolean, checksFailing: boolean, proposals: Array<Proposal>, behind: boolean, checks?: Checks, headOid: string, mergeBy: MergeBy, files: Array<FileDiff>, base: string, conflicts: boolean, rebasing: boolean, rebased: boolean, merging: boolean, noProposalReason: string, createdAt?: number, events: Array<Event>, };
 
 export type Checks = { total: number, done: number, failed: number, };
 
@@ -32,3 +32,7 @@ export type FailedCheck = { id: string, name: string, conclusion: string, url: s
 export type NewPullRequest = { repository: string, base: string, branch: string, title: string, body: string, bodyHtml: string, patch?: Patch, };
 
 export type FileDiff = { path: string, patch: string, };
+
+export type Event = { id: string, kind: EventKind, actor: string, at?: number, url: string, body: string, bodyHtml: string, subject: string, };
+
+export type EventKind = "committed" | "forcePushed" | "commented" | "reviewCommented" | "approved" | "changesRequested" | "reviewed" | "reviewDismissed" | "reviewRequested" | "readyForReview" | "convertedToDraft" | "retargeted" | "renamed" | "closed" | "reopened" | "merged";

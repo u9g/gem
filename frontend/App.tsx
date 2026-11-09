@@ -1,9 +1,10 @@
 import { create, fromJson, toJson } from '@bufbuild/protobuf';
 import { StatusBar } from 'expo-status-bar';
-import { ChevronLeft } from 'lucide-react';
+import { Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { Activity } from './Activity';
 import { ClusterTimeline } from './ClusterTimeline';
 import { AgentView } from './AgentView';
 import { timeAgo } from './ClusterView';
@@ -15,7 +16,7 @@ import { failureMessage, type Profile, useServer } from './server';
 import { shown } from './view';
 import type { Cluster } from './view-types';
 import { type Failure, FailureBanner, Login, RenderMarkdown } from './surfaces';
-import { usePhone } from './t3';
+import { t3, usePhone } from './t3';
 import {
   ApproveProposalRequestSchema,
   CloseAgentRequestSchema,
@@ -50,8 +51,9 @@ function Contexts({
 }
 
 // What is open lives in the page's query, so the browser's back and forward move between what was
-// opened and a link reopens it. An agent is shown in place of the cluster while both are set.
-type Place = { cluster?: string; agent?: string };
+// opened and a link reopens it. An agent is shown in place of the cluster while both are set, and
+// the activity screen, every PR's events, in place of the inbox.
+type Place = { cluster?: string; agent?: string; activity?: boolean };
 
 const GITHUB = 'https://github.com/';
 
@@ -65,6 +67,7 @@ function currentPlace(): Place {
     cluster: cluster?.includes('://') ? cluster : number && `${GITHUB}${owner}/${repo}/pull/${number}`,
     // Links from before every agent was one still open their investigation.
     agent: params.get('agent') ?? params.get('investigation') ?? undefined,
+    activity: params.has('activity') || undefined,
   };
 }
 
@@ -75,6 +78,7 @@ function placeSearch(place: Place): string {
   const params = [
     cluster && `cluster=${cluster}`,
     place.agent && `agent=${encodeURIComponent(place.agent)}`,
+    place.activity && 'activity',
   ].filter(Boolean);
   return params.length > 0 ? `?${params.join('&')}` : '';
 }
@@ -139,6 +143,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
   }, []);
 
   const closeDrawer = useCallback(() => go({}), [go]);
+  const toggleActivity = useCallback(() => go(place.activity ? {} : { activity: true }), [go, place.activity]);
   const openCluster = useCallback((key: string) => go({ cluster: key }), [go]);
   const openAgentAlone = useCallback((id: string) => go({ agent: id }), [go]);
 
@@ -283,8 +288,17 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
         matched={visible.length}
         error={search.error}
       />
+      <Pressable
+        accessibilityLabel={place.activity ? 'Back to inbox' : 'Show activity'}
+        onPress={toggleActivity}
+        style={[styles.nav, place.activity && styles.navOn]}
+      >
+        <ActivityIcon size={13} color={place.activity ? t3.foreground : t3.muted} />
+        <Text style={[styles.navText, place.activity && styles.navTextOn]}>Activity</Text>
+      </Pressable>
     </View>
   );
+  const activity = place.activity && <Activity clusters={visible} onOpenCluster={openCluster} />;
 
   if (!profile || editing) {
     const changing = editing === 'new' ? undefined : (editing ?? undefined);
@@ -315,14 +329,14 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       <Contexts login={login} render={render}>
         <View style={styles.phone}>
           {failed}
-          {agentView || opened ? (
+          {agentView || opened || activity ? (
             <>
               <Pressable accessibilityLabel="Back to clusters" style={styles.back} onPress={closeDrawer}>
                 <ChevronLeft size={22} color="#8FA8F5" />
-                <Text style={styles.backText}>Clusters</Text>
+                <Text style={styles.backText}>{activity ? 'Inbox' : 'Clusters'}</Text>
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
-                {agentView || (
+                {agentView || activity || (
                   <ClusterTimeline
                     cluster={opened!}
                     onOpenAgent={openAgent}
@@ -357,6 +371,19 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
         </View>
         <StatusBar style="auto" />
 </Contexts>
+    );
+  }
+
+  if (activity) {
+    return (
+      <View style={styles.container}>
+        {failed}
+        <Contexts login={login} render={render}>
+          <View style={styles.topBar}>{filters}</View>
+          <ScrollView contentContainerStyle={styles.activityContent}>{activity}</ScrollView>
+        </Contexts>
+        <StatusBar style="auto" />
+      </View>
     );
   }
 
@@ -437,5 +464,35 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 999,
     backgroundColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  nav: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 26,
+    paddingHorizontal: 9,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: t3.border,
+  },
+  navOn: {
+    borderColor: 'rgba(55, 103, 232, 0.6)',
+    backgroundColor: 'rgba(55, 103, 232, 0.16)',
+  },
+  navText: {
+    color: t3.muted,
+    fontSize: 12,
+  },
+  navTextOn: {
+    color: t3.foreground,
+    fontWeight: '600',
+  },
+  topBar: {
+    borderBottomWidth: 1,
+    borderBottomColor: t3.border,
+  },
+  activityContent: {
+    padding: 24,
+    paddingBottom: 48,
   },
 });
