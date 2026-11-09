@@ -23,6 +23,7 @@ const event = (kind: EventKind, actor: string, hours: number, fields: Partial<Ev
   bodyHtml: '',
   subject: '',
   comments: [],
+  answering: false,
   ...fields,
 });
 
@@ -49,7 +50,30 @@ const pullRequest = (
   };
 };
 
+const retryUrl = 'https://github.com/livekit/agents/pull/4821';
 const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a dropped stream', {
+  // The agent's answer to theomonnom's question on a line.
+  proposals: [
+    stored({
+      ...blank.proposal,
+      id: 'answer-backoff',
+      summary: 'Reply that the retry now backs off 250ms, and resolve',
+      summaryHtml: '<p dir="auto">Reply that the retry now backs off 250ms, and resolve</p>',
+      pullRequestUrl: retryUrl,
+      comment: {
+        ...blank.comment,
+        id: 'backoff',
+        author: 'theomonnom',
+        path: 'livekit-agents/livekit/agents/voice/tts_retry.py',
+        body: 'Should this back off before the retry? A dropped stream usually means the provider is overloaded.',
+        bodyHtml: '<p dir="auto">Should this back off before the retry? A dropped stream usually means the provider is overloaded.</p>',
+      },
+      threadId: 'thread-backoff',
+      reply: 'It does now: f00dcaf backs off 250ms before the retry.\n',
+      replyHtml: '<p dir="auto">It does now: f00dcaf backs off 250ms before the retry.</p>',
+      resolveThread: true,
+    }),
+  ],
   checksFailing: true,
   checks: { total: 14, done: 14, failed: 2 },
   createdAt: hoursAgo(52),
@@ -63,6 +87,7 @@ const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a drop
       ),
       comments: [
         event('reviewCommented', 'theomonnom', 30, {
+          id: 'backoff',
           subject: 'livekit-agents/livekit/agents/voice/tts_retry.py',
           ...said(
             'Should this back off before the retry? A dropped stream usually means the provider is overloaded.',
@@ -78,7 +103,9 @@ const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a drop
         '<p dir="auto">Added a 250ms backoff. <a href="https://github.com/theomonnom">@theomonnom</a> mind taking another look?</p>',
       ),
     }),
+    // An agent was sent it and still works on it.
     event('commented', 'github-actions', 5, {
+      answering: true,
       ...said(
         '2 checks failed on f00dcaf: `lint` and `test (3.12)`.',
         '<p dir="auto">2 checks failed on f00dcaf: <code class="notranslate">lint</code> and <code class="notranslate">test (3.12)</code>.</p>',
@@ -122,6 +149,7 @@ const websocket = pullRequest('python-sdks', 1204, 'fix(stt): close the websocke
         }),
         event('reviewCommented', 'theomonnom', 20, {
           subject: 'livekit/rtc/stt.py',
+          answering: true,
           ...said('And log the close reason.', '<p dir="auto">And log the close reason.</p>'),
         }),
       ],
@@ -152,7 +180,7 @@ const noop = () => {};
 
 function Frame({ clusters }: { clusters: Cluster[] }) {
   const phone = usePhone();
-  const view = <Activity clusters={clusters} onOpenCluster={noop} />;
+  const view = <Activity clusters={clusters} onOpenCluster={noop} onApprove={noop} onDismiss={noop} onInvestigate={noop} />;
   if (phone) {
     return (
       <View style={{ height: '100vh' as unknown as number, backgroundColor: t3.background }}>

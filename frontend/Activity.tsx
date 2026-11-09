@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
+  Bot,
   Check,
   CircleDashed,
   CircleX,
@@ -17,9 +18,10 @@ import {
   X,
 } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { timeAgo } from './ClusterView';
+import { type ClusterView, timeAgo } from './ClusterView';
+import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon } from './PullRequestList';
 import { Html } from './surfaces';
 import { Button, Icon, t3, usePhone } from './t3';
@@ -29,7 +31,8 @@ import type { Cluster, Event, EventKind, PullRequest } from './view-types';
 // it together: one timeline of what happened across all of them, newest day first, each line
 // naming who did what on which PR, with the comment or review under it; and beside it the PRs,
 // each with its checks, review and latest event, which filter the timeline to one. A phone puts
-// the PRs in a row of chips, wrapping, above the timeline.
+// the PRs in a row of chips, wrapping, above the timeline. Under a comment waiting on the user is
+// the agent's answer to it: its proposals, to approve or dismiss in place, or that it is answering.
 
 const ref = (pr: PullRequest) => `${pr.repository?.name ?? ''}#${pr.number}`;
 
@@ -73,6 +76,8 @@ const filterLabel: Record<Filter, string> = {
 
 type Entry = { event: Event; pr: PullRequest; cluster: Cluster };
 
+type Actions = Pick<Parameters<typeof ClusterView>[0], 'busy' | 'onApprove' | 'onDismiss' | 'onInvestigate'>;
+
 // The day an event is in, as GitHub's feed heads each day.
 function dayOf(at: number | undefined): string {
   if (at === undefined) return 'Undated';
@@ -97,11 +102,12 @@ function reviewState(pr: PullRequest): { icon: LucideIcon; color: string; text: 
 export function Activity({
   clusters,
   onOpenCluster,
+  ...actions
 }: {
   clusters: readonly Cluster[];
   // Opens the cluster by its key, the URL of its oldest PR.
   onOpenCluster: (key: string) => void;
-}) {
+} & Actions) {
   const phone = usePhone();
   const [filter, setFilter] = useState<Filter>('all');
   const [only, setOnly] = useState<string>();
@@ -204,7 +210,13 @@ export function Activity({
                 <View key={day} style={styles.day}>
                   <Divider label={day} />
                   {entries.map((entry) => (
-                    <EventLine key={`${entry.pr.url} ${entry.event.id}`} entry={entry} showPr={!only} onOpenCluster={onOpenCluster} />
+                    <EventLine
+                      key={`${entry.pr.url} ${entry.event.id}`}
+                      entry={entry}
+                      showPr={!only}
+                      onOpenCluster={onOpenCluster}
+                      {...actions}
+                    />
                   ))}
                 </View>
               ))}
@@ -218,8 +230,14 @@ export function Activity({
 }
 
 // One line of the timeline: a badge on the rail, who did what on which PR, when; and under it the
-// comment or review as GitHub renders it, a review with its comments on lines, or a commit's message.
-function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boolean; onOpenCluster: (key: string) => void }) {
+// comment or review as GitHub renders it, a review with its comments on lines, or a commit's message;
+// and under each comment, the agent's answer to it.
+function EventLine({
+  entry,
+  showPr,
+  onOpenCluster,
+  ...actions
+}: { entry: Entry; showPr: boolean; onOpenCluster: (key: string) => void } & Actions) {
   const { event, pr, cluster } = entry;
   const look = kinds[event.kind];
   const actor = event.actor || 'Someone';
@@ -277,6 +295,7 @@ function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boo
               {event.bodyHtml !== '' && (
                 <View style={styles.cardBody}>
                   <Html html={event.bodyHtml} />
+                  <Answer event={event} pr={pr} {...actions} />
                 </View>
               )}
               {comments.map((comment, i) => (
@@ -293,6 +312,7 @@ function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boo
                   </Pressable>
                   <View style={styles.cardBody}>
                     <Html html={comment.bodyHtml} />
+                    <Answer event={comment} pr={pr} {...actions} />
                   </View>
                 </View>
               ))}
@@ -300,6 +320,37 @@ function EventLine({ entry, showPr, onOpenCluster }: { entry: Entry; showPr: boo
           )}
         </View>
       )}
+    </View>
+  );
+}
+
+// The agent's answer to a comment waiting on the user: what it proposes, and whether it is still
+// answering. Nothing for anything else.
+function Answer({ event, pr, ...actions }: { event: Event; pr: PullRequest } & Actions) {
+  const groups = bySubject(pr.proposals.filter((p) => p.comment?.id === event.id));
+  if (!event.answering && groups.length === 0) return null;
+  const alternatives = groups.reduce((n, group) => n + group.length, 0);
+  return (
+    <View style={styles.answer}>
+      <View style={styles.answerHead}>
+        <Icon icon={Bot} size={12} color={link} />
+        <Text style={styles.answerText}>
+          {groups.length > 0 && `Agent proposed ${alternatives === 1 ? 'an answer' : `${alternatives} answers`}`}
+          {groups.length > 0 && event.answering && ' · '}
+          {event.answering && (groups.length > 0 ? 'still answering' : 'Agent is answering')}
+        </Text>
+        {event.answering && <ActivityIndicator size={12} color={link} />}
+      </View>
+      {groups.map((group) => (
+        <ProposalGroup
+          key={group[0].id}
+          proposals={group}
+          busy={actions.busy}
+          onApprove={actions.onApprove}
+          onDismiss={actions.onDismiss}
+          onInvestigate={actions.onInvestigate}
+        />
+      ))}
     </View>
   );
 }
@@ -615,6 +666,19 @@ const styles = StyleSheet.create({
   },
   cardBody: {
     padding: 12,
+  },
+  answer: {
+    gap: 8,
+    marginTop: 10,
+  },
+  answerHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  answerText: {
+    color: t3.muted,
+    fontSize: 12,
   },
   sidebar: {
     position: 'sticky',

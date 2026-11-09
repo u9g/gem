@@ -359,16 +359,32 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
         self.tell(key, message, Vec::new(), start).await;
     }
 
-    // Each PR's reason its failed checks have no proposal, while they still wait on the user.
+    // Each PR's reason its failed checks have no proposal, while they still wait on the user, and
+    // the comments on it that the agent answering its cluster's comments was sent and still runs on.
     pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
+        // Locked in answer_waiting's order.
         let prs = self.0.prs.read().await;
+        let keys = self.0.clusters.read().await;
+        let handled = self.0.handled.lock().await;
+        let answering = self.0.answering.lock().await;
         let no_proposal = self.0.no_proposal.lock().await;
         for pr in clusters.iter_mut().flat_map(|c| c.pull_requests.iter_mut()) {
-            pr.no_proposal_reason = (prs.get(&pr.url).into_iter())
-                .flat_map(|known| &known.waiting)
+            let waiting = (prs.get(&pr.url).into_iter()).flat_map(|known| &known.waiting);
+            pr.no_proposal_reason = (waiting.clone())
                 .find_map(|c| no_proposal.get(c.id()))
                 .cloned()
                 .unwrap_or_default();
+            let running = (keys.get(&pr.url)).is_some_and(|key| answering.contains_key(&key.url));
+            let asked: HashSet<&str> = (waiting.filter(|_| running))
+                .filter(|c| matches!(c, Conversation::Comment { .. }) && handled.contains(c.id()))
+                .map(Conversation::id)
+                .collect();
+            for event in pr.events.iter_mut() {
+                event.answering = asked.contains(event.id.as_str());
+                for comment in &mut event.comments {
+                    comment.answering = asked.contains(comment.id.as_str());
+                }
+            }
         }
     }
 
@@ -858,4 +874,101 @@ failed checks, and later agents find it in `gem.investigations()`.",
     );
     let title = format!("Fix checks on {}#{}", pr.full_name, pr.number);
     (title, prompt)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::{Event, PullRequest};
+
+    // The cluster's oldest pull request, and the one holding the comment.
+    const KEY: &str = "https://github.com/o/r/pull/1";
+    const PR: &str = "https://github.com/o/r/pull/2";
+
+    fn target(url: &str) -> Target {
+        Target {
+            url: url.into(),
+            full_name: "o/r".into(),
+            number: 0,
+            title: String::new(),
+        }
+    }
+
+    fn event(id: &str, comments: Vec<Event>) -> Event {
+        Event {
+            id: id.into(),
+            comments,
+            ..Default::default()
+        }
+    }
+
+    // Whether the top-level comment, the review comment, and a comment no longer waiting are
+    // answering, for every combination of: the cluster's agent runs, and the comments were sent to it.
+    #[tokio::test]
+    async fn a_comment_is_answering_while_the_agent_it_was_sent_to_runs() {
+        for (running, sent) in [(false, false), (false, true), (true, false), (true, true)] {
+            let waiting = ["top", "line"].map(|id| Conversation::Comment {
+                thread_id: None,
+                comment: Comment {
+                    id: id.into(),
+                    ..Default::default()
+                },
+            });
+            let known = Known {
+                updated_at: Timestamp::default(),
+                checks_failing: false,
+                settling: false,
+                waiting: waiting.into(),
+                target: target(PR),
+            };
+            let answering = Answering {
+                pr: KEY.into(),
+                title: String::new(),
+                thread_id: None,
+                queued_at: 0,
+            };
+            let conversations = Conversations(Arc::new(Inner {
+                prs: RwLock::new(HashMap::from([(PR.into(), known)])),
+                handled: Mutex::new(match sent {
+                    true => ["top", "line", "old"].map(String::from).into(),
+                    false => HashSet::new(),
+                }),
+                started: Mutex::default(),
+                agents: Semaphore::new(1),
+                answering: Mutex::new(match running {
+                    true => HashMap::from([(KEY.into(), answering)]),
+                    false => HashMap::new(),
+                }),
+                clusters: RwLock::new(HashMap::from([(PR.into(), target(KEY))])),
+                threads: Mutex::default(),
+                telling: Mutex::default(),
+                no_proposal: Mutex::default(),
+            }));
+            let mut clusters = [PullRequestCluster {
+                pull_requests: vec![PullRequest {
+                    url: PR.into(),
+                    events: vec![
+                        event("top", vec![]),
+                        event("review", vec![event("line", vec![]), event("old", vec![])]),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }];
+            conversations.fill(&mut clusters).await;
+            let events = &clusters[0].pull_requests[0].events;
+            let shown = [
+                events[0].answering,
+                events[1].answering,
+                events[1].comments[0].answering,
+                events[1].comments[1].answering,
+            ];
+            let answering = running && sent;
+            assert_eq!(
+                shown,
+                [answering, false, answering, false],
+                "running {running}, sent {sent}"
+            );
+        }
+    }
 }
