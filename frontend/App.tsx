@@ -298,7 +298,16 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
       </Pressable>
     </View>
   );
-  const activity = place.activity && <Activity clusters={visible} onOpenCluster={openCluster} />;
+  const activity = place.activity && (
+    <Activity
+      clusters={visible}
+      onOpenCluster={openCluster}
+      busy={busy}
+      onApprove={approve}
+      onDismiss={dismiss}
+      onInvestigate={investigate}
+    />
+  );
 
   if (!profile || editing) {
     const changing = editing === 'new' ? undefined : (editing ?? undefined);

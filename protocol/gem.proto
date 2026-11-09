@@ -139,6 +139,9 @@ message Event {
   string subject = 8;
   // A review's comments on lines, oldest first, each a REVIEW_COMMENTED event. Empty otherwise.
   repeated Event comments = 9;
+  // An agent is answering it: it is a comment waiting on the user, and the agent it was sent to is
+  // queued or working. What the agent proposes is in its pull request's `proposals`, by comment ID.
+  bool answering = 10;
 }
 
 enum EventKind {
