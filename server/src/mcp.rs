@@ -223,6 +223,16 @@ interface PullRequest {
   // What agents propose answering the conversations and failed checks waiting on the user.
   proposals: Proposal[];
   noProposalReason: string; // Why the agent answering its failed checks proposed nothing.
+  events: Event[]; // Its comments, reviews, review requests and state changes, oldest first.
+}
+interface Event {
+  id: string;
+  kind: "unspecified" | "comment" | "approved" | "changesRequested" | "reviewed" | "readyForReview" | "convertedToDraft" | "reviewRequested" | "reviewRequestRemoved" | "reviewDismissed" | "reopened" | "closed";
+  actor: string; // Login of who did it.
+  at: number | null;
+  body: string; // The comment or review's text; the reviewer asked for, on a review request.
+  url: string; // The comment or review on github.com; "" for a state change.
+  comments: number; // Inline comments a review left.
 }
 interface Agent {
   id: string;

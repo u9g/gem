@@ -115,6 +115,41 @@ message PullRequest {
   // Empty until it finishes, and when it proposed something.
   string no_proposal_reason = 22;
   google.protobuf.Timestamp created_at = 23;
+  // What happened on it that someone said or changed: its comments, reviews and review requests,
+  // and its draft, open and closed state changing, oldest first. The last 100 of them.
+  repeated Event events = 24;
+}
+
+// One thing that happened on a pull request, from its GitHub timeline.
+message Event {
+  string id = 1;
+  EventKind kind = 2;
+  // Who did it: the login of the comment's or review's author, or the event's actor.
+  string actor = 3;
+  google.protobuf.Timestamp at = 4;
+  // What was said: the comment's or review's body; a review that said nothing beside its inline
+  // comments carries the first of them. The reviewer asked for, on a review request.
+  string body = 5;
+  // The comment or review on github.com. Empty for a state change.
+  string url = 6;
+  // Inline comments a review left.
+  uint32 comments = 7;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_COMMENT = 1;
+  EVENT_KIND_APPROVED = 2;
+  EVENT_KIND_CHANGES_REQUESTED = 3;
+  // A review that neither approved nor requested changes.
+  EVENT_KIND_REVIEWED = 4;
+  EVENT_KIND_READY_FOR_REVIEW = 5;
+  EVENT_KIND_CONVERTED_TO_DRAFT = 6;
+  EVENT_KIND_REVIEW_REQUESTED = 7;
+  EVENT_KIND_REVIEW_REQUEST_REMOVED = 8;
+  EVENT_KIND_REVIEW_DISMISSED = 9;
+  EVENT_KIND_REOPENED = 10;
+  EVENT_KIND_CLOSED = 11;
 }
 
 // How a pull request can merge, decided by the server.
