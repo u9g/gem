@@ -4,9 +4,9 @@ import { ChevronLeft } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { ClusterReview } from './ClusterFiles';
-import { AgentView, Composer } from './AgentView';
-import { ClusterView, timeAgo } from './ClusterView';
+import { ClusterTimeline } from './ClusterTimeline';
+import { AgentView } from './AgentView';
+import { timeAgo } from './ClusterView';
 import { DbContext, emptyDb, useDb, usePending } from './db';
 import { Inbox } from './Inbox';
 import { ProfileChip, ProfileForm, ProfileTitle } from './Profiles';
@@ -323,7 +323,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
               </Pressable>
               <ScrollView contentContainerStyle={styles.phoneContent}>
                 {agentView || (
-                  <ClusterView
+                  <ClusterTimeline
                     cluster={opened!}
                     onOpenAgent={openAgent}
                     busy={busy}
@@ -335,14 +335,10 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
                     onMerge={merge}
                     onCloseCluster={closeCluster}
                     onInvestigate={investigate}
+                    onMessage={(message) => messageCluster(opened!, message)}
                   />
                 )}
               </ScrollView>
-              {!agentView && (
-                <View style={styles.dock}>
-                  <Composer placeholder="Ask an agent about this cluster…" onSend={(message) => messageCluster(opened!, message)} />
-                </View>
-              )}
             </>
           ) : (
             <>
@@ -380,7 +376,7 @@ function Main({ server }: { server: ReturnType<typeof useServer> }) {
         >
           {agentView ||
             (opened && (
-              <ClusterReview
+              <ClusterTimeline
                 cluster={opened}
                 onOpenAgent={openAgent}
                 busy={busy}
@@ -422,12 +418,6 @@ const styles = StyleSheet.create({
   phoneContent: {
     padding: 12,
     paddingBottom: 24,
-  },
-  dock: {
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.06)',
   },
   container: {
     flex: 1,
