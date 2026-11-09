@@ -23,6 +23,7 @@ import { bySubject, ProposalGroup } from './ProposalView';
 import { ChecksIcon, StatusLine } from './PullRequestList';
 import { Html } from './surfaces';
 import { Button, Icon, t3, usePhone } from './t3';
+import { Badge, Card, Dim, Event, Mono, ref, Strong, Timeline, When } from './Timeline';
 import type { Agent, Cluster, Proposal, PullRequest } from './view-types';
 
 type Props = Parameters<typeof ClusterView>[0] & {
@@ -30,8 +31,6 @@ type Props = Parameters<typeof ClusterView>[0] & {
   // once the agent started.
   onMessage?: (message: string) => Promise<unknown>;
 };
-
-const ref = (pr: PullRequest) => `${pr.repository?.name}#${pr.number}`;
 
 // The open cluster as a GitHub pull request's Conversation tab: its title, PRs and actions on top;
 // one timeline across its PRs, ending in what it waits on and a box to message an agent; and beside
@@ -107,7 +106,7 @@ export function ClusterTimeline(props: Props) {
       <View style={[styles.body, phone && styles.bodyPhone]}>
         {phone && sidebar}
         <View style={styles.main}>
-          <Timeline {...props} />
+          <ClusterEvents {...props} />
           <MergeBox cluster={cluster} />
           {onMessage && (
             <View style={styles.composerRow}>
@@ -158,7 +157,7 @@ function MergeButton({ cluster, busy, onMerge }: Props) {
 
 type Dated = { at: number; key: string; node: ReactNode };
 
-function Timeline(props: Props) {
+function ClusterEvents(props: Props) {
   const { cluster } = props;
   const prs = cluster.pullRequests;
   // A proposal an agent made follows that agent; the rest close the timeline on their PR.
@@ -179,64 +178,23 @@ function Timeline(props: Props) {
   dated.sort((a, b) => a.at - b.at || a.key.localeCompare(b.key));
 
   return (
-    <View style={styles.timeline}>
-      <View style={styles.rail} />
+    <Timeline>
       {undated}
       {dated.map((d) => d.node)}
       <Divider updatedAt={cluster.updatedAt} />
       {prs.map((pr) => (
         <PullRequestNow key={pr.url} pr={pr} hidden={fromAgents} {...props} />
       ))}
-    </View>
+    </Timeline>
   );
 }
-
-// One line of the timeline: a badge on the rail, then what happened. `children` hang under it,
-// beside the rail.
-function Event({
-  icon,
-  tone,
-  children,
-  trailing,
-  body,
-}: {
-  icon: LucideIcon;
-  tone?: string;
-  children: ReactNode;
-  trailing?: ReactNode;
-  body?: ReactNode;
-}) {
-  return (
-    <View style={styles.event}>
-      <View style={styles.eventLine}>
-        <Badge icon={icon} tone={tone} />
-        <Text style={styles.eventText}>{children}</Text>
-        {trailing}
-      </View>
-      {body && <View style={styles.eventBody}>{body}</View>}
-    </View>
-  );
-}
-
-function Badge({ icon, tone }: { icon: LucideIcon; tone?: string }) {
-  return (
-    <View style={[styles.badge, tone !== undefined && { borderColor: tone }]}>
-      <Icon icon={icon} size={14} color={tone ?? t3.muted} />
-    </View>
-  );
-}
-
-const Strong = ({ children }: { children: ReactNode }) => <Text style={styles.strong}>{children}</Text>;
-const Mono = ({ children }: { children: ReactNode }) => <Text style={styles.mono}>{children}</Text>;
-const When = ({ at }: { at?: number }) =>
-  at === undefined ? null : <Text style={styles.when}> · {timeAgo(new Date(at))}</Text>;
 
 function Opened({ pr, below }: { pr: PullRequest; below?: PullRequest }) {
   return (
     <Event icon={GitPullRequest} tone="#8FA8F5">
       <Strong>{ref(pr)}</Strong> opened <Text style={styles.prTitle}>{pr.title}</Text> into <Mono>{pr.base}</Mono>
       {below && pr.base !== 'main' && pr.base !== 'master' && (
-        <Text style={styles.when}> · stacked on {ref(below)}</Text>
+        <Dim> · stacked on {ref(below)}</Dim>
       )}
       <When at={pr.createdAt} />
     </Event>
@@ -263,15 +221,16 @@ function AgentEvent({ agent, busy, onApprove, onDismiss, onInvestigate, onOpenAg
         (agent.reply !== '' || groups.length > 0) && (
           <>
             {agent.reply !== '' && (
-              <View style={styles.card}>
-                <View style={styles.cardHead}>
-                  <Text style={styles.strong}>{agent.title}</Text>
-                  <Text style={styles.when}>replied</Text>
-                </View>
-                <View style={styles.cardBody}>
-                  <Html html={agent.replyHtml} />
-                </View>
-              </View>
+              <Card
+                head={
+                  <>
+                    <Strong>{agent.title}</Strong>
+                    <Dim>replied</Dim>
+                  </>
+                }
+              >
+                <Html html={agent.replyHtml} />
+              </Card>
             )}
             {groups.map((group) => (
               <ProposalGroup
@@ -369,7 +328,7 @@ function PullRequestNow({
             ? `${threads} ${threads === 1 ? 'conversation' : 'conversations'} with a proposed answer`
             : `${groups.length} ${groups.length === 1 ? 'proposal' : 'proposals'}`}
           {threads > 0 && groups.length > threads && ` · ${groups.length - threads} more ${groups.length - threads === 1 ? 'proposal' : 'proposals'}`}
-          <Text style={styles.when}> · waiting on you</Text>
+          <Dim> · waiting on you</Dim>
         </Event>
       )}
       {pr.approved && (
@@ -384,7 +343,7 @@ function PullRequestNow({
       ) : pr.behind || pr.rebasing ? (
         <Event icon={GitBranch} tone={t3.warning} trailing={rebaseButton}>
           <Strong>{ref(pr)}</Strong> {pr.rebasing ? 'is being rebased onto' : 'is behind'} <Mono>{pr.base}</Mono>
-          {!pr.rebasing && <Text style={styles.when}> · {pr.base} requires it up to date</Text>}
+          {!pr.rebasing && <Dim> · {pr.base} requires it up to date</Dim>}
         </Event>
       ) : null}
       {pr.merging && (
@@ -430,13 +389,13 @@ function MergeBox({ cluster }: { cluster: Cluster }) {
     <View style={styles.mergeRow}>
       <Badge icon={GitMerge} tone={by === 'unspecified' ? undefined : tone} />
       <View style={[styles.mergeBox, { borderColor: by === 'unspecified' ? t3.border : tone }]}>
-        <Text style={styles.strong}>
+        <Strong>
           {by === 'approval'
             ? 'Ready to merge'
             : by === 'admin'
               ? 'Ready to force-merge'
               : 'Not ready to merge'}
-        </Text>
+        </Strong>
         {rows.map(([icon, color, text]) => (
           <View key={text} style={styles.mergeLine}>
             <Icon icon={icon} size={14} color={color} />
@@ -526,7 +485,6 @@ function Fact({ icon, color, text }: { icon: LucideIcon; color: string; text: st
   );
 }
 
-const BADGE = 28;
 const SIDEBAR = 300;
 
 const styles = StyleSheet.create({
@@ -718,88 +676,13 @@ const styles = StyleSheet.create({
   stackAction: {
     flexDirection: 'row',
   },
-  timeline: {
-    gap: 14,
-  },
-  // Runs through the badges' centers, under them.
-  rail: {
-    position: 'absolute',
-    top: 8,
-    bottom: 8,
-    left: BADGE / 2 - 1,
-    width: 2,
-    backgroundColor: t3.border,
-  },
-  event: {
-    gap: 10,
-  },
-  eventLine: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    minHeight: BADGE,
-  },
-  eventText: {
-    flex: 1,
-    color: t3.muted,
-    fontSize: 13,
-    lineHeight: 19,
-  },
-  eventBody: {
-    marginLeft: BADGE + 10,
-    gap: 10,
-  },
   trailing: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  badge: {
-    width: BADGE,
-    height: BADGE,
-    borderRadius: BADGE / 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: t3.border,
-    backgroundColor: '#222C37',
-  },
-  strong: {
-    color: t3.foreground,
-    fontWeight: '600',
-  },
-  mono: {
-    color: t3.foreground,
-    fontFamily: t3.mono,
-    fontSize: 12,
-    paddingHorizontal: 4,
-    borderRadius: 4,
-    backgroundColor: t3.input,
-  },
   prTitle: {
     color: t3.foreground,
-  },
-  when: {
-    color: t3.faint,
-  },
-  card: {
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: t3.border,
-    overflow: 'hidden',
-  },
-  cardHead: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: t3.border,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-  },
-  cardBody: {
-    padding: 12,
   },
   divider: {
     flexDirection: 'row',
