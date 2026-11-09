@@ -38,6 +38,7 @@ use proto::{
     RestartClusterResponse, SearchPullRequestsRequest, SearchPullRequestsResponse,
 };
 
+mod activity;
 mod agents;
 mod conversations;
 mod files;
@@ -811,6 +812,7 @@ async fn open_pull_requests(
         .inspect_err(|error| tracing::warn!(%error, "cannot read open pull requests"))
         .ok()?;
     merge_states(&mut prs).await;
+    activity::refresh(&prs).await;
     changes.watch(watched(&prs)).await;
     search::index(&prs).await;
     let clusters = cluster(&prs);
@@ -940,6 +942,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         merging: false,
                         no_proposal_reason: String::new(),
                         created_at: Some(pr.created_at.clone()),
+                        events: activity::events(&pr.url),
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
