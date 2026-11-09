@@ -22,6 +22,7 @@ const event = (kind: EventKind, actor: string, hours: number, fields: Partial<Ev
   body: '',
   bodyHtml: '',
   subject: '',
+  comments: [],
   ...fields,
 });
 
@@ -55,18 +56,20 @@ const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a drop
   events: [
     event('committed', 'u9g', 52, { id: 'a1b2c3d4e5f6', body: 'feat(voice): retry TTS once on a dropped stream', url: 'https://github.com/livekit/agents/commit/a1b2c3d' }),
     event('reviewRequested', 'u9g', 51, { subject: 'theomonnom', url: '' }),
-    event('reviewCommented', 'theomonnom', 30, {
-      subject: 'livekit-agents/livekit/agents/voice/tts_retry.py',
-      ...said(
-        'Should this back off before the retry? A dropped stream usually means the provider is overloaded.',
-        '<p dir="auto">Should this back off before the retry? A dropped stream usually means the provider is overloaded.</p>',
-      ),
-    }),
     event('changesRequested', 'theomonnom', 30, {
       ...said(
         'One question inline, otherwise looks right.',
         '<p dir="auto">One question inline, otherwise looks right.</p>',
       ),
+      comments: [
+        event('reviewCommented', 'theomonnom', 30, {
+          subject: 'livekit-agents/livekit/agents/voice/tts_retry.py',
+          ...said(
+            'Should this back off before the retry? A dropped stream usually means the provider is overloaded.',
+            '<p dir="auto">Should this back off before the retry? A dropped stream usually means the provider is overloaded.</p>',
+          ),
+        }),
+      ],
     }),
     event('committed', 'u9g', 6, { id: 'f00dcafe1234', body: 'Back off 250ms before the retry', url: 'https://github.com/livekit/agents/commit/f00dcaf' }),
     event('commented', 'u9g', 6, {
@@ -109,6 +112,19 @@ const websocket = pullRequest('python-sdks', 1204, 'fix(stt): close the websocke
         'Does this also cover the reconnect path? Left no blocking comments.',
         '<p dir="auto">Does this also cover the reconnect path? Left no blocking comments.</p>',
       ),
+    }),
+    // A review that said nothing of its own, only comments on lines, as most reviews are.
+    event('reviewed', 'theomonnom', 20, {
+      comments: [
+        event('reviewCommented', 'theomonnom', 20, {
+          subject: 'livekit/rtc/stt.py',
+          ...said('Nit: `aclose()` here too.', '<p dir="auto">Nit: <code class="notranslate">aclose()</code> here too.</p>'),
+        }),
+        event('reviewCommented', 'theomonnom', 20, {
+          subject: 'livekit/rtc/stt.py',
+          ...said('And log the close reason.', '<p dir="auto">And log the close reason.</p>'),
+        }),
+      ],
     }),
     event('forcePushed', 'u9g', 26, { url: 'https://github.com/livekit/python-sdks/commit/deadbee' }),
   ],

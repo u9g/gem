@@ -116,6 +116,9 @@ pub struct Event {
     pub body: String,
     pub body_html: String,
     pub subject: String,
+    // A review's comments on lines. Missing from views written before they were kept.
+    #[serde(default)]
+    pub comments: Vec<Event>,
 }
 
 #[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
@@ -360,6 +363,7 @@ impl From<&proto::Event> for Event {
             body: event.body.clone(),
             body_html: event.body_html.clone(),
             subject: event.subject.clone(),
+            comments: event.comments.iter().map(Event::from).collect(),
         }
     }
 }

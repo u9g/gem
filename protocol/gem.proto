@@ -137,6 +137,8 @@ message Event {
   // What it was about: a review comment's file, the reviewer whose review was requested, the branch
   // a retarget moved to, or the title a rename gave. Empty otherwise.
   string subject = 8;
+  // A review's comments on lines, oldest first, each a REVIEW_COMMENTED event. Empty otherwise.
+  repeated Event comments = 9;
 }
 
 enum EventKind {
@@ -145,7 +147,7 @@ enum EventKind {
   EVENT_KIND_FORCE_PUSHED = 1;
   // A top-level comment.
   EVENT_KIND_COMMENTED = 2;
-  // A review's own comment on a line, inside a review.
+  // A review's own comment on a line, only in its review's `comments`.
   EVENT_KIND_REVIEW_COMMENTED = 3;
   // A review that approved.
   EVENT_KIND_APPROVED = 4;
