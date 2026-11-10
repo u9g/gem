@@ -115,8 +115,8 @@ message PullRequest {
   // Empty until it finishes, and when it proposed something.
   string no_proposal_reason = 22;
   google.protobuf.Timestamp created_at = 23;
-  // What happened on it, oldest first: its commits, reviews, comments and changes of state, as
-  // GitHub's timeline lists them, up to its last 50 items.
+  // What happened on it, oldest first: its reviews, comments and changes of state, as GitHub's
+  // timeline lists them, up to its last 50 items.
   repeated Event events = 24;
 }
 
