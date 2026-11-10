@@ -16,7 +16,7 @@ import { type ClusterView, timeAgo } from './ClusterView';
 import { bySubject, ProposalGroup, Stage } from './ProposalView';
 import { Html } from './surfaces';
 import { Button, Icon, t3, usePhone } from './t3';
-import type { Cluster, Event, EventKind, PullRequest } from './view-types';
+import type { Cluster, Event, EventKind, Proposal, PullRequest } from './view-types';
 
 // What waits on the user across every open PR, as a to-do list in the shape of GitHub's feed: one
 // timeline, newest day first, each line naming who said what on which PR, with the comment or
@@ -87,8 +87,10 @@ function dayOf(at: number | undefined): string {
 }
 
 // Whether an agent's answer to what `event` says waits on the user, or is still being written.
-const waits = (event: Event, pr: PullRequest) =>
-  event.answering || pr.proposals.some((proposal) => proposal.comment?.id === event.id);
+const waits = (event: Event, pr: PullRequest) => event.answering || answers(event, pr).length > 0;
+
+// What agents propose answering `event` with.
+const answers = (event: Event, pr: PullRequest) => pr.proposals.filter((proposal) => proposal.comment?.id === event.id);
 
 export function Activity({
   clusters,
@@ -328,7 +330,7 @@ function EventLine({
             {event.bodyHtml !== '' && (
               <View style={styles.cardBody}>
                 <Html html={event.bodyHtml} />
-                <Answer event={event} pr={pr} {...actions} />
+                <Answer proposals={answers(event, pr)} answering={event.answering} {...actions} />
               </View>
             )}
             {comments.map((comment, i) => (
@@ -345,7 +347,7 @@ function EventLine({
                 </Pressable>
                 <View style={styles.cardBody}>
                   <Html html={comment.bodyHtml} />
-                  <Answer event={comment} pr={pr} {...actions} />
+                  <Answer proposals={answers(comment, pr)} answering={comment.answering} {...actions} />
                 </View>
               </View>
             ))}
@@ -358,9 +360,9 @@ function EventLine({
 
 // The agent's answer to a comment waiting on the user: what it proposes, and whether it is still
 // answering. Nothing for anything else.
-function Answer({ event, pr, ...actions }: { event: Event; pr: PullRequest } & Actions) {
-  const groups = bySubject(pr.proposals.filter((p) => p.comment?.id === event.id));
-  if (!event.answering && groups.length === 0) return null;
+function Answer({ proposals, answering, ...actions }: { proposals: readonly Proposal[]; answering: boolean } & Actions) {
+  const groups = bySubject(proposals);
+  if (!answering && groups.length === 0) return null;
   const alternatives = groups.reduce((n, group) => n + group.length, 0);
   return (
     <View style={styles.answer}>
@@ -368,10 +370,10 @@ function Answer({ event, pr, ...actions }: { event: Event; pr: PullRequest } & A
         <Icon icon={Bot} size={12} color={link} />
         <Text style={styles.answerText}>
           {groups.length > 0 && `Agent proposed ${alternatives === 1 ? 'an answer' : `${alternatives} answers`}`}
-          {groups.length > 0 && event.answering && ' · '}
-          {event.answering && (groups.length > 0 ? 'still answering' : 'Agent is answering')}
+          {groups.length > 0 && answering && ' · '}
+          {answering && (groups.length > 0 ? 'still answering' : 'Agent is answering')}
         </Text>
-        {event.answering && <ActivityIndicator size={12} color={link} />}
+        {answering && <ActivityIndicator size={12} color={link} />}
       </View>
       {groups.map((group) => (
         <ProposalGroup
