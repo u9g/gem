@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  CircleX,
   Eye,
   EyeOff,
   MessageSquare,
@@ -23,6 +24,8 @@ import type { Cluster, Event, EventKind, Proposal, PullRequest } from './view-ty
 // review under it and under that the agent's answer to it: its proposals, to approve or dismiss in
 // place, or that it is answering. A comment is listed from when an agent starts answering it until
 // none of its proposals is left, so approving or dismissing the last one takes it off the list.
+// A PR's failed checks are a line too, at when the last of them finished, while a proposal answers
+// them.
 //
 // Off a phone, the change a proposal makes is a stage: under the proposal's band it runs from the
 // window's left edge to its right one, across the column the page is otherwise in, and the column
@@ -47,16 +50,21 @@ const kinds: Partial<Record<EventKind, Look>> = {
   reviewed: { icon: Eye, tone: link, verb: 'reviewed', filter: 'reviews' },
 };
 
+// A PR's failed checks, which GitHub's timeline has no event for.
+const failedChecks: Look = { icon: CircleX, tone: changes, verb: 'failed on', filter: 'checks' };
+
 // GitHub's filter on a PR's timeline: by what kind of thing happened.
-const filters = ['all', 'comments', 'reviews'] as const;
+const filters = ['all', 'comments', 'reviews', 'checks'] as const;
 type Filter = (typeof filters)[number];
 const filterLabel: Record<Filter, string> = {
   all: 'All',
   comments: 'Comments',
   reviews: 'Reviews',
+  checks: 'Checks',
 };
 
-type Entry = { event: Event; look: Look; pr: PullRequest; cluster: Cluster };
+// A line of the timeline, at the time it sorts by: an event, or with none the PR's failed checks.
+type Entry = { event?: Event; at?: number; look: Look; pr: PullRequest; cluster: Cluster };
 
 type Actions = Pick<Parameters<typeof ClusterView>[0], 'busy' | 'onApprove' | 'onDismiss' | 'onInvestigate'>;
 
@@ -92,6 +100,9 @@ const waits = (event: Event, pr: PullRequest) => event.answering || answers(even
 // What agents propose answering `event` with.
 const answers = (event: Event, pr: PullRequest) => pr.proposals.filter((proposal) => proposal.comment?.id === event.id);
 
+// What agents propose answering the PR's failed checks with.
+const checkAnswers = (pr: PullRequest) => pr.proposals.filter((proposal) => proposal.checkFailure !== undefined);
+
 export function Activity({
   clusters,
   onOpenCluster,
@@ -106,28 +117,29 @@ export function Activity({
 
   const prs = clusters.flatMap((cluster) => cluster.pullRequests.map((pr) => ({ pr, cluster })));
   const entries: Entry[] = prs
-    .flatMap(({ pr, cluster }) =>
-      (pr.events ?? []).flatMap((event) => {
+    .flatMap(({ pr, cluster }) => [
+      ...(pr.events ?? []).flatMap((event) => {
         const look = kinds[event.kind];
         // Of a review's comments on lines, the ones that wait, under the review's own message.
         const comments = event.comments.filter((comment) => waits(comment, pr));
-        return look && (waits(event, pr) || comments.length > 0) ? [{ event: { ...event, comments }, look, pr, cluster }] : [];
+        return look && (waits(event, pr) || comments.length > 0) ? [{ event: { ...event, comments }, at: event.at, look, pr, cluster }] : [];
       }),
-    )
-    .sort((a, b) => (b.event.at ?? 0) - (a.event.at ?? 0));
+      ...(checkAnswers(pr).length > 0 ? [{ at: pr.checksFailedAt, look: failedChecks, pr, cluster }] : []),
+    ])
+    .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
   const listed = entries.filter(({ look }) => filter === 'all' || look.filter === filter);
   const counts = Object.fromEntries(
     filters.map((f) => [f, entries.filter(({ look }) => f === 'all' || look.filter === f).length]),
   ) as Record<Filter, number>;
   const days: { day: string; entries: Entry[] }[] = [];
   for (const entry of listed) {
-    const day = dayOf(entry.event.at);
+    const day = dayOf(entry.at);
     const last = days[days.length - 1];
     if (last?.day === day) last.entries.push(entry);
     else days.push({ day, entries: [entry] });
   }
   const hueOf = (cluster: Cluster) => hues[clusters.indexOf(cluster) % hues.length];
-  const latest = entries[0]?.event.at;
+  const latest = entries[0]?.at;
 
   // The stages down the page, in order. Each is as wide as the view that scrolls the page; how far
   // that reaches to either side of a proposal only the browser's layout knows, so it is read from
@@ -181,7 +193,7 @@ export function Activity({
       <>
         <View {...({ dataSet: { gather: '' } } as object)} style={styles.barContext}>
           <Text numberOfLines={1} style={styles.barText}>
-            <Text style={styles.strong}>{pr.proposals.find((proposal) => proposal.id === id)?.comment?.author}</Text> on{' '}
+            <Text style={styles.strong}>{pr.proposals.find((proposal) => proposal.id === id)?.comment?.author ?? 'Checks'}</Text> on{' '}
             <Text style={styles.ref}>{ref(pr)}</Text>
             {pullRequestUrl !== pr.url && ` · changes ${pullRequestUrl.split('/').slice(-3).filter((part) => part !== 'pull').join('#')}`}
           </Text>
@@ -237,7 +249,7 @@ export function Activity({
                 <Divider label={day} />
                 {entries.map((entry, i) => (
                   <EventLine
-                    key={`${entry.pr.url} ${entry.event.id}`}
+                    key={`${entry.pr.url} ${entry.event?.id ?? 'checks'}`}
                     entry={entry}
                     // Which line is above is asked of what is listed, so a filter that takes away
                     // the events between two stretches of a cluster joins them.
@@ -269,7 +281,7 @@ function Step({ icon, label, disabled, onPress }: { icon: LucideIcon; label: str
 
 // One line of the timeline: a badge on the rail, who did what on which PR, when; and under it the
 // comment or review as GitHub renders it, a review with its comments on lines; and under each
-// comment, the agent's answer to it.
+// comment, the agent's answer to it. Under failed checks, only the agent's answer, which lists them.
 function EventLine({
   entry,
   place,
@@ -284,11 +296,13 @@ function EventLine({
   hue: string;
   onOpenCluster: (key: string) => void;
 } & Actions) {
-  const { event, look, pr, cluster } = entry;
-  const actor = event.actor || 'Someone';
-  const comments = event.comments;
-  const said = event.bodyHtml !== '' || comments.length > 0;
-  const open = () => (event.url ? Linking.openURL(event.url) : onOpenCluster(cluster.pullRequests[0].url));
+  const { event, at, look, pr, cluster } = entry;
+  const actor = event ? event.actor || 'Someone' : 'Checks';
+  const comments = event?.comments ?? [];
+  const bodyHtml = event?.bodyHtml ?? '';
+  const said = !event || bodyHtml !== '' || comments.length > 0;
+  const url = event ? event.url : `${pr.url}/checks`;
+  const open = () => (url ? Linking.openURL(url) : onOpenCluster(cluster.pullRequests[0].url));
   const follows = place === 'follows';
   const phone = usePhone();
   return (
@@ -304,7 +318,7 @@ function EventLine({
           <Text style={styles.ref} onPress={() => onOpenCluster(cluster.pullRequests[0].url)}>
             {ref(pr)}
           </Text>
-          {event.at !== undefined && <Text style={styles.when}> · {timeAgo(new Date(event.at))}</Text>}{' '}
+          {at !== undefined && <Text style={styles.when}> · {timeAgo(new Date(at))}</Text>}{' '}
           {follows ? (
             <Text accessibilityLabel={nameOf(cluster)} style={[styles.sameCluster, { color: hue }]}>
               ●
@@ -316,7 +330,7 @@ function EventLine({
             </Text>
           )}
         </Text>
-        {event.url !== '' && <Button label="View" variant="ghost" onPress={open} />}
+        {url !== '' && <Button label="View" variant="ghost" onPress={open} />}
       </View>
       {said && (
         <View style={styles.eventBody}>
@@ -327,14 +341,19 @@ function EventLine({
                 {pr.title}
               </Text>
             </View>
-            {event.bodyHtml !== '' && (
+            {event && bodyHtml !== '' && (
               <View style={styles.cardBody}>
-                <Html html={event.bodyHtml} />
+                <Html html={bodyHtml} />
                 <Answer proposals={answers(event, pr)} answering={event.answering} {...actions} />
               </View>
             )}
+            {!event && (
+              <View style={styles.cardBody}>
+                <Answer proposals={checkAnswers(pr)} answering={false} {...actions} />
+              </View>
+            )}
             {comments.map((comment, i) => (
-              <View key={comment.id} style={(i > 0 || event.bodyHtml !== '') && styles.lineComment}>
+              <View key={comment.id} style={(i > 0 || bodyHtml !== '') && styles.lineComment}>
                 <Pressable
                   disabled={comment.url === ''}
                   onPress={() => Linking.openURL(comment.url)}
@@ -358,8 +377,8 @@ function EventLine({
   );
 }
 
-// The agent's answer to a comment waiting on the user: what it proposes, and whether it is still
-// answering. Nothing for anything else.
+// The agent's answer to a comment or failed checks waiting on the user: what it proposes, and
+// whether it is still answering. Nothing for anything else.
 function Answer({ proposals, answering, ...actions }: { proposals: readonly Proposal[]; answering: boolean } & Actions) {
   const groups = bySubject(proposals);
   if (!answering && groups.length === 0) return null;
