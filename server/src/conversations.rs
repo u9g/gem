@@ -710,7 +710,8 @@ impl Target {
 // said to read the pull request, and introduced `execute`, or more often. Without "once per
 // reasonable alternative", agents made one proposal and answered far less often. It lists the
 // steps since a reviewer's "ping me when we have the cloud-config PR" got only a reply, with no
-// `follow_up` making that pull request.
+// `follow_up` making that pull request. It says to propose nothing for a comment that needs
+// nothing since a bot's review that found no issues got a reply thanking it.
 fn answer(key: &Target) -> String {
     format!(
         "You answer the comments waiting on {login} on the cluster of their pull requests holding \
@@ -720,8 +721,9 @@ message can be out of date by the time you read it: check what is proposed now, 
 an earlier message already made.
 
 Record how {login} should answer each comment with `gem.propose`, with `pr` the pull request it is \
-on, and `comment` and `thread` as given. Propose once per reasonable alternative. To change a \
-proposal, propose its new version with `replaces` set to its ID. A proposal is about one of the \
+on, and `comment` and `thread` as given. Propose once per reasonable alternative. If a comment \
+needs nothing from {login}, such as a bot's review that found no issues, propose nothing for it. \
+To change a proposal, propose its new version with `replaces` set to its ID. A proposal is about one of the \
 cluster's pull requests, and can:
 {steps}
 
@@ -729,7 +731,7 @@ Never push, comment, review or resolve anything on GitHub yourself: {login} appr
 
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread, and again after answering each message gem sends. Then reply with one line \
-saying what you proposed.",
+saying what you proposed, or why you proposed nothing.",
         login = login(),
         url = key.url,
         title = key.title,
