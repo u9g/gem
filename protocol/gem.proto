@@ -118,6 +118,8 @@ message PullRequest {
   // What happened on it, oldest first: its reviews, comments and changes of state, as GitHub's
   // timeline lists them, up to its last 50 items.
   repeated Event events = 24;
+  // When the last of the head commit's failed checks finished, while they wait on the user.
+  google.protobuf.Timestamp checks_failed_at = 25;
 }
 
 // Something that happened on a pull request, from GitHub's timeline.

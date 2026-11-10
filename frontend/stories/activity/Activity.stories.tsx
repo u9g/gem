@@ -5,7 +5,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Activity } from '../../Activity';
 import { t3, usePhone } from '../../t3';
 import type { Cluster, Event, EventKind, PullRequest } from '../../view-types';
-import { blank, clusterMergeBy, longDiff, mergeBy, stored, twoFileDiff } from '../fixtures';
+import { blank, checkProposalInputs, clusterMergeBy, longDiff, mergeBy, stored, twoFileDiff } from '../fixtures';
 
 // Every open PR's activity, as the app shows it: under the toolbar on a laptop, under a back bar on
 // a phone.
@@ -74,9 +74,12 @@ const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a drop
       replyHtml: '<p dir="auto">It does now: f00dcaf backs off 250ms before the retry.</p>',
       resolveThread: true,
     }),
+    // Its answers to the two checks that failed on the head commit.
+    ...checkProposalInputs.map((proposal) => stored({ ...proposal, pullRequestUrl: retryUrl })),
   ],
   checksFailing: true,
   checks: { total: 14, done: 14, failed: 2 },
+  checksFailedAt: hoursAgo(5.2),
   createdAt: hoursAgo(52),
   events: [
     event('changesRequested', 'theomonnom', 30, {
