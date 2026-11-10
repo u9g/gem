@@ -711,7 +711,8 @@ impl Target {
 // reasonable alternative", agents made one proposal and answered far less often. It lists the
 // steps since a reviewer's "ping me when we have the cloud-config PR" got only a reply, with no
 // `follow_up` making that pull request. It says to propose nothing for a comment that needs
-// nothing since a bot's review that found no issues got a reply thanking it.
+// nothing since a bot's review that found no issues got a reply thanking it. It says how to treat
+// what others wrote, as every agent's prompt does.
 fn answer(key: &Target) -> String {
     format!(
         "You answer the comments waiting on {login} on the cluster of their pull requests holding \
@@ -729,6 +730,8 @@ cluster's pull requests, and can:
 
 Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
 
+{untrusted}
+
 When you are done, call the t3_thread_organize tool with action \"settle\" and no threadId, to \
 settle this thread, and again after answering each message gem sends. Then reply with one line \
 saying what you proposed, or why you proposed nothing.",
@@ -736,6 +739,7 @@ saying what you proposed, or why you proposed nothing.",
         url = key.url,
         title = key.title,
         steps = mcp::steps(),
+        untrusted = mcp::untrusted(),
     )
 }
 
@@ -856,6 +860,8 @@ dependency that has not been released, propose nothing for that check.
 
 {EXECUTE}
 
+{UNTRUSTED}
+
 Record each proposal with `gem.propose`, with `pr` {url}, a `summary` of one line saying what \
 approving does, linking the pull request of each earlier investigation into the same failure, its \
 `excerpts`, and its steps. Propose once per answer, and once per alternative when more than one \
@@ -880,6 +886,7 @@ failed checks, and later agents find it in `gem.investigations()`.",
         full_name = pr.full_name,
         number = pr.number,
         EXECUTE = mcp::EXECUTE,
+        UNTRUSTED = mcp::untrusted(),
     );
     let title = format!("Fix checks on {}#{}", pr.full_name, pr.number);
     (title, prompt)

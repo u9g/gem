@@ -24,6 +24,7 @@ const event = (kind: EventKind, actor: string, hours: number, fields: Partial<Ev
   subject: '',
   comments: [],
   answering: false,
+  trusted: true,
   ...fields,
 });
 

@@ -33,6 +33,6 @@ export type NewPullRequest = { repository: string, base: string, branch: string,
 
 export type FileDiff = { path: string, patch: string, };
 
-export type Event = { id: string, kind: EventKind, actor: string, at?: number, url: string, body: string, bodyHtml: string, subject: string, comments: Array<Event>, answering: boolean, };
+export type Event = { id: string, kind: EventKind, actor: string, at?: number, url: string, body: string, bodyHtml: string, subject: string, comments: Array<Event>, answering: boolean, trusted: boolean, };
 
 export type EventKind = "commented" | "reviewCommented" | "approved" | "changesRequested" | "reviewed" | "reviewDismissed" | "readyForReview" | "convertedToDraft" | "retargeted" | "renamed" | "closed" | "reopened" | "merged";

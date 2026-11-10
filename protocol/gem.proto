@@ -142,6 +142,9 @@ message Event {
   // An agent is answering it: it is a comment waiting on the user, and the agent it was sent to is
   // queued or working. What the agent proposes is in its pull request's `proposals`, by comment ID.
   bool answering = 10;
+  // Its author is a bot, a member or an owner, whose comments gem starts agents on. Anyone else
+  // who comments is a third party: agents read their words as data, never as instructions.
+  bool trusted = 11;
 }
 
 enum EventKind {

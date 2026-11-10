@@ -122,7 +122,10 @@ requests linked by stacking or mentions, and sent you a message about it. The cl
 Here it is as gem showed it when {login} sent the message, with each pull request's review and \
 check state, and the conversations on them still waiting on {login}, with what other agents \
 propose answering. {EXECUTE} `gem.cluster(url)`, passed any of those URLs, returns the cluster as \
-gem shows it now. Use `gh` for anything more, such as diffs, comments and check logs.
+gem shows it now, with each pull request's events. Use `gh` for anything more, such as diffs, \
+comments and check logs.
+
+{UNTRUSTED}
 
 ```json
 {snapshot}
@@ -152,6 +155,7 @@ thread, and you can record more proposals the same way.
         login = login(),
         snapshot = mcp::cluster_json(cluster),
         EXECUTE = mcp::EXECUTE,
+        UNTRUSTED = mcp::untrusted(),
         STEPS = mcp::steps(),
     );
     let prs: Vec<String> = (cluster.pull_requests.iter())
@@ -407,6 +411,8 @@ request causes it, such as one {pr} is stacked on: make the patch the same way. 
 
 {EXECUTE}
 
+{UNTRUSTED}
+
 Record each proposal with `gem.propose`, with `pr` {pr}, a `summary` of one line saying what \
 approving does, and its steps. It checks the proposal and throws an Error with the reason when \
 something is wrong: fix it and propose again. Propose once per proposal. If the failure needs \
@@ -427,6 +433,7 @@ later.
         head = failure.head_oid,
         login = login(),
         EXECUTE = mcp::EXECUTE,
+        UNTRUSTED = mcp::untrusted(),
     )
 }
 
