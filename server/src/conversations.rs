@@ -577,7 +577,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                 let subject = Subject::Cluster {
                     pr: key.url.clone(),
                 };
-                let prompt = format!("{}\n\n{message}", answer(&key));
+                let prompt = format!("{}\n\n{message}", answer());
                 sent = match mcp::agent_config(&subject).await {
                     Ok(config) => t3::start(&title, &prompt, Some(&config)).await,
                     Err(error) => Err(error),
@@ -704,31 +704,19 @@ impl Target {
     }
 }
 
-// The prompt of the agent answering the comments on the cluster whose oldest pull request is `key`,
-// before the comments it starts on. It keeps the wording of the prompt that answered one comment:
-// replaying 20 past comments, that answered as often as longer prompts that also listed the steps,
-// said to read the pull request, and introduced `execute`, or more often. Without "once per
-// reasonable alternative", agents made one proposal and answered far less often. It lists the
-// steps since a reviewer's "ping me when we have the cloud-config PR" got only a reply, with no
-// `follow_up` making that pull request. It says to propose nothing for a comment that needs
-// nothing since a bot's review that found no issues got a reply thanking it. It says how to treat
-// what others wrote, as every agent's prompt does.
-fn answer(key: &Target) -> String {
+// The prompt of the agent answering a cluster's comments, before the comments it starts on.
+// Replaying 15 comments on u9g's livekit pull requests, this answered as well as a prompt five
+// times as long that introduced the cluster, how messages arrive and `replaces`, and listed every
+// step: the `execute` tool's description declares the steps, and gem's later messages say when to
+// use `replaces`. Without "once per reasonable
+// alternative", agents made one proposal and answered far less often. It says to propose nothing
+// for a comment that needs nothing since a bot's review that found no issues got a reply thanking
+// it. It says how to treat what others wrote, as every agent's prompt does.
+fn answer() -> String {
     format!(
-        "You answer the comments waiting on {login} on the cluster of their pull requests holding \
-{url} (\"{title}\"): `gem.cluster({url:?})` shows it now, with what is already proposed. gem sends \
-you each comment in this thread as it comes, and tells you when {login} approves a proposal. A \
-message can be out of date by the time you read it: check what is proposed now, and skip a change \
-an earlier message already made.
-
-Record how {login} should answer each comment with `gem.propose`, with `pr` the pull request it is \
-on, and `comment` and `thread` as given. Propose once per reasonable alternative. If a comment \
-needs nothing from {login}, such as a bot's review that found no issues, propose nothing for it. \
-To change a proposal, propose its new version with `replaces` set to its ID. A proposal is about one of the \
-cluster's pull requests, and can:
-{steps}
-
-Never push, comment, review or resolve anything on GitHub yourself: {login} approves proposals later.
+        "Propose how {login} should answer each comment with `gem.propose`, once per reasonable \
+alternative, or nothing when a comment needs nothing from {login}. Never push, comment, review or \
+resolve anything on GitHub yourself: {login} approves proposals later.
 
 {untrusted}
 
@@ -736,9 +724,6 @@ When you are done, call the t3_thread_organize tool with action \"settle\" and n
 settle this thread, and again after answering each message gem sends. Then reply with one line \
 saying what you proposed, or why you proposed nothing.",
         login = login(),
-        url = key.url,
-        title = key.title,
-        steps = mcp::steps(),
         untrusted = mcp::untrusted(),
     )
 }
