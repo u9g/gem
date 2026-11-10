@@ -38,8 +38,8 @@ query($ids: [ID!]!) {
       reviews(last: 10) { nodes { id body url authorAssociation author { login __typename } createdAt: submittedAt } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
         __typename
-        ... on CheckRun { id name status conclusion detailsUrl checkSuite { workflowRun { databaseId } } }
-        ... on StatusContext { id context state targetUrl }
+        ... on CheckRun { id name status conclusion detailsUrl completedAt checkSuite { workflowRun { databaseId } } }
+        ... on StatusContext { id context state targetUrl createdAt }
       } } } } } }
     }
   }
@@ -53,11 +53,11 @@ query($ids: [ID!]!) {
 const CONVERSATIONS_JQ: &str = r#".data.nodes[]
 | .commits.nodes[0].commit.oid as $head
 | [.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | if .__typename == "CheckRun" then
-    {id, name, conclusion: (.conclusion // ""), url: (.detailsUrl // ""), workflow_run_id: (.checkSuite.workflowRun.databaseId // 0), done: (.status == "COMPLETED")}
+    {id, name, conclusion: (.conclusion // ""), url: (.detailsUrl // ""), workflow_run_id: (.checkSuite.workflowRun.databaseId // 0), done: (.status == "COMPLETED"), at: .completedAt}
   else
-    {id, name: .context, conclusion: .state, url: (.targetUrl // ""), workflow_run_id: 0, done: (.state != "PENDING" and .state != "EXPECTED")}
+    {id, name: .context, conclusion: .state, url: (.targetUrl // ""), workflow_run_id: 0, done: (.state != "PENDING" and .state != "EXPECTED"), at: .createdAt}
   end] as $checks
-| [$checks[] | select(.conclusion | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR")) | del(.done)] as $failed
+| [$checks[] | select(.conclusion | IN("FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR"))] as $failed
 | {
   url,
   settling: (($failed | length) > 0 and any($checks[]; .done | not)),
@@ -68,7 +68,10 @@ const CONVERSATIONS_JQ: &str = r#".data.nodes[]
     | .comment |= {id, body, url, author: (.author.login // "ghost"), path: (.path // ""), line: (.line // 0), diffHunk: (.diffHunk // "")}
   ] + [
     select(($failed | length) > 0 and all($checks[]; .done))
-    | {check_failure: {id: ([$head] + ([$failed[].id] | sort) | join(",")), head_oid: $head, checks: $failed}}
+    | {
+      check_failure: {id: ([$head] + ([$failed[].id] | sort) | join(",")), head_oid: $head, checks: [$failed[] | del(.done, .at)]},
+      failed_at: ([$failed[].at] | max)
+    }
   ])
 }"#;
 
@@ -90,6 +93,8 @@ enum Conversation {
     },
     Checks {
         check_failure: CheckFailure,
+        // When the last of its checks finished.
+        failed_at: Option<Timestamp>,
     },
 }
 
@@ -98,7 +103,7 @@ impl Conversation {
     fn id(&self) -> &str {
         match self {
             Conversation::Comment { comment, .. } => &comment.id,
-            Conversation::Checks { check_failure } => &check_failure.id,
+            Conversation::Checks { check_failure, .. } => &check_failure.id,
         }
     }
 }
@@ -110,7 +115,7 @@ pub async fn check_failure(pr: &str, id: &str) -> Option<CheckFailure> {
         .into_iter()
         .flat_map(|fetched| fetched.waiting)
         .find_map(|conversation| match conversation {
-            Conversation::Checks { check_failure } if check_failure.id == id => Some(check_failure),
+            Conversation::Checks { check_failure, .. } if check_failure.id == id => Some(check_failure),
             _ => None,
         })
 }
@@ -361,8 +366,9 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
         self.tell(key, message, Vec::new(), start).await;
     }
 
-    // Each PR's reason its failed checks have no proposal, while they still wait on the user, and
-    // the comments on it that the agent answering its cluster's comments was sent and still runs on.
+    // Each PR's reason its failed checks have no proposal and when they failed, while they still
+    // wait on the user, and the comments on it that the agent answering its cluster's comments was
+    // sent and still runs on.
     pub async fn fill(&self, clusters: &mut [PullRequestCluster]) {
         // Locked in answer_waiting's order.
         let prs = self.0.prs.read().await;
@@ -376,6 +382,10 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                 .find_map(|c| no_proposal.get(c.id()))
                 .cloned()
                 .unwrap_or_default();
+            pr.checks_failed_at = waiting.clone().find_map(|c| match c {
+                Conversation::Checks { failed_at, .. } => failed_at.clone(),
+                Conversation::Comment { .. } => None,
+            });
             let running = (keys.get(&pr.url)).is_some_and(|key| answering.contains_key(&key.url));
             let asked: HashSet<&str> = (waiting.filter(|_| running))
                 .filter(|c| matches!(c, Conversation::Comment { .. }) && handled.contains(c.id()))
@@ -527,7 +537,7 @@ gem ran it{edited}. Update the open proposals it affects, each by proposing its 
                         asked.push(ask(&pr.target, thread_id, comment, &removed));
                         ids.push(id);
                     }
-                    Conversation::Checks { check_failure } => {
+                    Conversation::Checks { check_failure, .. } => {
                         if handled.insert(id) {
                             self.answer_checks(pr.target.clone(), check_failure.clone())
                                 .await;
@@ -970,6 +980,48 @@ mod tests {
                 [answering, false, answering, false],
                 "running {running}, sent {sent}"
             );
+        }
+    }
+
+    // GitHub's answer for a PR whose checks failed, as CONVERSATIONS_JQ shapes it.
+    #[tokio::test]
+    async fn a_pull_request_says_when_its_failed_checks_failed_while_they_wait() {
+        for waits in [false, true] {
+            let failure = serde_json::json!({
+                "check_failure": {"id": "c", "head_oid": "h", "checks": []},
+                "failed_at": "2026-11-10T19:00:00Z",
+            });
+            let fetched: Fetched = serde_json::from_value(serde_json::json!({
+                "url": PR,
+                "settling": false,
+                "waiting": if waits { vec![failure] } else { vec![] },
+            }))
+            .unwrap();
+            let known = Known {
+                updated_at: Timestamp::default(),
+                checks_failing: true,
+                settling: false,
+                waiting: fetched.waiting,
+                target: target(PR),
+            };
+            let conversations = Conversations(Arc::new(Inner {
+                prs: RwLock::new(HashMap::from([(PR.into(), known)])),
+                handled: Mutex::default(),
+                started: Mutex::default(),
+                agents: Semaphore::new(1),
+                answering: Mutex::default(),
+                clusters: RwLock::default(),
+                threads: Mutex::default(),
+                telling: Mutex::default(),
+                no_proposal: Mutex::default(),
+            }));
+            let mut clusters = [PullRequestCluster {
+                pull_requests: vec![PullRequest { url: PR.into(), ..Default::default() }],
+                ..Default::default()
+            }];
+            conversations.fill(&mut clusters).await;
+            let failed_at = Timestamp { seconds: 1_794_337_200, nanos: 0 };
+            assert_eq!(clusters[0].pull_requests[0].checks_failed_at, waits.then_some(failed_at));
         }
     }
 }

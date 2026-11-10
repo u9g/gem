@@ -80,6 +80,9 @@ pub struct PullRequest {
     // Missing from views written before events were kept.
     #[serde(default)]
     pub events: Vec<Event>,
+    // Missing from views written before it was kept.
+    #[serde(default)]
+    pub checks_failed_at: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, TS, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -331,6 +334,7 @@ impl From<&proto::PullRequest> for PullRequest {
             no_proposal_reason: pr.no_proposal_reason.clone(),
             created_at: millis(&pr.created_at),
             events: pr.events.iter().map(Event::from).collect(),
+            checks_failed_at: millis(&pr.checks_failed_at),
         }
     }
 }

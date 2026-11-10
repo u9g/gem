@@ -943,6 +943,7 @@ fn cluster(prs: &[SearchedPullRequest]) -> Vec<PullRequestCluster> {
                         no_proposal_reason: String::new(),
                         created_at: Some(pr.created_at.clone()),
                         events: activity::events(&pr.url),
+                        checks_failed_at: None,
                     })
                     .collect::<Vec<_>>(),
                 name: String::new(),
