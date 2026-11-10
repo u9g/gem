@@ -19,7 +19,7 @@ export type AgentState = "working" | "queued" | "waiting";
 
 export type MergeBy = "unspecified" | "approval" | "admin";
 
-export type Proposal = { id: string, summary: string, pullRequestUrl: string, comment?: Comment, threadId: string, patch?: Patch, reply: string, resolveThread: boolean, error: string, requestedTool: string, earlierComments: Array<Comment>, replyHtml: string, followUp: string, followUpHtml: string, closePullRequest: boolean, checkFailure?: CheckFailure, rerun: boolean, summaryHtml: string, investigationId: string, otherPatches: Array<Patch>, openPullRequest?: NewPullRequest, };
+export type Proposal = { id: string, summary: string, pullRequestUrl: string, comment?: Comment, threadId: string, patch?: Patch, reply: string, resolveThread: boolean, error: string, requestedTool: string, earlierComments: Array<Comment>, replyHtml: string, followUp: string, followUpHtml: string, closePullRequest: boolean, checkFailure?: CheckFailure, rerun: boolean, summaryHtml: string, investigationId: string, otherPatches: Array<Patch>, openPullRequest?: NewPullRequest, whyHtml: string, };
 
 export type Comment = { id: string, author: string, body: string, url: string, bodyHtml: string, path: string, line: number, diffHunk: string, };
 

@@ -410,6 +410,8 @@ async fn run(proposal: &mut Proposal) -> Result<(), String> {
 pub struct Request {
     pub pr: String,
     pub summary: String,
+    // Markdown.
+    pub why: String,
     // A diff, and the message to commit it with.
     pub patch: String,
     pub message: String,
@@ -574,6 +576,7 @@ pub async fn propose(
     let Request {
         pr,
         summary,
+        why,
         patch,
         message,
         other_patches,
@@ -772,6 +775,7 @@ pub async fn propose(
         _ => reply,
     };
     let summary_html = github.render(pr, &summary).await?;
+    let why_html = github.render(pr, &why).await?;
     let reply_html = github.render(pr, &reply).await?;
     let follow_up_html = github.render(pr, &follow_up).await?;
 
@@ -801,6 +805,8 @@ pub async fn propose(
         investigation_id: investigation_id.to_string(),
         other_patches: checked,
         open_pull_request,
+        why,
+        why_html,
     };
     // A script keeps running after the agent's call to it times out, so an agent that proposes
     // again gets the proposal already recorded, not a copy of it. The proposal it replaces may

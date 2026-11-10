@@ -857,9 +857,9 @@ dependency that has not been released, propose nothing for that check.
 
 {UNTRUSTED}
 
-Record each proposal with `gem.propose`, with `pr` {url}, a `summary` of one line saying what \
-approving does, linking the pull request of each earlier investigation into the same failure, its \
-`excerpts`, and its steps. Propose once per answer, and once per alternative when more than one \
+Record each proposal with `gem.propose`, with `pr` {url}, a short `summary` of what approving \
+does, a `why` with the evidence for it, linking the pull request of each earlier investigation into \
+the same failure, its `excerpts`, and its steps. Propose once per answer, and once per alternative when more than one \
 answer is reasonable. It checks the proposal and throws an Error with the reason when something \
 is wrong: fix it and propose again. If the failure needs nothing from {login}, propose nothing.
 

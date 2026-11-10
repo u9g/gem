@@ -61,7 +61,11 @@ pub async fn start(proposal_id: &str) -> Result<(), String> {
     let checks: Vec<&str> = failure.checks.iter().map(|c| c.name.as_str()).collect();
     let title = format!("Investigate {} on {repository}#{number}", checks.join(", "));
     let nanos = now();
-    let prompt = prompt(pr, &failure, &proposal.summary);
+    let rerun = match proposal.why.as_str() {
+        "" => proposal.summary.clone(),
+        why => format!("{}. {why}", proposal.summary),
+    };
+    let prompt = prompt(pr, &failure, &rerun);
     let subject = Subject::Investigation {
         id: id(nanos),
         prs: vec![pr.clone()],
@@ -140,8 +144,8 @@ GitHub yourself, even when {login} asks you to handle something: propose it, and
 it in gem. A proposal is about one of the cluster's pull requests, and can:
 {STEPS}
 
-Record each proposal with `gem.propose`, with `pr` the pull request it is about, a `summary` of \
-one line saying what approving does, and its steps. It checks the proposal and throws an Error \
+Record each proposal with `gem.propose`, with `pr` the pull request it is about, a short `summary` \
+of what approving does, a `why` with the evidence for it, and its steps. It checks the proposal and throws an Error \
 with the reason when something is wrong: fix it and propose again. gem merges and rebases pull \
 requests itself, so when one should be merged or brought up to date with its base branch, say so \
 in your reply. If the message only asks something, answer it \
@@ -413,8 +417,8 @@ request causes it, such as one {pr} is stacked on: make the patch the same way. 
 
 {UNTRUSTED}
 
-Record each proposal with `gem.propose`, with `pr` {pr}, a `summary` of one line saying what \
-approving does, and its steps. It checks the proposal and throws an Error with the reason when \
+Record each proposal with `gem.propose`, with `pr` {pr}, a short `summary` of what approving \
+does, a `why` with the evidence for it, and its steps. It checks the proposal and throws an Error with the reason when \
 something is wrong: fix it and propose again. Propose once per proposal. If the failure needs \
 nothing from {login}, propose nothing and say why in your reply.
 

@@ -206,7 +206,7 @@ message Repository {
 // again after a failure resumes at the step that failed.
 message Proposal {
   string id = 1;
-  // One line saying what approving does.
+  // A short headline of what approving does.
   string summary = 2;
   string pull_request_url = 3;
   // Latest comment in the conversation when the agent started. The proposal is
@@ -256,6 +256,11 @@ message Proposal {
   // A new pull request approving opens, such as a fix on the base branch for a
   // test that fails there too.
   NewPullRequest open_pull_request = 21;
+  // Markdown saying why this is the answer, with its evidence, shown beside
+  // what approving does.
+  string why = 22;
+  // `why` as GitHub renders it.
+  string why_html = 23;
 }
 
 // A pull request approving opens: `patch` committed on a new branch off
