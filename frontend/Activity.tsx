@@ -5,7 +5,6 @@ import {
   Eye,
   EyeOff,
   GitBranch,
-  GitCommitHorizontal,
   GitMerge,
   GitPullRequestClosed,
   GitPullRequestDraft,
@@ -38,10 +37,10 @@ const changes = '#F85149';
 const merged = '#A371F7';
 const link = '#8FA8F5';
 
-// What each kind of event looks like on the rail, and the verb that follows the actor.
-const kinds: Record<EventKind, { icon: LucideIcon; tone?: string; verb: string; filter: Filter }> = {
-  committed: { icon: GitCommitHorizontal, verb: 'pushed to', filter: 'commits' },
-  forcePushed: { icon: GitCommitHorizontal, tone: t3.warning, verb: 'force-pushed', filter: 'commits' },
+// What each kind of event looks like on the rail, and the verb that follows the actor. Commits and
+// review requests have no line: a server from before it stopped sending them still does.
+type Look = { icon: LucideIcon; tone?: string; verb: string; filter: Filter };
+const kinds: Partial<Record<EventKind, Look>> = {
   commented: { icon: MessageSquare, tone: link, verb: 'commented on', filter: 'comments' },
   // Only inside its review's card, never a line of its own.
   reviewCommented: { icon: MessageSquare, tone: link, verb: 'commented on a line of', filter: 'reviews' },
@@ -49,7 +48,6 @@ const kinds: Record<EventKind, { icon: LucideIcon; tone?: string; verb: string; 
   changesRequested: { icon: X, tone: changes, verb: 'requested changes on', filter: 'reviews' },
   reviewed: { icon: Eye, tone: link, verb: 'reviewed', filter: 'reviews' },
   reviewDismissed: { icon: Undo2, tone: t3.warning, verb: 'dismissed a review on', filter: 'reviews' },
-  reviewRequested: { icon: Eye, verb: 'requested a review of', filter: 'status' },
   readyForReview: { icon: Eye, tone: approved, verb: 'marked ready for review', filter: 'status' },
   convertedToDraft: { icon: GitPullRequestDraft, verb: 'converted to draft', filter: 'status' },
   retargeted: { icon: GitBranch, tone: t3.warning, verb: 'changed the base of', filter: 'status' },
@@ -60,17 +58,16 @@ const kinds: Record<EventKind, { icon: LucideIcon; tone?: string; verb: string; 
 };
 
 // GitHub's filter on a PR's timeline: by what kind of thing happened.
-const filters = ['all', 'comments', 'reviews', 'commits', 'status'] as const;
+const filters = ['all', 'comments', 'reviews', 'status'] as const;
 type Filter = (typeof filters)[number];
 const filterLabel: Record<Filter, string> = {
   all: 'All',
   comments: 'Comments',
   reviews: 'Reviews',
-  commits: 'Commits',
   status: 'Status changes',
 };
 
-type Entry = { event: Event; pr: PullRequest; cluster: Cluster };
+type Entry = { event: Event; look: Look; pr: PullRequest; cluster: Cluster };
 
 type Actions = Pick<Parameters<typeof ClusterView>[0], 'busy' | 'onApprove' | 'onDismiss' | 'onInvestigate'>;
 
@@ -114,11 +111,16 @@ export function Activity({
 
   const prs = clusters.flatMap((cluster) => cluster.pullRequests.map((pr) => ({ pr, cluster })));
   const entries: Entry[] = prs
-    .flatMap(({ pr, cluster }) => (pr.events ?? []).map((event) => ({ event, pr, cluster })))
+    .flatMap(({ pr, cluster }) =>
+      (pr.events ?? []).flatMap((event) => {
+        const look = kinds[event.kind];
+        return look ? [{ event, look, pr, cluster }] : [];
+      }),
+    )
     .sort((a, b) => (b.event.at ?? 0) - (a.event.at ?? 0));
-  const listed = entries.filter(({ event }) => filter === 'all' || kinds[event.kind].filter === filter);
+  const listed = entries.filter(({ look }) => filter === 'all' || look.filter === filter);
   const counts = Object.fromEntries(
-    filters.map((f) => [f, entries.filter(({ event }) => f === 'all' || kinds[event.kind].filter === f).length]),
+    filters.map((f) => [f, entries.filter(({ look }) => f === 'all' || look.filter === f).length]),
   ) as Record<Filter, number>;
   const days: { day: string; entries: Entry[] }[] = [];
   for (const entry of listed) {
@@ -189,8 +191,8 @@ export function Activity({
 }
 
 // One line of the timeline: a badge on the rail, who did what on which PR, when; and under it the
-// comment or review as GitHub renders it, a review with its comments on lines, or a commit's message;
-// and under each comment, the agent's answer to it.
+// comment or review as GitHub renders it, a review with its comments on lines; and under each
+// comment, the agent's answer to it.
 function EventLine({
   entry,
   place,
@@ -205,11 +207,10 @@ function EventLine({
   hue: string;
   onOpenCluster: (key: string) => void;
 } & Actions) {
-  const { event, pr, cluster } = entry;
-  const look = kinds[event.kind];
+  const { event, look, pr, cluster } = entry;
   const actor = event.actor || 'Someone';
   const comments = event.comments;
-  const said = event.bodyHtml !== '' || comments.length > 0 || (event.kind === 'committed' && event.body !== '');
+  const said = event.bodyHtml !== '' || comments.length > 0;
   const open = () => (event.url ? Linking.openURL(event.url) : onOpenCluster(cluster.pullRequests[0].url));
   const follows = place === 'follows';
   return (
@@ -225,12 +226,6 @@ function EventLine({
           <Text style={styles.ref} onPress={() => onOpenCluster(cluster.pullRequests[0].url)}>
             {ref(pr)}
           </Text>
-          {event.kind === 'reviewRequested' && event.subject !== '' && (
-            <Text>
-              {' '}
-              from <Text style={styles.strong}>{event.subject}</Text>
-            </Text>
-          )}
           {event.kind === 'retargeted' && event.subject !== '' && (
             <Text>
               {' '}
@@ -254,47 +249,38 @@ function EventLine({
       </View>
       {said && (
         <View style={styles.eventBody}>
-          {event.kind === 'committed' ? (
-            <Pressable onPress={open} style={styles.commit}>
-              <Text style={styles.mono}>{event.id.slice(0, 7)}</Text>
-              <Text numberOfLines={1} style={styles.commitText}>
-                {event.body}
+          <View style={styles.card}>
+            <View style={styles.cardHead}>
+              <Text style={styles.strong}>{actor}</Text>
+              <Text numberOfLines={1} style={styles.cardTitle}>
+                {pr.title}
               </Text>
-            </Pressable>
-          ) : (
-            <View style={styles.card}>
-              <View style={styles.cardHead}>
-                <Text style={styles.strong}>{actor}</Text>
-                <Text numberOfLines={1} style={styles.cardTitle}>
-                  {pr.title}
-                </Text>
-              </View>
-              {event.bodyHtml !== '' && (
-                <View style={styles.cardBody}>
-                  <Html html={event.bodyHtml} />
-                  <Answer event={event} pr={pr} {...actions} />
-                </View>
-              )}
-              {comments.map((comment, i) => (
-                <View key={comment.id} style={(i > 0 || event.bodyHtml !== '') && styles.lineComment}>
-                  <Pressable
-                    disabled={comment.url === ''}
-                    onPress={() => Linking.openURL(comment.url)}
-                    style={styles.lineCommentHead}
-                  >
-                    <Icon icon={MessageSquare} size={12} color={t3.muted} />
-                    <Text numberOfLines={1} style={[styles.mono, styles.path]}>
-                      {comment.subject || 'a line'}
-                    </Text>
-                  </Pressable>
-                  <View style={styles.cardBody}>
-                    <Html html={comment.bodyHtml} />
-                    <Answer event={comment} pr={pr} {...actions} />
-                  </View>
-                </View>
-              ))}
             </View>
-          )}
+            {event.bodyHtml !== '' && (
+              <View style={styles.cardBody}>
+                <Html html={event.bodyHtml} />
+                <Answer event={event} pr={pr} {...actions} />
+              </View>
+            )}
+            {comments.map((comment, i) => (
+              <View key={comment.id} style={(i > 0 || event.bodyHtml !== '') && styles.lineComment}>
+                <Pressable
+                  disabled={comment.url === ''}
+                  onPress={() => Linking.openURL(comment.url)}
+                  style={styles.lineCommentHead}
+                >
+                  <Icon icon={MessageSquare} size={12} color={t3.muted} />
+                  <Text numberOfLines={1} style={[styles.mono, styles.path]}>
+                    {comment.subject || 'a line'}
+                  </Text>
+                </Pressable>
+                <View style={styles.cardBody}>
+                  <Html html={comment.bodyHtml} />
+                  <Answer event={comment} pr={pr} {...actions} />
+                </View>
+              </View>
+            ))}
+          </View>
         </View>
       )}
     </View>
@@ -550,16 +536,6 @@ const styles = StyleSheet.create({
   },
   when: {
     color: t3.faint,
-  },
-  commit: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  commitText: {
-    flex: 1,
-    color: t3.muted,
-    fontSize: 12,
   },
   card: {
     borderRadius: 12,

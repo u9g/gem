@@ -78,8 +78,6 @@ const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a drop
   checks: { total: 14, done: 14, failed: 2 },
   createdAt: hoursAgo(52),
   events: [
-    event('committed', 'u9g', 52, { id: 'a1b2c3d4e5f6', body: 'feat(voice): retry TTS once on a dropped stream', url: 'https://github.com/livekit/agents/commit/a1b2c3d' }),
-    event('reviewRequested', 'u9g', 51, { subject: 'theomonnom', url: '' }),
     event('changesRequested', 'theomonnom', 30, {
       ...said(
         'One question inline, otherwise looks right.',
@@ -96,7 +94,6 @@ const retry = pullRequest('agents', 4821, 'feat(voice): retry TTS once on a drop
         }),
       ],
     }),
-    event('committed', 'u9g', 6, { id: 'f00dcafe1234', body: 'Back off 250ms before the retry', url: 'https://github.com/livekit/agents/commit/f00dcaf' }),
     event('commented', 'u9g', 6, {
       ...said(
         'Added a 250ms backoff. @theomonnom mind taking another look?',
@@ -120,7 +117,6 @@ const log = pullRequest('agents', 4822, 'feat(voice): log each TTS retry attempt
   approved: true,
   createdAt: hoursAgo(30),
   events: [
-    event('committed', 'u9g', 30, { id: '9988776655aa', body: 'feat(voice): log each TTS retry attempt', url: 'https://github.com/livekit/agents/commit/9988776' }),
     event('convertedToDraft', 'u9g', 29, { url: '' }),
     event('readyForReview', 'u9g', 27, { url: '' }),
     event('approved', 'davidzhao', 3, { ...said('LGTM', '<p dir="auto">LGTM</p>') }),
@@ -131,7 +127,6 @@ const websocket = pullRequest('python-sdks', 1204, 'fix(stt): close the websocke
   checksPassing: true,
   createdAt: hoursAgo(80),
   events: [
-    event('committed', 'u9g', 80, { id: '1234abcd5678', body: 'fix(stt): close the websocket when the session ends', url: 'https://github.com/livekit/python-sdks/commit/1234abc' }),
     event('renamed', 'u9g', 79, { subject: 'fix(stt): close the websocket when the session ends', url: '' }),
     event('retargeted', 'u9g', 78, { subject: 'main', url: '' }),
     event('reviewed', 'longcw', 40, {
@@ -154,7 +149,6 @@ const websocket = pullRequest('python-sdks', 1204, 'fix(stt): close the websocke
         }),
       ],
     }),
-    event('forcePushed', 'u9g', 26, { url: 'https://github.com/livekit/python-sdks/commit/deadbee' }),
   ],
 });
 
@@ -164,8 +158,6 @@ const docs = pullRequest('web', 7005, 'docs(simulations): show scenarios as tabb
   checksPassing: true,
   createdAt: hoursAgo(28),
   events: [
-    event('committed', 'u9g', 28, { id: '5ca1ab1e0001', body: 'docs(simulations): show scenarios as tabbed charts', url: 'https://github.com/livekit/web/commit/5ca1ab1' }),
-    event('reviewRequested', 'u9g', 28, { subject: 'bcherry', url: '' }),
     event('commented', 'bcherry', 5.5, {
       ...said('Can the tabs keep their place on reload?', '<p dir="auto">Can the tabs keep their place on reload?</p>'),
     }),

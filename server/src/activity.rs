@@ -1,5 +1,5 @@
-// Each open PR's recent events from GitHub's timeline: its commits, reviews, comments and changes of
-// state, for the activity screen that shows them across every PR. A PR's events are fetched again
+// Each open PR's recent events from GitHub's timeline: its reviews, comments and changes of state,
+// for the activity screen that shows them across every PR. A PR's events are fetched again
 // only when GitHub says it was updated since, so a refresh costs a request per CHUNK PRs that
 // changed, and nothing when none did.
 
@@ -29,21 +29,18 @@ query($ids: [ID!]!) {
     ... on PullRequest {
       id
       timelineItems(last: 50, itemTypes: [
-        PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT, PULL_REQUEST_REVIEW,
-        REVIEW_DISMISSED_EVENT, REVIEW_REQUESTED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT,
-        BASE_REF_CHANGED_EVENT, RENAMED_TITLE_EVENT, CLOSED_EVENT, REOPENED_EVENT, MERGED_EVENT
+        ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_DISMISSED_EVENT, READY_FOR_REVIEW_EVENT,
+        CONVERT_TO_DRAFT_EVENT, BASE_REF_CHANGED_EVENT, RENAMED_TITLE_EVENT, CLOSED_EVENT,
+        REOPENED_EVENT, MERGED_EVENT
       ]) {
         nodes {
           __typename
-          ... on PullRequestCommit { commit { oid messageHeadline committedDate url author { name user { login } } } }
-          ... on HeadRefForcePushedEvent { id actor { login } createdAt afterCommit { url } }
           ... on IssueComment { id author { login } createdAt url body bodyHTML }
           ... on PullRequestReview {
             id state author { login } createdAt url body bodyHTML
             comments(first: 50) { nodes { id author { login } createdAt url body bodyHTML path } }
           }
           ... on ReviewDismissedEvent { id actor { login } createdAt url }
-          ... on ReviewRequestedEvent { id actor { login } createdAt requestedReviewer { ... on User { login } ... on Team { name } } }
           ... on ReadyForReviewEvent { id actor { login } createdAt url }
           ... on ConvertToDraftEvent { id actor { login } createdAt url }
           ... on BaseRefChangedEvent { id actor { login } createdAt currentRefName }
@@ -126,20 +123,6 @@ fn parse(pr: &Value) -> Vec<Event> {
             ..Default::default()
         };
         let kind = match item["__typename"].as_str().unwrap_or_default() {
-            "PullRequestCommit" => {
-                let commit = &item["commit"];
-                let login = text(&commit["author"]["user"]["login"]);
-                event.id = text(&commit["oid"]);
-                event.actor = if login.is_empty() { text(&commit["author"]["name"]) } else { login };
-                event.at = time(&commit["committedDate"]);
-                event.url = text(&commit["url"]);
-                event.body = text(&commit["messageHeadline"]);
-                EventKind::Committed
-            }
-            "HeadRefForcePushedEvent" => {
-                event.url = text(&item["afterCommit"]["url"]);
-                EventKind::ForcePushed
-            }
             "IssueComment" => {
                 event.body = text(&item["body"]);
                 event.body_html = text(&item["bodyHTML"]);
@@ -171,12 +154,6 @@ fn parse(pr: &Value) -> Vec<Event> {
                 kind
             }
             "ReviewDismissedEvent" => EventKind::ReviewDismissed,
-            "ReviewRequestedEvent" => {
-                let reviewer = &item["requestedReviewer"];
-                let login = text(&reviewer["login"]);
-                event.subject = if login.is_empty() { text(&reviewer["name"]) } else { login };
-                EventKind::ReviewRequested
-            }
             "ReadyForReviewEvent" => EventKind::ReadyForReview,
             "ConvertToDraftEvent" => EventKind::ConvertedToDraft,
             "BaseRefChangedEvent" => {
@@ -208,9 +185,8 @@ mod tests {
     #[test]
     fn a_timeline_reads_as_events_oldest_first_with_review_comments_inside_their_review() {
         let pr = json!({ "timelineItems": { "nodes": [
-            { "__typename": "PullRequestCommit", "commit": {
-                "oid": "abc", "messageHeadline": "Retry TTS", "committedDate": "2026-11-01T10:00:00Z",
-                "url": "https://github.com/o/r/commit/abc", "author": { "name": "Jo", "user": null } } },
+            { "__typename": "RenamedTitleEvent", "id": "E1", "actor": { "login": "me" },
+                "createdAt": "2026-11-01T09:00:00Z", "currentTitle": "Retry TTS" },
             { "__typename": "PullRequestReview", "id": "R1", "state": "CHANGES_REQUESTED",
                 "author": { "login": "amy" }, "createdAt": "2026-11-01T12:00:00Z", "url": "u/r1",
                 "body": "Two things", "bodyHTML": "<p>Two things</p>",
@@ -219,8 +195,6 @@ mod tests {
                     "path": "src/tts.py" } ] } },
             { "__typename": "PullRequestReview", "id": "R0", "state": "PENDING", "author": { "login": "me" },
                 "createdAt": "2026-11-01T13:00:00Z", "comments": { "nodes": [] } },
-            { "__typename": "ReviewRequestedEvent", "id": "E1", "actor": { "login": "me" },
-                "createdAt": "2026-11-01T09:00:00Z", "requestedReviewer": { "name": "voice" } },
             { "__typename": "IssueComment", "id": "I1", "author": { "login": "bot" },
                 "createdAt": "2026-11-01T14:00:00Z", "url": "u/i1", "body": "LGTM", "bodyHTML": "<p>LGTM</p>" },
         ] } });
@@ -228,14 +202,12 @@ mod tests {
         let kinds: Vec<(i32, &str)> =
             events.iter().map(|e| (e.kind, e.actor.as_str())).collect();
         assert_eq!(kinds, [
-            (EventKind::ReviewRequested as i32, "me"),
-            (EventKind::Committed as i32, "Jo"),
+            (EventKind::Renamed as i32, "me"),
             (EventKind::ChangesRequested as i32, "amy"),
             (EventKind::Commented as i32, "bot"),
         ]);
-        assert_eq!(events[0].subject, "voice");
-        assert_eq!((events[1].id.as_str(), events[1].body.as_str()), ("abc", "Retry TTS"));
-        let comments = &events[2].comments;
+        assert_eq!(events[0].subject, "Retry TTS");
+        let comments = &events[1].comments;
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].kind, EventKind::ReviewCommented as i32);
         assert_eq!((comments[0].subject.as_str(), comments[0].body_html.as_str()), ("src/tts.py", "<p>nit</p>"));
