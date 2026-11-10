@@ -35,10 +35,12 @@ query($ids: [ID!]!) {
       ]) {
         nodes {
           __typename
-          ... on IssueComment { id author { login } createdAt url body bodyHTML }
+          ... on IssueComment { id author { login __typename } authorAssociation createdAt url body bodyHTML }
           ... on PullRequestReview {
-            id state author { login } createdAt url body bodyHTML
-            comments(first: 50) { nodes { id author { login } createdAt url body bodyHTML path } }
+            id state author { login __typename } authorAssociation createdAt url body bodyHTML
+            comments(first: 50) {
+              nodes { id author { login __typename } authorAssociation createdAt url body bodyHTML path }
+            }
           }
           ... on ReviewDismissedEvent { id actor { login } createdAt url }
           ... on ReadyForReviewEvent { id actor { login } createdAt url }
@@ -105,6 +107,13 @@ fn text(value: &Value) -> String {
     value.as_str().unwrap_or_default().to_string()
 }
 
+// Whether a comment's author is one whose comments gem starts agents on, as conversations.rs
+// selects them.
+fn trusted(comment: &Value) -> bool {
+    comment["author"]["__typename"] == "Bot"
+        || matches!(comment["authorAssociation"].as_str(), Some("MEMBER" | "OWNER"))
+}
+
 fn time(value: &Value) -> Option<Timestamp> {
     serde_json::from_value(value.clone()).ok()
 }
@@ -124,6 +133,7 @@ fn parse(pr: &Value) -> Vec<Event> {
         };
         let kind = match item["__typename"].as_str().unwrap_or_default() {
             "IssueComment" => {
+                event.trusted = trusted(item);
                 event.body = text(&item["body"]);
                 event.body_html = text(&item["bodyHTML"]);
                 EventKind::Commented
@@ -136,6 +146,7 @@ fn parse(pr: &Value) -> Vec<Event> {
                     "PENDING" => continue,
                     _ => EventKind::Reviewed,
                 };
+                event.trusted = trusted(item);
                 event.body = text(&item["body"]);
                 event.body_html = text(&item["bodyHTML"]);
                 event.comments = (item["comments"]["nodes"].as_array().into_iter().flatten())
@@ -148,6 +159,7 @@ fn parse(pr: &Value) -> Vec<Event> {
                         body: text(&comment["body"]),
                         body_html: text(&comment["bodyHTML"]),
                         subject: text(&comment["path"]),
+                        trusted: trusted(comment),
                         ..Default::default()
                     })
                     .collect();
@@ -212,5 +224,20 @@ mod tests {
         assert_eq!(comments[0].kind, EventKind::ReviewCommented as i32);
         assert_eq!((comments[0].subject.as_str(), comments[0].body_html.as_str()), ("src/tts.py", "<p>nit</p>"));
         assert!(events.iter().all(|event| event.at.is_some()));
+    }
+
+    #[test]
+    fn only_bots_members_and_owners_are_trusted() {
+        let associations = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR",
+            "FIRST_TIMER", "MANNEQUIN", "NONE"];
+        for typename in ["Bot", "User", "Mannequin"] {
+            for association in associations {
+                let comment = json!({ "author": { "__typename": typename }, "authorAssociation": association });
+                let expected = typename == "Bot" || association == "OWNER" || association == "MEMBER";
+                assert_eq!(trusted(&comment), expected, "{typename} {association}");
+            }
+        }
+        // A deleted account's comments have no author.
+        assert!(!trusted(&json!({ "author": null, "authorAssociation": "NONE" })));
     }
 }

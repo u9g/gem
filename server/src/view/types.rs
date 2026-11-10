@@ -118,6 +118,8 @@ pub struct Event {
     pub comments: Vec<Event>,
     #[serde(default)]
     pub answering: bool,
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 #[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
@@ -361,6 +363,7 @@ impl From<&proto::Event> for Event {
             subject: event.subject.clone(),
             comments: event.comments.iter().map(Event::from).collect(),
             answering: event.answering,
+            trusted: event.trusted,
         }
     }
 }
