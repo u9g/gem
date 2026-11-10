@@ -16,12 +16,12 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import { type ComponentRef, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
+import { type ComponentRef, type ReactNode, useContext, useLayoutEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { type ClusterView, timeAgo } from './ClusterView';
 import { bySubject, ProposalGroup, Stage } from './ProposalView';
-import { Html } from './surfaces';
+import { Html, Login } from './surfaces';
 import { Button, Icon, t3, usePhone } from './t3';
 import type { Cluster, Event, EventKind, PullRequest } from './view-types';
 
@@ -112,11 +112,15 @@ export function Activity({
   onOpenCluster: (key: string) => void;
 } & Actions) {
   const phone = usePhone();
+  const login = useContext(Login);
   const [filter, setFilter] = useState<Filter>('all');
 
   const prs = clusters.flatMap((cluster) => cluster.pullRequests.map((pr) => ({ pr, cluster })));
   const entries: Entry[] = prs
     .flatMap(({ pr, cluster }) => (pr.events ?? []).map((event) => ({ event, look: kinds[event.kind], pr, cluster })))
+    // What the user wrote themself is no news to them: their comments, and their replies on lines,
+    // which GitHub wraps in a review.
+    .filter(({ event }) => !(event.actor === login && (event.kind === 'commented' || event.kind === 'reviewed')))
     .sort((a, b) => (b.event.at ?? 0) - (a.event.at ?? 0));
   const listed = entries.filter(({ look }) => filter === 'all' || look.filter === filter);
   const counts = Object.fromEntries(
