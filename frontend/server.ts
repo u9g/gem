@@ -133,7 +133,8 @@ export function followView(
 // The selected profile's gem server, reached through its room. It is offline while the room has
 // no participant with its identity. Every connected participant costs the project's connection
 // minutes, and the server stays in the room only while a frontend does, so a hidden page leaves
-// and only the selected profile is connected.
+// and only the selected profile is connected. The server can answer a request only while both are
+// in the room, so a hidden page stays until its requests are answered.
 export function useServer() {
   const [profiles, setProfiles] = useState(savedProfiles);
   const [selectedId, setSelectedId] = useState(() => localStorage.getItem(SELECTED_KEY));
@@ -141,6 +142,9 @@ export function useServer() {
   const [room] = useState(() => new Room());
   const [status, setStatus] = useState<ServerStatus>('connecting');
   const [visible, setVisible] = useState(() => document.visibilityState === 'visible');
+  // How many requests `post` sent are not answered yet.
+  const [posting, setPosting] = useState(0);
+  const present = visible || posting > 0;
 
   useEffect(() => {
     const update = () => setVisible(document.visibilityState === 'visible');
@@ -168,7 +172,7 @@ export function useServer() {
       setStatus('no-profile');
       return;
     }
-    if (!visible) return;
+    if (!present) return;
     const stop = followView(room, replica, setStatus, () =>
       mintToken(connection).then((jwt) => room.connect(connection.url, jwt)),
     );
@@ -176,7 +180,7 @@ export function useServer() {
       stop();
       setStatus('connecting');
     };
-  }, [room, connection, visible, replica]);
+  }, [room, connection, present, replica]);
 
 
   const selectProfile = useCallback((id: string) => {
@@ -210,15 +214,18 @@ export function useServer() {
   );
 
   const post = useCallback(
-    (path: string, body: JsonValue): Promise<JsonValue> =>
-      room.localParticipant
+    (path: string, body: JsonValue): Promise<JsonValue> => {
+      setPosting((n) => n + 1);
+      return room.localParticipant
         .performRpc({
           destinationIdentity: SERVER,
           method: 'http',
           payload: JSON.stringify({ method: 'POST', path, body }),
           responseTimeout: RESPONSE_TIMEOUT_MS,
         })
-        .then(JSON.parse),
+        .then(JSON.parse)
+        .finally(() => setPosting((n) => n - 1));
+    },
     [room],
   );
 
