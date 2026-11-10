@@ -115,6 +115,164 @@ index 5be1c2a..7f0e9d4 100644
  }
 `;
 
+// A change taller than a laptop's screen, with lines longer than half of one is wide.
+export const longDiff = `diff --git a/livekit-agents/livekit/agents/voice/tts_retry.py b/livekit-agents/livekit/agents/voice/tts_retry.py
+index 912db37..445a8f3 100644
+--- a/livekit-agents/livekit/agents/voice/tts_retry.py
++++ b/livekit-agents/livekit/agents/voice/tts_retry.py
+@@ -1,39 +1,53 @@
+ import asyncio
+ import logging
++import random
+ 
+ from ..log import logger
+ from ..types import APIConnectOptions
+ from .errors import APIConnectionError, APIStatusError
+ from .events import TTSMetrics
+ 
+-DEFAULT_RETRY_INTERVAL = 0.1
++# Upper bound on one wait between attempts, whatever the options ask for.
++MAX_RETRY_INTERVAL = 2.0
+ 
+ 
+ class RetryState:
+-    """Counts the attempts made for one utterance."""
++    """Counts the attempts made for one utterance, and how long they waited."""
+ 
+     def __init__(self) -> None:
+         self.attempt = 0
++        self.waited = 0.0
+         self.last_error: Exception | None = None
+ 
+-    def record(self, error: Exception) -> None:
++    def record(self, error: Exception, *, waited: float = 0.0) -> None:
+         self.attempt += 1
++        self.waited += waited
+         self.last_error = error
+ 
+ 
+-async def synthesize_with_retry(tts, text, *, conn_options, attempt=0):
+-    """Synthesizes text, retrying once when the stream drops."""
++def retry_interval(conn_options: APIConnectOptions, attempt: int) -> float:
++    """The wait before attempt \`attempt\`: the configured interval, doubled each time, with jitter."""
++    interval = min(conn_options.retry_interval * (2**attempt), MAX_RETRY_INTERVAL)
++    return interval * random.uniform(0.8, 1.2)
++
++
++async def synthesize_with_retry(tts, text, *, conn_options, state: RetryState | None = None):
++    """Synthesizes text, retrying up to \`conn_options.max_retry\` times when the stream drops."""
++    state = state or RetryState()
+     try:
+         return await tts.synthesize(text, conn_options=conn_options)
+-    except APIConnectionError:
+-        if attempt > 0:
++    except APIConnectionError as error:
++        if state.attempt >= conn_options.max_retry:
+             raise
+-        await asyncio.sleep(0.1)
+-        return await synthesize_with_retry(tts, text, conn_options=conn_options, attempt=attempt + 1)
++        wait = retry_interval(conn_options, state.attempt)
++        state.record(error, waited=wait)
++        logger.debug("retrying TTS after a dropped stream", extra={"attempt": state.attempt, "wait": round(wait, 3), "tts": tts.label})
++        await asyncio.sleep(wait)
++        return await synthesize_with_retry(tts, text, conn_options=conn_options, state=state)
+ 
+ 
+ async def stream_with_retry(tts, text, *, conn_options):
+-    """Streams synthesized audio, restarting the stream once if it drops before any audio."""
++    """Streams synthesized audio, restarting the stream if it drops before any audio."""
+     state = RetryState()
+     while True:
+         stream = tts.stream(conn_options=conn_options)
+@@ -46,10 +60,13 @@ async def stream_with_retry(tts, text, *, conn_options):
+                 yield frame
+             return
+         except APIConnectionError as error:
+-            state.record(error)
+-            if sent_audio or state.attempt > 1:
++            # Audio the user already heard can't be taken back, so a stream that got that far
++            # is never replayed.
++            if sent_audio or state.attempt >= conn_options.max_retry:
+                 raise
+-            await asyncio.sleep(DEFAULT_RETRY_INTERVAL)
++            wait = retry_interval(conn_options, state.attempt)
++            state.record(error, waited=wait)
++            await asyncio.sleep(wait)
+         finally:
+             await stream.aclose()
+ 
+@@ -57,12 +74,12 @@ async def stream_with_retry(tts, text, *, conn_options):
+ def should_retry(error: Exception) -> bool:
+     """Whether an error is worth another attempt."""
+     if isinstance(error, APIStatusError):
+-        return error.status_code >= 500
++        return error.status_code >= 500 or error.status_code == 429
+     return isinstance(error, APIConnectionError)
+ 
+ 
+ def emit_metrics(tts, state: RetryState, *, duration: float) -> None:
+-    metrics = TTSMetrics(label=tts.label, duration=duration, retries=state.attempt)
++    metrics = TTSMetrics(label=tts.label, duration=duration, retries=state.attempt, retry_wait=state.waited)
+     tts.emit("metrics_collected", metrics)
+ 
+ 
+@@ -78,7 +95,12 @@ class RetryingTTS:
+         return self._tts.label
+ 
+     async def synthesize(self, text: str):
+-        return await synthesize_with_retry(self._tts, text, conn_options=self._conn_options)
++        state = RetryState()
++        started = asyncio.get_running_loop().time()
++        try:
++            return await synthesize_with_retry(self._tts, text, conn_options=self._conn_options, state=state)
++        finally:
++            emit_metrics(self._tts, state, duration=asyncio.get_running_loop().time() - started)
+ 
+     def stream(self, text: str):
+         return stream_with_retry(self._tts, text, conn_options=self._conn_options)
+`;
+
+// A change to two files, shorter than a screen.
+export const twoFileDiff = `diff --git a/livekit-agents/livekit/agents/voice/room_io/room_io.py b/livekit-agents/livekit/agents/voice/room_io/room_io.py
+index 5d6e783..d428406 100644
+--- a/livekit-agents/livekit/agents/voice/room_io/room_io.py
++++ b/livekit-agents/livekit/agents/voice/room_io/room_io.py
+@@ -1,6 +1,9 @@
+ class RoomIO:
+     async def _on_session_close(self, ev: CloseEvent) -> None:
+-        await self._audio_output.wait_for_playout()
++        try:
++            await asyncio.wait_for(self._audio_output.wait_for_playout(), timeout=PLAYOUT_TIMEOUT)
++        except asyncio.TimeoutError:
++            logger.warning("playout did not finish before the session closed", extra={"timeout": PLAYOUT_TIMEOUT})
+         await self._room.disconnect()
+ 
+     async def _forward_audio(self, frame) -> None:
+diff --git a/tests/test_tts_retry.py b/tests/test_tts_retry.py
+index 60e1203..a5b27bb 100644
+--- a/tests/test_tts_retry.py
++++ b/tests/test_tts_retry.py
+@@ -1,6 +1,7 @@
+ import pytest
+ 
+ from livekit.agents.types import APIConnectOptions
++from livekit.agents.voice.errors import APIConnectionError
+ from livekit.agents.voice.tts_retry import synthesize_with_retry
+ 
+ from .fake_tts import FakeTTS
+@@ -10,3 +11,10 @@ async def test_retries_once_on_a_dropped_stream():
+     tts = FakeTTS(fail_first=1)
+     await synthesize_with_retry(tts, "hello", conn_options=APIConnectOptions())
+     assert tts.attempts == 2
++
++
++async def test_gives_up_after_max_retry():
++    tts = FakeTTS(fail_first=5)
++    with pytest.raises(APIConnectionError):
++        await synthesize_with_retry(tts, "hello", conn_options=APIConnectOptions(max_retry=2, retry_interval=0))
++    assert tts.attempts == 3
+`;
+
 // bodyHtml and replyHtml are what GitHub's markdown API renders for body and reply.
 const comment = (author: string, body: string, bodyHtml: string, anchor: string, line = 0): Comment => ({
   ...blank.comment,
