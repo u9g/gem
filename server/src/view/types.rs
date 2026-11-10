@@ -86,15 +86,12 @@ pub struct PullRequest {
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
     #[default]
-    Committed,
-    ForcePushed,
     Commented,
     ReviewCommented,
     Approved,
     ChangesRequested,
     Reviewed,
     ReviewDismissed,
-    ReviewRequested,
     ReadyForReview,
     ConvertedToDraft,
     Retargeted,
@@ -341,16 +338,13 @@ impl From<&proto::Event> for Event {
         use proto::EventKind as K;
         Event {
             id: event.id.clone(),
-            kind: match K::try_from(event.kind).unwrap_or(K::Committed) {
-                K::Committed => EventKind::Committed,
-                K::ForcePushed => EventKind::ForcePushed,
+            kind: match K::try_from(event.kind).unwrap_or(K::Commented) {
                 K::Commented => EventKind::Commented,
                 K::ReviewCommented => EventKind::ReviewCommented,
                 K::Approved => EventKind::Approved,
                 K::ChangesRequested => EventKind::ChangesRequested,
                 K::Reviewed => EventKind::Reviewed,
                 K::ReviewDismissed => EventKind::ReviewDismissed,
-                K::ReviewRequested => EventKind::ReviewRequested,
                 K::ReadyForReview => EventKind::ReadyForReview,
                 K::ConvertedToDraft => EventKind::ConvertedToDraft,
                 K::Retargeted => EventKind::Retargeted,

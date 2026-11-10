@@ -35,4 +35,4 @@ export type FileDiff = { path: string, patch: string, };
 
 export type Event = { id: string, kind: EventKind, actor: string, at?: number, url: string, body: string, bodyHtml: string, subject: string, comments: Array<Event>, answering: boolean, };
 
-export type EventKind = "committed" | "forcePushed" | "commented" | "reviewCommented" | "approved" | "changesRequested" | "reviewed" | "reviewDismissed" | "reviewRequested" | "readyForReview" | "convertedToDraft" | "retargeted" | "renamed" | "closed" | "reopened" | "merged";
+export type EventKind = "commented" | "reviewCommented" | "approved" | "changesRequested" | "reviewed" | "reviewDismissed" | "readyForReview" | "convertedToDraft" | "retargeted" | "renamed" | "closed" | "reopened" | "merged";
