@@ -2,6 +2,8 @@ import type { LucideIcon } from 'lucide-react';
 import {
   Bot,
   Check,
+  ChevronDown,
+  ChevronUp,
   Eye,
   EyeOff,
   GitBranch,
@@ -14,11 +16,11 @@ import {
   Undo2,
   X,
 } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import { type ComponentRef, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { type ClusterView, timeAgo } from './ClusterView';
-import { bySubject, ProposalGroup } from './ProposalView';
+import { bySubject, ProposalGroup, Stage } from './ProposalView';
 import { Html } from './surfaces';
 import { Button, Icon, t3, usePhone } from './t3';
 import type { Cluster, Event, EventKind, PullRequest } from './view-types';
@@ -28,6 +30,10 @@ import type { Cluster, Event, EventKind, PullRequest } from './view-types';
 // naming who did what on which PR, with the comment or review under it. Under a comment waiting
 // on the user is the agent's answer to it: its proposals, to approve or dismiss in place, or that
 // it is answering.
+//
+// Off a phone, the change a proposal makes is a stage: under the proposal's band it runs from the
+// window's left edge to its right one, across the column the page is otherwise in, and the column
+// goes on under it.
 
 const ref = (pr: PullRequest) => `${pr.repository?.name ?? ''}#${pr.number}`;
 
@@ -126,8 +132,80 @@ export function Activity({
   const hueOf = (cluster: Cluster) => hues[clusters.indexOf(cluster) % hues.length];
   const latest = entries[0]?.event.at;
 
-  return (
-    <View style={styles.page}>
+  // The stages down the page, in order. Each is as wide as the view that scrolls the page; how far
+  // that reaches to either side of a proposal only the browser's layout knows, so it is read from
+  // there and written back whenever it changes, before the browser paints.
+  const page = useRef<ComponentRef<typeof View>>(null);
+  const [order, setOrder] = useState<string[]>([]);
+  const scroller = () => {
+    let element = (page.current as unknown as HTMLElement | null)?.parentElement;
+    while (element && !/auto|scroll/.test(getComputedStyle(element).overflowY)) element = element.parentElement;
+    return element ?? undefined;
+  };
+  const measure = () => {
+    const frame = scroller();
+    if (!frame) return;
+    const stages = [...frame.querySelectorAll<HTMLElement>('[data-stage]')];
+    const left = frame.getBoundingClientRect().left;
+    const lefts = stages.map((stage) => stage.getBoundingClientRect().left);
+    stages.forEach((stage, i) => {
+      const surface = stage.firstElementChild as HTMLElement;
+      surface.style.marginLeft = `${left - lefts[i]}px`;
+      surface.style.width = `${frame.clientWidth}px`;
+    });
+    const ids = stages.map((stage) => stage.dataset.stage!);
+    setOrder((old) => (old.join('\n') === ids.join('\n') ? old : ids));
+  };
+  // A stage that comes, goes or moves sideways changes what the page holds, how tall it is or how
+  // wide its window is.
+  useLayoutEffect(measure);
+  useLayoutEffect(() => {
+    const frame = scroller();
+    if (!frame) return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    observer.observe(page.current as unknown as HTMLElement);
+    return () => observer.disconnect();
+  }, []);
+
+  // What a stage's bar says for the page, which is scrolled away above it: who commented on which
+  // PR and the cluster that is in, then which change this is and the way to the ones before and
+  // after it.
+  const bar = (id: string, pullRequestUrl: string) => {
+    const found = prs.find(({ pr }) => pr.proposals.some((proposal) => proposal.id === id));
+    if (!found) return null;
+    const { pr, cluster } = found;
+    const at = order.indexOf(id);
+    const go = (to: number) => () =>
+      scroller()
+        ?.querySelector(`[data-stage="${CSS.escape(order[to])}"]`)
+        ?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    return (
+      <>
+        <View {...({ dataSet: { gather: '' } } as object)} style={styles.barContext}>
+          <Text numberOfLines={1} style={styles.barText}>
+            <Text style={styles.strong}>{pr.proposals.find((proposal) => proposal.id === id)?.comment?.author}</Text> on{' '}
+            <Text style={styles.ref}>{ref(pr)}</Text>
+            {pullRequestUrl !== pr.url && ` · changes ${pullRequestUrl.split('/').slice(-3).filter((part) => part !== 'pull').join('#')}`}
+          </Text>
+          <Text numberOfLines={1} style={[styles.clusterChip, styles.barChip]}>
+            <Text style={{ color: hueOf(cluster) }}>● </Text>
+            {nameOf(cluster)}
+          </Text>
+        </View>
+        <View style={styles.barSteps}>
+          <Text style={styles.barText}>
+            Change {at + 1} of {order.length}
+          </Text>
+          <Step icon={ChevronUp} label="Previous change" disabled={at <= 0} onPress={go(at - 1)} />
+          <Step icon={ChevronDown} label="Next change" disabled={at >= order.length - 1} onPress={go(at + 1)} />
+        </View>
+      </>
+    );
+  };
+
+  const feed = (
+    <View ref={page} style={styles.page}>
       <View style={[styles.header, phone && styles.headerPhone]}>
         <View style={styles.titleBlock}>
           <Text style={[styles.title, phone && styles.titlePhone]}>Activity</Text>
@@ -182,6 +260,15 @@ export function Activity({
       </View>
     </View>
   );
+  return <Stage value={phone ? undefined : bar}>{feed}</Stage>;
+}
+
+function Step({ icon, label, disabled, onPress }: { icon: LucideIcon; label: string; disabled: boolean; onPress: () => void }) {
+  return (
+    <Pressable accessibilityLabel={label} disabled={disabled} onPress={onPress} style={[styles.step, disabled && { opacity: 0.35 }]}>
+      <Icon icon={icon} size={14} color={t3.foreground} />
+    </Pressable>
+  );
 }
 
 // One line of the timeline: a badge on the rail, who did what on which PR, when; and under it the
@@ -207,6 +294,7 @@ function EventLine({
   const said = event.bodyHtml !== '' || comments.length > 0;
   const open = () => (event.url ? Linking.openURL(event.url) : onOpenCluster(cluster.pullRequests[0].url));
   const follows = place === 'follows';
+  const phone = usePhone();
   return (
     <View style={[styles.event, place === 'leads' && styles.leads, follows && styles.follows]}>
       <View style={[styles.eventLine, follows && styles.eventLineFollows]}>
@@ -243,7 +331,7 @@ function EventLine({
       </View>
       {said && (
         <View style={styles.eventBody}>
-          <View style={styles.card}>
+          <View style={[styles.card, phone && styles.cardPhone]}>
             <View style={styles.cardHead}>
               <Text style={styles.strong}>{actor}</Text>
               <Text numberOfLines={1} style={styles.cardTitle}>
@@ -531,10 +619,13 @@ const styles = StyleSheet.create({
   when: {
     color: t3.faint,
   },
+  // Off a phone nothing in a card is cut to it: a stage in it runs past both its edges.
   card: {
     borderRadius: 12,
     borderWidth: 1,
     borderColor: t3.border,
+  },
+  cardPhone: {
     overflow: 'hidden',
   },
   cardHead: {
@@ -543,6 +634,8 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 8,
+    borderTopLeftRadius: 11,
+    borderTopRightRadius: 11,
     borderBottomWidth: 1,
     borderBottomColor: t3.border,
     backgroundColor: 'rgba(255, 255, 255, 0.03)',
@@ -582,5 +675,37 @@ const styles = StyleSheet.create({
   answerText: {
     color: t3.muted,
     fontSize: 12,
+  },
+  barContext: {
+    flexShrink: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  barText: {
+    flexShrink: 0,
+    color: t3.muted,
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
+  },
+  barChip: {
+    flexShrink: 1,
+    maxWidth: 280,
+    marginLeft: 0,
+    lineHeight: 20,
+  },
+  barSteps: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  step: {
+    width: 24,
+    height: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
   },
 });

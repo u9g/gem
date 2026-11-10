@@ -6,3 +6,49 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* What moves around a staged change moves by where the page is scrolled to and nothing else, so
+   scrolling back undoes it exactly. Where a browser has no scroll timelines, or the user asked
+   for less motion, nothing moves: a stage is as wide as its screen made it from the start, and
+   its bar always says everything. */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    /* Two clocks on a stage's top edge: one over its first steps up from the bottom of the
+       screen, one over the steps that take the band above it, a couple of hundred pixels tall,
+       off the top. */
+    [data-stage] {
+      view-timeline-name: --stage-rises, --stage-docks;
+      view-timeline-axis: block;
+      view-timeline-inset: auto, 200px calc(100% - 320px);
+    }
+
+    /* The change widens out of its band to the width its screen gave it. */
+    [data-stage] > * {
+      animation: stage-widens linear both;
+      animation-timeline: --stage-rises;
+      animation-range: cover 0% cover 280px;
+    }
+
+    /* What the page said above the change arrives in its bar as that scrolls away. */
+    [data-gather] {
+      animation: stage-gathers linear both;
+      animation-timeline: --stage-docks;
+      animation-range: cover 0% exit-crossing 0%;
+    }
+  }
+}
+
+@keyframes stage-widens {
+  from {
+    width: 100%;
+    margin-left: 0;
+    border-radius: 8px;
+  }
+}
+
+@keyframes stage-gathers {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+}

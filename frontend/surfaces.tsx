@@ -19,7 +19,7 @@ import 'github-markdown-css/github-markdown-dark.css';
 
 import type { CheckFailure, Comment, NewPullRequest, Proposal } from './view-types';
 import { languageOf, Tokens, useTokens } from './highlight';
-import { editHunk, newSides, splitFiles } from './patch';
+import { editHunk, newSides, sideBySide, splitFiles } from './patch';
 import { DiffStat, diffFiles, Icon, t3 } from './t3';
 
 // T3 Code's surfaces for what a proposal does, rebuilt in React Native.
@@ -74,26 +74,35 @@ export function parseDiff(diff: string): { path: string; lines: DiffLine[] }[] {
 // `header` replaces each file header's stats, e.g. with an error mark. Given `onChange`, each file's
 // Diff / Edit switch flips it to the code the patch leaves, to rewrite; `diff` is then the user's
 // rewrite of `suggested`, which has the same files.
+//
+// Given `stage`, the surface is a place to review the patch at whatever width it is given: old and
+// new side by side with no line wrapped or cut, under a bar per file that stays at the top of the
+// scroll while its file passes. The bar names the file and its place among the patch's files, and
+// ends in `stage`.
 export function DiffSurface({
   diff,
   header,
   suggested,
   onChange,
+  stage,
 }: {
   diff: string;
   header?: ReactNode;
   suggested?: string;
   onChange?: (diff: string) => void;
+  stage?: ReactNode;
 }) {
   const files = splitFiles(diff);
   const theirs = suggested === undefined ? [] : splitFiles(suggested);
   return (
-    <View style={{ gap: 8 }}>
+    <View style={stage === undefined && { gap: 8 }}>
       {files.map((file, i) => (
         <DiffFile
           key={i}
           file={file}
           header={header}
+          stage={stage}
+          place={files.length > 1 ? `File ${i + 1} of ${files.length}` : undefined}
           suggested={theirs[i]}
           onChange={onChange && ((edited) => onChange(files.map((f, j) => (j === i ? edited : f)).join('\n')))}
         />
@@ -106,11 +115,15 @@ export function DiffSurface({
 function DiffFile({
   file: piece,
   header,
+  stage,
+  place,
   suggested,
   onChange,
 }: {
   file: string;
   header?: ReactNode;
+  stage?: ReactNode;
+  place?: string;
   suggested?: string;
   onChange?: (file: string) => void;
 }) {
@@ -164,6 +177,55 @@ function DiffFile({
             </View>
           </View>
         ))
+      : stage !== undefined ? (
+          <View style={styles.split}>
+            {(['old', 'number'] as const).map((side) => {
+              const numbers = gutterWidth(file.lines.map((line) => line[side] ?? 0));
+              return (
+                <ScrollView
+                  key={side}
+                  horizontal
+                  style={[styles.splitSide, side === 'number' && styles.splitNew]}
+                  contentContainerStyle={styles.diffLines}
+                >
+                  <View style={styles.splitLines}>
+                    {sideBySide(file.lines).map((row, r) => {
+                      const i = row[side === 'old' ? 0 : 1];
+                      const line = i === undefined ? undefined : file.lines[i];
+                      if (!line) return <View key={r} style={[styles.splitLine, styles.splitNone]} />;
+                      if (line.kind === 'hunk') {
+                        // Says what was skipped, which is nothing above a file's first lines.
+                        return r === 0 && line.text === '' ? null : (
+                          <Text key={r} numberOfLines={1} style={[styles.hunk, styles.splitHunk]}>
+                            {side === 'old' && `⋯  ${line.text}`}
+                          </Text>
+                        );
+                      }
+                      const tint = line.kind === 'add' ? styles.splitAdd : line.kind === 'del' ? styles.splitDel : undefined;
+                      return (
+                        <View key={r} style={[styles.splitLine, tint]}>
+                          <Text numberOfLines={1} style={[styles.gutter, styles.splitGutter, numbers, tint]}>
+                            {line[side]}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.diffText,
+                              styles.splitText,
+                              line.kind === 'add' && { color: '#6EE7B7' },
+                              line.kind === 'del' && { color: '#FCA5A5' },
+                            ]}
+                          >
+                            {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '} <Tokens tokens={tokens[i!]} text={line.text} />
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              );
+            })}
+          </View>
+        )
       : file.lines.map((line, i) =>
           line.kind === 'hunk' ? (
             <Text key={i} style={styles.hunk}>
@@ -197,6 +259,7 @@ function DiffFile({
   return (
     <CodeSurface
       path={file.path}
+      stage={stage !== undefined}
       header={
         <>
           {edited && <Text style={styles.edited}>Edited</Text>}
@@ -206,6 +269,7 @@ function DiffFile({
           </Pressable>
         )}
           {header ?? <DiffStat added={stat.added} removed={stat.removed} />}
+          {place !== undefined && <Text style={styles.place}>{place}</Text>}
           {hunks && (
             <View style={[styles.segmented, { marginLeft: 4 }]}>
               {[false, true].map((edit) => (
@@ -215,26 +279,47 @@ function DiffFile({
               ))}
             </View>
           )}
+          {stage !== undefined && <View style={styles.stageEnd}>{stage}</View>}
         </>
       }
     >
-      {editing && hunks ? lines : <CodeLines>{lines}</CodeLines>}
+      {(editing && hunks) || stage !== undefined ? lines : <CodeLines>{lines}</CodeLines>}
     </CodeSurface>
   );
 }
 
 // T3 Code's code surface: the file's name over its code, with `header` after the name, or the code
-// alone without a path. Given `href`, the name links to the file.
-function CodeSurface({ path, href, header, children }: { path?: string; href?: string; header?: ReactNode; children: ReactNode }) {
-  const name = (
+// alone without a path. Given `href`, the name links to the file. On a `stage` the name is the
+// whole path in a bar that stays at the top of the scroll while the code passes under it.
+function CodeSurface({
+  path,
+  href,
+  header,
+  stage = false,
+  children,
+}: {
+  path?: string;
+  href?: string;
+  header?: ReactNode;
+  stage?: boolean;
+  children: ReactNode;
+}) {
+  const folders = path?.split('/') ?? [];
+  const file = folders.pop();
+  const name = stage ? (
+    <Text numberOfLines={1} style={styles.stagePath}>
+      <Text style={styles.stageFolders}>{folders.map((folder) => `${folder}/`).join('')}</Text>
+      {file}
+    </Text>
+  ) : (
     <Text numberOfLines={1} style={styles.diffPath}>
       {path?.split('/').slice(-2).join('/')}
     </Text>
   );
   return (
-    <View style={styles.diffSurface}>
+    <View style={stage ? styles.stageFile : styles.diffSurface}>
       {path !== undefined && (
-        <View style={styles.diffHeader}>
+        <View style={stage ? styles.stageBar : styles.diffHeader}>
           <Icon icon={FileCode} size={14} />
           {href ? (
             // Inline, as a link in .markdown-body would otherwise take the stylesheet's link color.
@@ -760,7 +845,103 @@ export function FailureBanner({ failure, onDismiss }: { failure: Failure; onDism
   );
 }
 
+// A stage's surface, under the page's, and its lines' tints over it: the gutter stays in place
+// over a long line scrolled sideways, so nothing behind it may show through.
+const STAGE = '#11171E';
+const STAGE_ADD = '#112C2B';
+const STAGE_DEL = '#2E2228';
+const STAGE_RULE = 'rgba(255, 255, 255, 0.07)';
+
 const styles = StyleSheet.create({
+  stageFile: {
+    backgroundColor: STAGE,
+  },
+  stageBar: {
+    position: 'sticky',
+    top: 0,
+    zIndex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    height: 40,
+    paddingHorizontal: 14,
+    borderTopWidth: 1,
+    borderTopColor: STAGE_RULE,
+    borderBottomWidth: 1,
+    borderBottomColor: STAGE_RULE,
+    backgroundColor: '#171F29',
+  } as object,
+  stagePath: {
+    flexShrink: 1,
+    color: t3.foreground,
+    fontFamily: t3.mono,
+    fontSize: 12,
+  },
+  stageFolders: {
+    color: t3.faint,
+  },
+  stageEnd: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 14,
+  },
+  place: {
+    color: t3.muted,
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
+  },
+  split: {
+    flexDirection: 'row',
+  },
+  splitLines: {
+    flexGrow: 1,
+    paddingVertical: 6,
+  },
+  // Each side scrolls its own long lines.
+  splitSide: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
+  },
+  splitNew: {
+    borderLeftWidth: 1,
+    borderLeftColor: STAGE_RULE,
+  },
+  // Every row is as tall as any other, so the two sides stay level.
+  splitLine: {
+    flexDirection: 'row',
+    height: 20,
+    backgroundColor: STAGE,
+  },
+  splitNone: {
+    backgroundImage: 'repeating-linear-gradient(135deg, transparent 0 5px, rgba(255, 255, 255, 0.025) 5px 6px)',
+  } as object,
+  splitAdd: {
+    backgroundColor: STAGE_ADD,
+  },
+  splitDel: {
+    backgroundColor: STAGE_DEL,
+  },
+  splitHunk: {
+    height: 28,
+    lineHeight: 28,
+    paddingLeft: 14,
+  },
+  splitGutter: {
+    position: 'sticky',
+    left: 0,
+    zIndex: 1,
+    lineHeight: 20,
+    backgroundColor: STAGE,
+  } as object,
+  splitText: {
+    fontSize: 12,
+    lineHeight: 20,
+  },
   failure: {
     flexDirection: 'row',
     alignItems: 'flex-start',

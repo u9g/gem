@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, CircleAlert, ExternalLink } from 'lucide-react';
-import { type ReactNode, useContext, useState } from 'react';
+import { createContext, type ReactNode, useContext, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import './ProposalView.css';
@@ -34,6 +34,12 @@ export function bySubject(list: readonly Proposal[]): (readonly Proposal[])[] {
   }
   return [...groups.values()];
 }
+
+// Set by a screen that gives a proposal's change a stage: the change leaves the proposal's band for
+// a surface under it that the screen widens to its own width, where old and new are side by side.
+// Called with the proposal's ID and the pull request the patch is for, it gives what the screen
+// has to say in that patch's bar, ahead of the proposal's actions.
+export const Stage = createContext<((id: string, pullRequestUrl: string) => ReactNode) | undefined>(undefined);
 
 // The last lines of a review comment's diff hunk, ending at the line it is on, as a one-file diff.
 function anchorDiff(path: string, hunk: string, lines = 6): string {
@@ -153,6 +159,7 @@ function ProposalView({
   onInvestigate?: () => void;
 }) {
   const login = useContext(Login);
+  const stage = useContext(Stage);
   const phone = usePhone();
   const id = proposal.id;
   const reply = proposal.reply;
@@ -174,6 +181,7 @@ function ProposalView({
   const [repository, number] = pullRequestName(pullRequestUrl);
   const comment = proposal.comment;
   const stacked = phone || anchored;
+  const staged = stage !== undefined && (patch !== undefined || otherPatches.length > 0);
   const clamp = (max: number, children: ReactNode) => (anchored ? children : <Clamp max={max}>{children}</Clamp>);
   // Comments are cut only where the screen is too small to show them in full.
   const commentMax = anchored || !phone ? undefined : 110;
@@ -206,7 +214,7 @@ function ProposalView({
       )}
     </>
   );
-  return (
+  const band = (
     <View style={[styles.band, inline && styles.bandInline, error !== '' && styles.bandError]}>
       <View style={styles.header}>
         <Icon icon={proposalIcon(proposal)} color={error ? t3.deletion : t3.muted} />
@@ -281,7 +289,7 @@ function ProposalView({
             )}
           </View>
         )}
-        <View style={[styles.column, stacked ? styles.columnStacked : styles.change]}>
+        <View style={[styles.column, stacked ? styles.columnStacked : styles.change, staged && styles.changeStaged]}>
           {suggestedFollowUp !== '' && (
             <FollowUpCard
               pr={pullRequestUrl}
@@ -301,7 +309,7 @@ function ProposalView({
                   removed={files.reduce((n, f) => n + f.removed, 0)}
                 />
               </Text>
-              {clamp(130, <DiffSurface diff={diff} suggested={patch.diff} onChange={setDiff} />)}
+              {!staged && clamp(130, <DiffSurface diff={diff} suggested={patch.diff} onChange={setDiff} />)}
             </>
           ) : requestedTool ? (
             <ToolRequestBanner proposal={proposal} />
@@ -330,7 +338,7 @@ function ProposalView({
                     removed={files.reduce((n, f) => n + f.removed, 0)}
                   />
                 </Text>
-                {clamp(130, <DiffSurface diff={other.diff} />)}
+                {!staged && clamp(130, <DiffSurface diff={other.diff} />)}
               </View>
             );
           })}
@@ -341,11 +349,47 @@ function ProposalView({
       {phone && investigate && <View style={styles.phoneActions}>{investigate}</View>}
     </View>
   );
+  if (!staged) return band;
+  // The band scrolls away while its change is read, so the change's bar has the actions too.
+  const bar = (url: string) => (
+    <>
+      {stage(id, url)}
+      <View {...({ dataSet: { gather: '' } } as object)} style={styles.stageActions}>
+        {actions}
+      </View>
+    </>
+  );
+  return (
+    <>
+      {band}
+      {/* Named for the screen to find, which widens the view inside. */}
+      <View {...({ dataSet: { stage: id } } as object)}>
+        <View style={styles.stage}>
+          {patch && <DiffSurface diff={diff} suggested={patch.diff} onChange={setDiff} stage={bar(pullRequestUrl)} />}
+          {otherPatches.map((other) => (
+            <DiffSurface key={other.pullRequestUrl} diff={other.diff} stage={bar(other.pullRequestUrl)} />
+          ))}
+        </View>
+      </View>
+    </>
+  );
 }
 
 const summaryHtml = { fontSize: 14, lineHeight: '22px' };
 
 const styles = StyleSheet.create({
+  // The last file's bottom edge, as each file's bar is its top one. Clipped to its corners, which
+  // are round while it is still as narrow as the band, and by `clip`: a view that could scroll
+  // would hold the files' bars in place of the page's scroll.
+  stage: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
+    overflow: 'clip',
+  } as object,
+  stageActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
   band: {
     gap: 10,
     padding: 12,
@@ -417,6 +461,10 @@ const styles = StyleSheet.create({
   },
   change: {
     minWidth: 360,
+  },
+  // What a staged change commits, on the band's last line, over its stage.
+  changeStaged: {
+    flexBasis: '100%',
   },
   where: {
     color: t3.faint,

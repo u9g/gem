@@ -5,7 +5,7 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { Activity } from '../../Activity';
 import { t3, usePhone } from '../../t3';
 import type { Cluster, Event, EventKind, PullRequest } from '../../view-types';
-import { blank, clusterMergeBy, mergeBy, stored } from '../fixtures';
+import { blank, clusterMergeBy, longDiff, mergeBy, stored, twoFileDiff } from '../fixtures';
 
 // Every open PR's activity, as the app shows it: under the toolbar on a laptop, under a back bar on
 // a phone.
@@ -184,6 +184,141 @@ const clusters: Cluster[] = [
   stored({ ...blank.cluster, updatedAt: hoursAgo(5.5), pullRequests: [docs], mergeBy: clusterMergeBy([docs]) }),
 ];
 
+// The feed with two answers that change code: one to a review's question, taller than a laptop's
+// screen, and further down one to the first of a review's two comments on lines, shorter than
+// one, with the feed going on above, between and below them. Each change is a stage from the
+// window's left edge to its right one, across the column the feed is in.
+const backoffUrl = 'https://github.com/livekit/agents/pull/4830';
+const backoff = pullRequest('agents', 4830, 'fix(voice): back off between TTS retries', {
+  proposals: [
+    stored({
+      ...blank.proposal,
+      id: 'stage-backoff',
+      summary: 'Honor max_retry and back off between attempts, reply, and resolve',
+      summaryHtml: '<p dir="auto">Honor max_retry and back off between attempts, reply, and resolve</p>',
+      pullRequestUrl: backoffUrl,
+      comment: {
+        ...blank.comment,
+        id: 'stage-backoff-comment',
+        author: 'theomonnom',
+        path: 'livekit-agents/livekit/agents/voice/tts_retry.py',
+        body: 'This still sleeps a fixed 100 ms and gives up after one attempt. Can it read both from conn_options, like STT does?',
+        bodyHtml:
+          '<p dir="auto">This still sleeps a fixed 100 ms and gives up after one attempt. Can it read both from <code class="notranslate">conn_options</code>, like STT does?</p>',
+      },
+      threadId: 'thread-stage-backoff',
+      patch: { ...blank.patch, diff: longDiff, commitMessage: 'fix(voice): honor max_retry and back off between TTS retries' },
+      reply: 'It does now: the retry count and the wait both come from `conn_options`, and the wait doubles each attempt up to 2 s.\n',
+      replyHtml:
+        '<p dir="auto">It does now: the retry count and the wait both come from <code class="notranslate">conn_options</code>, and the wait doubles each attempt up to 2 s.</p>',
+      resolveThread: true,
+    }),
+  ],
+  checksPassing: true,
+  createdAt: hoursAgo(50),
+  events: [
+    event('commented', 'u9g', 1, {
+      ...said('Rebased onto main; the metrics PR can go on top once this lands.', '<p dir="auto">Rebased onto main; the metrics PR can go on top once this lands.</p>'),
+    }),
+    event('changesRequested', 'theomonnom', 4, {
+      ...said('Close. One thing inline before I approve.', '<p dir="auto">Close. One thing inline before I approve.</p>'),
+      comments: [
+        event('reviewCommented', 'theomonnom', 4, {
+          id: 'stage-backoff-comment',
+          subject: 'livekit-agents/livekit/agents/voice/tts_retry.py',
+          ...said(
+            'This still sleeps a fixed 100 ms and gives up after one attempt. Can it read both from conn_options, like STT does?',
+            '<p dir="auto">This still sleeps a fixed 100 ms and gives up after one attempt. Can it read both from <code class="notranslate">conn_options</code>, like STT does?</p>',
+          ),
+        }),
+      ],
+    }),
+    event('readyForReview', 'u9g', 9, { url: '' }),
+    event('convertedToDraft', 'u9g', 11, { url: '' }),
+  ],
+});
+
+const playoutUrl = 'https://github.com/livekit/agents/pull/4835';
+const playout = pullRequest('agents', 4835, 'fix(voice): bound the playout wait on close', {
+  proposals: [
+    stored({
+      ...blank.proposal,
+      id: 'stage-playout',
+      summary: 'Bound the playout wait, cover the retry with tests, reply, and resolve',
+      summaryHtml: '<p dir="auto">Bound the playout wait, cover the retry with tests, reply, and resolve</p>',
+      pullRequestUrl: playoutUrl,
+      comment: {
+        ...blank.comment,
+        id: 'stage-playout-comment',
+        author: 'longcw',
+        path: 'livekit-agents/livekit/agents/voice/room_io/room_io.py',
+        body: 'This can hang forever if the output never drains. Give it a timeout?',
+        bodyHtml: '<p dir="auto">This can hang forever if the output never drains. Give it a timeout?</p>',
+      },
+      threadId: 'thread-stage-playout',
+      patch: { ...blank.patch, diff: twoFileDiff, commitMessage: 'fix(voice): bound the playout wait and cover TTS retries' },
+      reply: 'Bounded it with `PLAYOUT_TIMEOUT` and it logs when the wait runs out.\n',
+      replyHtml: '<p dir="auto">Bounded it with <code class="notranslate">PLAYOUT_TIMEOUT</code> and it logs when the wait runs out.</p>',
+      resolveThread: true,
+    }),
+  ],
+  checksPassing: true,
+  createdAt: hoursAgo(70),
+  events: [
+    event('approved', 'davidzhao', 2, { ...said('LGTM once the timeout is in.', '<p dir="auto">LGTM once the timeout is in.</p>') }),
+    event('commented', 'github-actions', 6, {
+      answering: true,
+      ...said(
+        '1 check failed on c883a61: `test (3.12)`.',
+        '<p dir="auto">1 check failed on c883a61: <code class="notranslate">test (3.12)</code>.</p>',
+      ),
+    }),
+    event('reviewed', 'longcw', 20, {
+      comments: [
+        event('reviewCommented', 'longcw', 20, {
+          id: 'stage-playout-comment',
+          subject: 'livekit-agents/livekit/agents/voice/room_io/room_io.py',
+          ...said(
+            'This can hang forever if the output never drains. Give it a timeout?',
+            '<p dir="auto">This can hang forever if the output never drains. Give it a timeout?</p>',
+          ),
+        }),
+        event('reviewCommented', 'longcw', 20, {
+          subject: 'livekit-agents/livekit/agents/voice/room_io/room_io.py',
+          ...said('Nit: `disconnect()` can move into a `finally`.', '<p dir="auto">Nit: <code class="notranslate">disconnect()</code> can move into a <code class="notranslate">finally</code>.</p>'),
+        }),
+      ],
+    }),
+    event('renamed', 'u9g', 60, { subject: 'fix(voice): bound the playout wait on close', url: '' }),
+    event('retargeted', 'u9g', 61, { subject: 'main', url: '' }),
+  ],
+});
+
+const staged: Cluster[] = [
+  stored({
+    ...blank.cluster,
+    name: 'Back off between TTS retries',
+    updatedAt: hoursAgo(1),
+    pullRequests: [backoff],
+    mergeBy: clusterMergeBy([backoff]),
+  }),
+  stored({
+    ...blank.cluster,
+    name: 'Bound the playout wait on close',
+    updatedAt: hoursAgo(2),
+    pullRequests: [playout],
+    mergeBy: clusterMergeBy([playout]),
+  }),
+  stored({ ...blank.cluster, updatedAt: hoursAgo(5.5), pullRequests: [docs], mergeBy: clusterMergeBy([docs]) }),
+  stored({
+    ...blank.cluster,
+    name: 'Close the STT websocket on session end',
+    updatedAt: hoursAgo(26),
+    pullRequests: [websocket],
+    mergeBy: clusterMergeBy([websocket]),
+  }),
+];
+
 const noop = () => {};
 
 function Frame({ clusters }: { clusters: Cluster[] }) {
@@ -224,6 +359,7 @@ const meta: Meta = { title: 'Activity/Feed' };
 export default meta;
 
 export const Feed: StoryObj = { render: () => <Frame clusters={clusters} /> };
+export const Changes: StoryObj = { render: () => <Frame clusters={staged} /> };
 export const Empty: StoryObj = {
   render: () => <Frame clusters={[stored({ ...blank.cluster, pullRequests: [pullRequest('agents', 4840, 'chore: bump deps', { events: [] })] })]} />,
 };

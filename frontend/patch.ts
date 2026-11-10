@@ -137,3 +137,24 @@ export function editHunk(piece: string, index: number, lines: string[]): string 
     ...file.hunks.flatMap((h, i) => [`@@ -${h.oldStart},${h.oldCount} +${starts[i]},${h.newCount} @@${h.context}`, ...h.body, ...h.trailer]),
   ].join('\n');
 }
+
+// The lines of a file's diff as rows of the old side's line and the new side's, by their place in
+// `lines`: context and a hunk's header on both sides, and a run of deletions beside the additions
+// that replace it, the shorter of the two padded with rows that have no line.
+export function sideBySide(lines: readonly { kind: 'add' | 'del' | 'ctx' | 'hunk' }[]): [number | undefined, number | undefined][] {
+  const rows: [number | undefined, number | undefined][] = [];
+  let [dels, adds]: number[][] = [[], []];
+  const flush = () => {
+    for (let i = 0; i < Math.max(dels.length, adds.length); i++) rows.push([dels[i], adds[i]]);
+    [dels, adds] = [[], []];
+  };
+  lines.forEach((line, i) => {
+    if (line.kind === 'add') return adds.push(i);
+    // A deletion after additions starts the next run.
+    if (line.kind !== 'del' || adds.length) flush();
+    if (line.kind === 'del') dels.push(i);
+    else rows.push([i, i]);
+  });
+  flush();
+  return rows;
+}
