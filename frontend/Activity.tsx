@@ -6,30 +6,23 @@ import {
   ChevronUp,
   Eye,
   EyeOff,
-  GitBranch,
-  GitMerge,
-  GitPullRequestClosed,
-  GitPullRequestDraft,
   MessageSquare,
-  Pencil,
-  RotateCcw,
-  Undo2,
   X,
 } from 'lucide-react';
-import { type ComponentRef, type ReactNode, useContext, useLayoutEffect, useRef, useState } from 'react';
+import { type ComponentRef, type ReactNode, useLayoutEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { type ClusterView, timeAgo } from './ClusterView';
 import { bySubject, ProposalGroup, Stage } from './ProposalView';
-import { Html, Login } from './surfaces';
+import { Html } from './surfaces';
 import { Button, Icon, t3, usePhone } from './t3';
 import type { Cluster, Event, EventKind, PullRequest } from './view-types';
 
-// Every open PR's activity on one screen, as GitHub's feed and a PR's Conversation tab would show
-// it together: one timeline of what happened across all of them, newest day first, each line
-// naming who did what on which PR, with the comment or review under it. Under a comment waiting
-// on the user is the agent's answer to it: its proposals, to approve or dismiss in place, or that
-// it is answering.
+// What waits on the user across every open PR, as a to-do list in the shape of GitHub's feed: one
+// timeline, newest day first, each line naming who said what on which PR, with the comment or
+// review under it and under that the agent's answer to it: its proposals, to approve or dismiss in
+// place, or that it is answering. A comment is listed from when an agent starts answering it until
+// none of its proposals is left, so approving or dismissing the last one takes it off the list.
 //
 // Off a phone, the change a proposal makes is a stage: under the proposal's band it runs from the
 // window's left edge to its right one, across the column the page is otherwise in, and the column
@@ -40,36 +33,27 @@ const ref = (pr: PullRequest) => `${pr.repository?.name ?? ''}#${pr.number}`;
 // GitHub's colors for a review's state and a PR's state label.
 const approved = '#3FB950';
 const changes = '#F85149';
-const merged = '#A371F7';
 const link = '#8FA8F5';
 
 // What each kind of event looks like on the rail, and the verb that follows the actor.
 type Look = { icon: LucideIcon; tone?: string; verb: string; filter: Filter };
-const kinds: Record<EventKind, Look> = {
+// Only what someone said can wait on the user, so the kinds that say a PR changed state have none.
+const kinds: Partial<Record<EventKind, Look>> = {
   commented: { icon: MessageSquare, tone: link, verb: 'commented on', filter: 'comments' },
   // Only inside its review's card, never a line of its own.
   reviewCommented: { icon: MessageSquare, tone: link, verb: 'commented on a line of', filter: 'reviews' },
   approved: { icon: Check, tone: approved, verb: 'approved', filter: 'reviews' },
   changesRequested: { icon: X, tone: changes, verb: 'requested changes on', filter: 'reviews' },
   reviewed: { icon: Eye, tone: link, verb: 'reviewed', filter: 'reviews' },
-  reviewDismissed: { icon: Undo2, tone: t3.warning, verb: 'dismissed a review on', filter: 'reviews' },
-  readyForReview: { icon: Eye, tone: approved, verb: 'marked ready for review', filter: 'status' },
-  convertedToDraft: { icon: GitPullRequestDraft, verb: 'converted to draft', filter: 'status' },
-  retargeted: { icon: GitBranch, tone: t3.warning, verb: 'changed the base of', filter: 'status' },
-  renamed: { icon: Pencil, verb: 'renamed', filter: 'status' },
-  closed: { icon: GitPullRequestClosed, tone: changes, verb: 'closed', filter: 'status' },
-  reopened: { icon: RotateCcw, tone: approved, verb: 'reopened', filter: 'status' },
-  merged: { icon: GitMerge, tone: merged, verb: 'merged', filter: 'status' },
 };
 
 // GitHub's filter on a PR's timeline: by what kind of thing happened.
-const filters = ['all', 'comments', 'reviews', 'status'] as const;
+const filters = ['all', 'comments', 'reviews'] as const;
 type Filter = (typeof filters)[number];
 const filterLabel: Record<Filter, string> = {
   all: 'All',
   comments: 'Comments',
   reviews: 'Reviews',
-  status: 'Status changes',
 };
 
 type Entry = { event: Event; look: Look; pr: PullRequest; cluster: Cluster };
@@ -102,6 +86,10 @@ function dayOf(at: number | undefined): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+// Whether an agent's answer to what `event` says waits on the user, or is still being written.
+const waits = (event: Event, pr: PullRequest) =>
+  event.answering || pr.proposals.some((proposal) => proposal.comment?.id === event.id);
+
 export function Activity({
   clusters,
   onOpenCluster,
@@ -112,15 +100,18 @@ export function Activity({
   onOpenCluster: (key: string) => void;
 } & Actions) {
   const phone = usePhone();
-  const login = useContext(Login);
   const [filter, setFilter] = useState<Filter>('all');
 
   const prs = clusters.flatMap((cluster) => cluster.pullRequests.map((pr) => ({ pr, cluster })));
   const entries: Entry[] = prs
-    .flatMap(({ pr, cluster }) => (pr.events ?? []).map((event) => ({ event, look: kinds[event.kind], pr, cluster })))
-    // What the user wrote themself is no news to them: their comments, and their replies on lines,
-    // which GitHub wraps in a review.
-    .filter(({ event }) => !(event.actor === login && (event.kind === 'commented' || event.kind === 'reviewed')))
+    .flatMap(({ pr, cluster }) =>
+      (pr.events ?? []).flatMap((event) => {
+        const look = kinds[event.kind];
+        // Of a review's comments on lines, the ones that wait, under the review's own message.
+        const comments = event.comments.filter((comment) => waits(comment, pr));
+        return look && (waits(event, pr) || comments.length > 0) ? [{ event: { ...event, comments }, look, pr, cluster }] : [];
+      }),
+    )
     .sort((a, b) => (b.event.at ?? 0) - (a.event.at ?? 0));
   const listed = entries.filter(({ look }) => filter === 'all' || look.filter === filter);
   const counts = Object.fromEntries(
@@ -214,8 +205,7 @@ export function Activity({
         <View style={styles.titleBlock}>
           <Text style={[styles.title, phone && styles.titlePhone]}>Activity</Text>
           <Text style={styles.meta}>
-            {prs.length} open {prs.length === 1 ? 'pull request' : 'pull requests'} · {entries.length}{' '}
-            {entries.length === 1 ? 'event' : 'events'}
+            {prs.length} open {prs.length === 1 ? 'pull request' : 'pull requests'} · {entries.length} to do
             {latest !== undefined && ` · latest ${timeAgo(new Date(latest))}`}
           </Text>
         </View>
@@ -234,7 +224,7 @@ export function Activity({
           <View style={styles.empty}>
             <Icon icon={EyeOff} size={24} color={t3.faint} />
             <Text style={styles.emptyText}>
-              {entries.length === 0 ? 'Nothing has happened on these pull requests yet.' : 'Nothing matches this filter.'}
+              {entries.length === 0 ? 'Nothing waits on you.' : 'Nothing matches this filter.'}
             </Text>
           </View>
         ) : (
@@ -312,13 +302,6 @@ function EventLine({
           <Text style={styles.ref} onPress={() => onOpenCluster(cluster.pullRequests[0].url)}>
             {ref(pr)}
           </Text>
-          {event.kind === 'retargeted' && event.subject !== '' && (
-            <Text>
-              {' '}
-              to <Text style={styles.mono}>{event.subject}</Text>
-            </Text>
-          )}
-          {event.kind === 'renamed' && event.subject !== '' && <Text> to “{event.subject}”</Text>}
           {event.at !== undefined && <Text style={styles.when}> · {timeAgo(new Date(event.at))}</Text>}{' '}
           {follows ? (
             <Text accessibilityLabel={nameOf(cluster)} style={[styles.sameCluster, { color: hue }]}>
