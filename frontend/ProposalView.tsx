@@ -290,6 +290,7 @@ function ProposalView({
           </View>
         )}
         <View style={[styles.column, stacked ? styles.columnStacked : styles.change, staged && styles.changeStaged]}>
+          {proposal.whyHtml !== '' && <Html html={proposal.whyHtml} style={whyHtml} />}
           {suggestedFollowUp !== '' && (
             <FollowUpCard
               pr={pullRequestUrl}
@@ -376,6 +377,7 @@ function ProposalView({
 }
 
 const summaryHtml = { fontSize: 14, lineHeight: '22px' };
+const whyHtml = { fontSize: 13, lineHeight: '20px' };
 
 const styles = StyleSheet.create({
   // The last file's bottom edge, as each file's bar is its top one. Clipped to its corners, which

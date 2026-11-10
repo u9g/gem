@@ -44,6 +44,7 @@ export const blank = {
     summaryHtml: '',
     investigationId: '',
     otherPatches: [],
+    whyHtml: '',
   } satisfies Proposal,
   comment: { id: '', author: '', body: '', url: '', bodyHtml: '', path: '', line: 0, diffHunk: '' } satisfies Comment,
   patch: { diff: '', commitMessage: '', headOid: '', pullRequestUrl: '' } satisfies Patch,
@@ -543,6 +544,8 @@ export const checkProposalInputs: Proposal[] = [
     id: 'checks-flush',
     summary: 'Stop waiting forever for playout on close, which hangs the test',
     summaryHtml: '<p dir="auto">Stop waiting forever for playout on close, which hangs the test</p>',
+    whyHtml:
+      '<p dir="auto"><code>test_close_mid_utterance</code> times out in <code>wait_for_playout</code>, which never resolves once the room disconnects mid-utterance. Bounding the wait lets close finish.</p>',
     pullRequestUrl: pr.url,
     checkFailure: { ...failure, checks: [tests] },
     patch: { ...blank.patch, diff: flushDiff, commitMessage: 'fix(voice): bound the playout wait on close' },
@@ -550,8 +553,10 @@ export const checkProposalInputs: Proposal[] = [
   {
     ...blank.proposal,
     id: 'checks-rerun',
-    summary: 'Rerun the tests: the runner lost its network',
-    summaryHtml: '<p dir="auto">Rerun the tests: the runner lost its network</p>',
+    summary: 'Rerun the tests',
+    summaryHtml: '<p dir="auto">Rerun the tests</p>',
+    whyHtml:
+      '<p dir="auto">The runner lost its network partway through: <code>pip install</code> timed out reaching PyPI before any test ran, and the same job passed on <a href="https://github.com/livekit/agents/pull/4810">#4810</a> and <a href="https://github.com/livekit/agents/pull/4815">#4815</a> an hour earlier.</p>',
     pullRequestUrl: pr.url,
     checkFailure: { ...failure, checks: [tests] },
     rerun: true,

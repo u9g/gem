@@ -591,7 +591,12 @@ fn agent_api(subject: &Subject) -> String {
 }};
 interface NewProposal {{
   pr: string; // The pull request it is about: {prs}.
-  summary: string; // One line saying what approving does; for request_tool, \"<tool name>: <one line>\".{fields}
+  // A headline of a few words saying what approving does, such as \"Rerun e2e (audio)\"; for
+  // request_tool, \"<tool name>: <one line>\".
+  summary: string;
+  // Markdown saying why this is the answer, with its evidence, such as links to the pull requests
+  // and runs that failed the same way. Shown beside the steps.
+  why?: string;{fields}
   // A change to pr's code, as `git diff` prints it against its head, and its commit message.
   // Never commit or push it yourself.
   patch?: string;

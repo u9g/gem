@@ -179,6 +179,7 @@ pub struct Proposal {
     pub investigation_id: String,
     pub other_patches: Vec<Patch>,
     pub open_pull_request: Option<NewPullRequest>,
+    pub why_html: String,
 }
 
 #[derive(Serialize, Deserialize, TS, Debug, Clone, PartialEq, Default)]
@@ -436,6 +437,7 @@ impl From<&proto::Proposal> for Proposal {
                 body_html: open.body_html.clone(),
                 patch: open.patch.as_ref().map(Patch::from),
             }),
+            why_html: proposal.why_html.clone(),
         }
     }
 }
