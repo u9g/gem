@@ -122,20 +122,20 @@ message PullRequest {
 
 // Something that happened on a pull request, from GitHub's timeline.
 message Event {
-  // GraphQL node ID, or the commit's OID for a commit.
+  // GraphQL node ID.
   string id = 1;
   EventKind kind = 2;
-  // Login of who did it, or a commit author's name when GitHub knows no account for them.
+  // Login of who did it.
   string actor = 3;
   google.protobuf.Timestamp at = 4;
   string url = 5;
-  // What was said, in markdown: a comment's or review's body, or a commit's message headline.
-  // Empty for a review that said nothing and for state changes.
+  // What was said, in markdown: a comment's or review's body. Empty for a review that said
+  // nothing and for state changes.
   string body = 6;
-  // `body` as GitHub renders it. Empty for a commit.
+  // `body` as GitHub renders it.
   string body_html = 7;
-  // What it was about: a review comment's file, the reviewer whose review was requested, the branch
-  // a retarget moved to, or the title a rename gave. Empty otherwise.
+  // What it was about: a review comment's file, the branch a retarget moved to, or the title a
+  // rename gave. Empty otherwise.
   string subject = 8;
   // A review's comments on lines, oldest first, each a REVIEW_COMMENTED event. Empty otherwise.
   repeated Event comments = 9;
@@ -145,11 +145,8 @@ message Event {
 }
 
 enum EventKind {
-  // A commit pushed to the head branch.
-  EVENT_KIND_COMMITTED = 0;
-  EVENT_KIND_FORCE_PUSHED = 1;
   // A top-level comment.
-  EVENT_KIND_COMMENTED = 2;
+  EVENT_KIND_COMMENTED = 0;
   // A review's own comment on a line, only in its review's `comments`.
   EVENT_KIND_REVIEW_COMMENTED = 3;
   // A review that approved.
@@ -158,7 +155,6 @@ enum EventKind {
   // A review that only commented.
   EVENT_KIND_REVIEWED = 6;
   EVENT_KIND_REVIEW_DISMISSED = 7;
-  EVENT_KIND_REVIEW_REQUESTED = 8;
   EVENT_KIND_READY_FOR_REVIEW = 9;
   EVENT_KIND_CONVERTED_TO_DRAFT = 10;
   // The base branch changed; `subject` is the new one.

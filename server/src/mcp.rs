@@ -225,13 +225,13 @@ interface PullRequest {
   noProposalReason: string; // Why the agent answering its failed checks proposed nothing.
   events: Event[]; // What happened on it, oldest first: GitHub's timeline, up to its last 50 items.
 }
-// Something that happened on a pull request. `body` is a comment's or review's markdown, or a
-// commit's message headline; `subject` a review comment's file, a requested reviewer, a retarget's
-// new base or a rename's new title; `comments` a review's comments on lines.
+// Something that happened on a pull request. `body` is a comment's or review's markdown; `subject`
+// a review comment's file, a retarget's new base or a rename's new title; `comments` a review's
+// comments on lines.
 interface Event { id: string; kind: EventKind; actor: string; at: number | null; url: string; body: string; subject: string; comments: Event[] }
-type EventKind = "committed" | "forcePushed" | "commented" | "reviewCommented" | "approved" | "changesRequested"
-  | "reviewed" | "reviewDismissed" | "reviewRequested" | "readyForReview" | "convertedToDraft" | "retargeted"
-  | "renamed" | "closed" | "reopened" | "merged";
+type EventKind = "commented" | "reviewCommented" | "approved" | "changesRequested" | "reviewed"
+  | "reviewDismissed" | "readyForReview" | "convertedToDraft" | "retargeted" | "renamed" | "closed"
+  | "reopened" | "merged";
 interface Agent {
   id: string;
   title: string;

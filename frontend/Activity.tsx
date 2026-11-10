@@ -37,10 +37,9 @@ const changes = '#F85149';
 const merged = '#A371F7';
 const link = '#8FA8F5';
 
-// What each kind of event looks like on the rail, and the verb that follows the actor. Commits and
-// review requests have no line: a server from before it stopped sending them still does.
+// What each kind of event looks like on the rail, and the verb that follows the actor.
 type Look = { icon: LucideIcon; tone?: string; verb: string; filter: Filter };
-const kinds: Partial<Record<EventKind, Look>> = {
+const kinds: Record<EventKind, Look> = {
   commented: { icon: MessageSquare, tone: link, verb: 'commented on', filter: 'comments' },
   // Only inside its review's card, never a line of its own.
   reviewCommented: { icon: MessageSquare, tone: link, verb: 'commented on a line of', filter: 'reviews' },
@@ -111,12 +110,7 @@ export function Activity({
 
   const prs = clusters.flatMap((cluster) => cluster.pullRequests.map((pr) => ({ pr, cluster })));
   const entries: Entry[] = prs
-    .flatMap(({ pr, cluster }) =>
-      (pr.events ?? []).flatMap((event) => {
-        const look = kinds[event.kind];
-        return look ? [{ event, look, pr, cluster }] : [];
-      }),
-    )
+    .flatMap(({ pr, cluster }) => (pr.events ?? []).map((event) => ({ event, look: kinds[event.kind], pr, cluster })))
     .sort((a, b) => (b.event.at ?? 0) - (a.event.at ?? 0));
   const listed = entries.filter(({ look }) => filter === 'all' || look.filter === filter);
   const counts = Object.fromEntries(
